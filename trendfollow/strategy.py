@@ -48,8 +48,15 @@ class Rules:
     rs_exit_mansfield: float = 0
     rs_exit_confirmations: int = 2
     pyramiding_review_enabled: bool = False
+    pyramiding_enabled: bool = False
+    pyramiding_max_additions: int = 3
 
     def validate(self):
+        if not isinstance(self.pyramiding_enabled,bool):raise ValueError('pyramiding_enabled는 true/false여야 합니다.')
+        if (isinstance(self.pyramiding_max_additions,bool) or not isinstance(self.pyramiding_max_additions,int)
+                or not 0<=self.pyramiding_max_additions<=3):raise ValueError('추가매수 상한은 0~3 정수여야 합니다.')
+        if self.pyramiding_enabled and (not self.pyramiding_review_enabled or self.initial_stop_reference!='entry_fill'):
+            raise ValueError('추가매수 모의 체결에는 검토 기능과 entry_fill 손절 기준이 필요합니다.')
         if not isinstance(self.pyramiding_review_enabled,bool):raise ValueError('pyramiding_review_enabled는 true/false여야 합니다.')
         if self.pyramiding_review_enabled and self.entry_method!='setup':raise ValueError('추가매수 검토는 셋업 전략을 사용하세요.')
         if self.initial_stop_method not in {'atr','fixed','hybrid'}:raise ValueError('초기 손절 방식은 atr/fixed/hybrid여야 합니다.')

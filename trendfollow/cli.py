@@ -209,6 +209,7 @@ def main(argv=None):
     backtest.add_argument('--config')
     backtest.add_argument('--stop-limit',choices=['on','off'],help='다른 설정은 유지하고 손절 폭 제한만 변경')
     backtest.add_argument('--initial-stop-method',choices=['fixed','atr','hybrid'],help='모의 체결가 기준 초기 손절 비교')
+    backtest.add_argument('--pyramiding',choices=['on','off'],help='같은 셋업 설정에서 추가매수 모의 체결 ON/OFF 비교')
     backtest.add_argument('--out', default='outputs/backtest')
     paper = subs.add_parser('paper', help='로컬 모의 계좌 장마감 체크포인트 (동일 날짜 중복 실행 방지)')
     paper.add_argument('--prices', required=True)
@@ -382,7 +383,8 @@ def main(argv=None):
         elif args.command == 'backtest':
             summary = run_comparison(args.prices,args.universe,args.start,args.split,args.end,
                                      args.out,args.capital,args.config,
-                                     None if args.stop_limit is None else args.stop_limit=='on',args.initial_stop_method)
+                                     None if args.stop_limit is None else args.stop_limit=='on',args.initial_stop_method,
+                                     None if args.pyramiding is None else args.pyramiding=='on')
             print(f'백테스트 완료: {Path(args.out).resolve()} | 탐색 연구: 생존·유동성 선택 편향 존재')
         elif args.command == 'paper':
             now=datetime.now(ZoneInfo('Asia/Seoul')); target=pd.Timestamp(args.as_of)

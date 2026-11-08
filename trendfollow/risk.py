@@ -4,6 +4,8 @@ import math
 
 import pandas as pd
 
+MAX_POSITION_RISK = .02
+
 
 @dataclass
 class Account:
@@ -61,10 +63,15 @@ class Limits:
             value = getattr(self, name)
             if not math.isfinite(value) or not 0 <= value < 1:
                 raise ValueError(f'{name}은 0 이상 1 미만이어야 합니다.')
+        if self.max_trade_risk>MAX_POSITION_RISK:
+            raise ValueError('max_trade_risk는 계좌 순자산의 2%를 초과할 수 없습니다.')
 
 
 def allocate(candidates: pd.DataFrame, account: Account, limits: Limits = Limits()) -> pd.DataFrame:
     account.validate(); limits.validate()
+    if any(key in candidates and candidates[key].eq(True).any() for key in ['pyramiding_enabled','campaign_risk_enabled']):
+        from .pyramiding_execution import allocate_campaigns
+        return allocate_campaigns(candidates,account,limits)
     result = candidates.copy()
     result['quantity'] = 0
     result['planned_risk'] = 0.
@@ -137,6 +144,9 @@ def allocate(candidates: pd.DataFrame, account: Account, limits: Limits = Limits
                 'cash': cash/cash_per_share, 'position': account.equity*limits.max_position/cash_per_share,
                 'sector': sector_room/cash_per_share,
                 'liquidity': row.avg_turnover*limits.volume_participation/cash_per_share}
+        actual_risk=price*(1+limits.entry_slippage)*(1+limits.cost_rate/2)-stop*(1-limits.exit_slippage)*(1-limits.cost_rate/2)
+        friction=price*(1+limits.entry_slippage)*(1+limits.cost_rate/2)-price
+        caps['hard_trade_risk']=account.equity*MAX_POSITION_RISK/(actual_risk+MAX_POSITION_RISK*friction)
         binding = min(caps, key=caps.get)
         quantity = max(0, math.floor(caps[binding]))
         result.at[i, 'quantity'] = quantity

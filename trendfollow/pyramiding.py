@@ -13,6 +13,8 @@ REVIEW_COLUMNS=['date','symbol','review_status','eligible_for_risk_review','revi
 def review_columns(frame,rules):
     if not rules.pyramiding_review_enabled:return frame
     f=frame.copy();f['pyramiding_review_enabled']=True
+    if rules.pyramiding_enabled:
+        f['pyramiding_enabled']=True;f['pyramiding_max_additions']=rules.pyramiding_max_additions
     return f
 
 
@@ -86,6 +88,14 @@ def evaluate_addition(pos,row,day,limits):
         except (ValueError,KeyError,TypeError):stop=None
     if not finite(stop) or not finite(close) or not 0<float(stop)<float(close):
         reasons.append('invalid_proposed_stop')
+    if is_true(row.get('pyramiding_enabled',False)):
+        if pos.get('addition_count',0)>=row['pyramiding_max_additions']:reasons.append('max_additions_reached')
+        if finite(stop) and finite(pos.get('stop_price')) and float(stop)<=float(pos['stop_price']):
+            reasons.append('common_stop_not_raised')
+        if pos.get('lots'):
+            last_fill=pos['lots'][-1].get('entry_price')
+            if not finite(last_fill):reasons.append('missing_campaign_history')
+            elif finite(close) and float(close)<=float(last_fill):reasons.append('not_above_last_fill')
     eligible=not reasons
     if eligible:
         pos.setdefault('pyramiding_review_seen',[]).append(setup_id)
@@ -94,7 +104,7 @@ def evaluate_addition(pos,row,day,limits):
         eligible_for_risk_review=eligible,review_reasons=','.join(reasons),setup_id=setup_id,
         success_3r_date=str(success.date()) if success is not None else None,entry_date=pos.get('entry_date'),
         entry_price=pos.get('entry_price'),
-        initial_risk_per_share=float(pos['initial_risk'])/float(pos['quantity']) if valid_position else None,
+        initial_risk_per_share=float(pos['initial_risk'])/float(pos.get('initial_quantity',pos['quantity'])) if valid_position else None,
         target_3r=pos.get('target_3r'),close=float(close) if finite(close) else None,
         holding_quantity=pos.get('quantity'),holding_stop=pos.get('stop_price'),
         proposed_stop_price=float(stop) if finite(stop) else None,additional_quantity=0,

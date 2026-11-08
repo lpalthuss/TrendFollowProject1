@@ -36,6 +36,8 @@ def decision_rule_settings(rules):
     """Indicator-only additions must not invalidate existing percentile paper accounts."""
     from dataclasses import asdict
     values = asdict(rules)
+    if not rules.pyramiding_enabled:
+        values.pop('pyramiding_enabled',None);values.pop('pyramiding_max_additions',None)
     if not rules.pyramiding_review_enabled:
         from .pyramiding import SETTINGS
         for key in SETTINGS:values.pop(key,None)

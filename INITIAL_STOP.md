@@ -1,6 +1,6 @@
 # 진입 시 손절가와 수량 확정
 
-이 문서의 구현은 초기 손절과 최초 수량을 다룬다. 이후 새 셋업 추가매수 **검토**는 [PYRAMIDING_REVIEW.md](PYRAMIDING_REVIEW.md)에 추가했다. 기존·추가분 위험 합산과 수량 증액은 후속 작업이다. 증권사 주문은 연결하지 않는다.
+이 문서의 구현은 초기 손절과 최초 수량을 다룬다. 이후 새 셋업 추가매수 **검토**는 [PYRAMIDING_REVIEW.md](PYRAMIDING_REVIEW.md), 기존·추가분 위험 합산과 모의 수량 증액은 [PYRAMIDING.md](PYRAMIDING.md)에 설명한다. 증권사 주문은 연결하지 않는다.
 
 ## 선택 가능한 세 방식
 

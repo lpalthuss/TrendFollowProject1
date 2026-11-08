@@ -1,5 +1,6 @@
 """Event-driven long-only research simulation. Uses adjusted vendor prices, not broker fills."""
 from dataclasses import asdict, replace
+import copy
 import math
 
 import numpy as np
@@ -142,7 +143,7 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
     state = initial_state or {}
     cash = float(state.get('cash',initial_cash))
     units = int(state.get('units',limits.max_units if mode=='fixed' else 1))
-    positions = {k:dict(v) for k,v in state.get('positions',{}).items()}
+    positions = copy.deepcopy(state.get('positions',{}))
     pending = list(state.get('pending',[]))
     curve, trades, orders, events = [], [], [], []
     fee = limits.cost_rate/2
@@ -160,6 +161,10 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
         if 'initial_stop_price' in pos:
             trade.update({k:pos[k] for k in ['initial_stop_price','initial_stop_method',
                 'initial_stop_reference','initial_stop_branch','signal_atr','initial_risk']})
+        if 'lots' in pos:
+            trade.update(initial_quantity=pos['initial_quantity'],average_entry_price=pos['average_entry_price'],
+                addition_count=pos['addition_count'],total_committed_risk=pos['total_committed_risk'],
+                r_multiple_total_committed_risk=pnl/pos['total_committed_risk'])
         rs_decision=pos.get('rs_exit_pending')
         if rs_decision:
             trade.update(rs_exit_signal_date=rs_decision['signal_date'],
@@ -198,30 +203,43 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
         candidates=[]
         for pending_row in pending:
             symbol=pending_row['symbol']; bar=today.get(symbol)
+            adding=pending_row.get('order_intent')=='add'
             reason=None
             if symbol in rs_exited_today: reason='rs_exit_same_session_reentry_blocked'
-            elif symbol in positions: reason='already_held'
+            elif adding and symbol not in positions:reason='position_closed_before_addition'
+            elif adding and not pending_row.get('pyramiding_enabled',False):reason='pyramiding_disabled'
+            elif adding and (positions[symbol].get('exit_pending') or positions[symbol].get('rs_exit_pending')):
+                reason='addition_exit_pending'
+            elif symbol in positions and not adding: reason='already_held'
             elif bar is None or bar['volume']<=0: reason='missing_or_untradable_open'
             elif bar['high']==bar['low']: reason='locked_single_price_bar'
             elif bar['open']>pending_row['reference_price']*(1+max_entry_gap): reason='entry_gap_limit'
-            elif bar['open']<=pending_row['stop_price']: reason='open_below_stop'
+            elif bar['open']<=max(pending_row['stop_price'],pending_row.get('planned_common_stop',0)): reason='open_below_stop'
             if reason:
-                orders.append(dict(date=str(day.date()),symbol=symbol,status='rejected',reason=reason))
+                record=dict(date=str(day.date()),symbol=symbol,status='rejected',reason=reason)
+                if adding:record.update(order_intent='add',signal_date=pending_row['date'])
+                orders.append(record)
             else:
                 candidates.append(dict(pending_row,reference_price=float(bar['open']),signal=True))
         if candidates:
             account_positions=[]
             for symbol,pos in positions.items():
                 price=float(today[symbol]['open']) if symbol in today else pos['last_price']
-                account_positions.append(dict(symbol=symbol,sector=pos['sector'],quantity=pos['quantity'],
-                    current_price=price,stop_price=pos['stop_price']))
+                record=dict(symbol=symbol,sector=pos['sector'],quantity=pos['quantity'],
+                    current_price=price,stop_price=pos['stop_price'])
+                if any(c.get('pyramiding_enabled',False) or c.get('campaign_risk_enabled',False) for c in candidates):
+                    record=dict(pos,**record)
+                    record['price_stale']=symbol not in today or today[symbol]['volume']<=0
+                account_positions.append(record)
             equity=cash+sum(x['quantity']*x['current_price'] for x in account_positions)
             allocation=allocate(pd.DataFrame(candidates),Account(equity,cash,account_positions),
                 replace(limits,units=limits.max_units if mode=='fixed' else units))
             for row in allocation.to_dict('records'):
                 quantity=int(row['quantity']); symbol=row['symbol']
                 if not quantity:
-                    orders.append(dict(date=str(day.date()),symbol=symbol,status='rejected',reason=row['allocation_reason']))
+                    record=dict(date=str(day.date()),symbol=symbol,status='rejected',reason=row['allocation_reason'])
+                    if row.get('order_intent')=='add':record.update(order_intent='add',signal_date=row['date'])
+                    orders.append(record)
                     continue
                 fill=row['reference_price']*(1+limits.entry_slippage)
                 entry_total=quantity*fill*(1+fee)
@@ -229,6 +247,19 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
                     raise ValueError('현금 배분 불일치')
                 cash-=entry_total
                 initial_risk=entry_total-quantity*row['stop_price']*(1-limits.exit_slippage)*(1-fee)
+                if row.get('order_intent')=='add':
+                    from .pyramiding_execution import fill_addition
+                    fill_addition(positions[symbol],row,day,quantity,fill,entry_total,initial_risk)
+                    events.append(dict(kind='campaign_lot_opened',symbol=symbol,**positions[symbol]['lots'][-1]))
+                    orders.append(dict(date=str(day.date()),symbol=symbol,side='buy',order_intent='add',
+                        status='filled',quantity=quantity,fill_price=fill,signal_date=row['date'],
+                        setup_id=positions[symbol]['pyramiding_filled_setups'][-1],
+                        addition_number=positions[symbol]['addition_count'],common_stop_before=row['common_stop_before'],
+                        common_stop_after=row['stop_price'],planned_risk=row['planned_risk'],
+                        combined_position_risk=row['combined_position_risk'],portfolio_risk_after=row['portfolio_risk_after'],
+                        position_risk_limit=row['position_risk_limit'],portfolio_risk_limit=row['portfolio_risk_limit'],
+                        equity_at_allocation=row['equity_at_allocation'],effective_units=row['effective_units']))
+                    continue
                 positions[symbol]=dict(sector=row['sector'],quantity=quantity,entry_date=str(day.date()),
                     entry_price=fill,entry_total=entry_total,initial_risk=initial_risk,
                     stop_price=float(row['stop_price']),target_3r=fill+3*initial_risk/quantity,
@@ -242,6 +273,12 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
                     from .pyramiding import setup_identity
                     positions[symbol].update(pyramiding_review_enabled=True,
                         entry_setup_id=setup_identity(row),pyramiding_review_seen=[])
+                if row.get('pyramiding_enabled',False):
+                    from .pyramiding_execution import lot_record
+                    positions[symbol].update(pyramiding_enabled=True,addition_count=0,initial_quantity=quantity,
+                        average_entry_price=fill,total_committed_risk=initial_risk,pyramiding_filled_setups=[],
+                        lots=[lot_record(row,day,quantity,fill,entry_total,initial_risk,0)])
+                    events.append(dict(kind='campaign_lot_opened',symbol=symbol,**positions[symbol]['lots'][0]))
                 orders.append(dict(date=str(day.date()),symbol=symbol,status='filled',quantity=quantity,
                                    fill_price=fill,signal_date=row['date'],effective_units=row['effective_units'],
                                    market_unit_regime=row.get('market_unit_regime','disabled'),
@@ -271,6 +308,7 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
                     events.append(dict(date=str(day.date()),symbol=symbol,kind='success_3r',units=units))
                 pos['stop_price']=max(pos['stop_price'],pos['entry_price'])
         todays_features=daily_signals.get(day)
+        addition_plans=[]
         if todays_features is not None:
             for row in todays_features.to_dict('records'):
                 symbol=row['symbol']
@@ -283,12 +321,16 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
                 if symbol in positions and row.get('pyramiding_review_enabled',False):
                     from .pyramiding import evaluate_addition
                     review=evaluate_addition(positions[symbol],row,day,limits)
+                    if row.get('pyramiding_enabled',False) and review['eligible_for_risk_review']:
+                        addition_plans.append(dict(row,order_intent='add',planned_common_stop=review['proposed_stop_price']))
+                        review.update(risk_aggregation_status='scheduled_for_next_open',orders_created=1)
                     events.append(dict(kind='pyramiding_review',**review))
             score = 'allocation_score' if 'allocation_score' in todays_features else 'rs_percentile'
             selected=todays_features[todays_features.signal].sort_values([score,'symbol'],ascending=[False,True])
             if 'pyramiding_review_enabled' in selected:
                 selected=selected[~(selected.pyramiding_review_enabled.eq(True)&selected.symbol.isin(positions))]
             pending=json_records(selected)
+            if addition_plans:pending.extend(json_records(pd.DataFrame(addition_plans)))
         observed=set(todays_features.symbol) if todays_features is not None else set()
         for symbol,pos in positions.items():
             if pos.get('pyramiding_review_enabled',False) and symbol not in observed:
@@ -297,6 +339,9 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
                 review['review_reasons']='missing_signal_row,'+review['review_reasons']
                 events.append(dict(kind='pyramiding_review',**review))
         marked=sum(pos['quantity']*pos['last_price'] for pos in positions.values())
+        if any(pos.get('pyramiding_enabled',False) for pos in positions.values()):
+            from .pyramiding_execution import risk_events
+            events.extend(risk_events(positions,today,cash+marked,day,limits))
         curve.append(dict(date=str(day.date()),equity=cash+marked,cash=cash,positions=len(positions),
                           units=units,stale_positions=sum(pos.get('exit_pending',False) for pos in positions.values())))
     final_state={'cash':cash,'positions':positions,'units':units,'pending':pending,

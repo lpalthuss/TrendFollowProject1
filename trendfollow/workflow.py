@@ -39,6 +39,13 @@ def save_json(path, payload):
     temporary.replace(path)
 
 
+def save_pyramiding_logs(target,events):
+    from .pyramiding_execution import execution_events,LOT_COLUMNS,RISK_COLUMNS
+    for name,kind,columns in [('campaign-lots','campaign_lot_opened',LOT_COLUMNS),
+            ('campaign-risk','campaign_risk',RISK_COLUMNS)]:
+        execution_events(events,kind,columns).to_csv(target/f'{name}.csv',index=False,encoding='utf-8-sig')
+
+
 def paper_input_digest(prices,universe,rules):
     symbols=set(universe.symbol.astype(str))|set(universe.benchmark.astype(str))
     if rules.rs_method=='mansfield':
@@ -57,16 +64,25 @@ def paper_input_digest(prices,universe,rules):
 
 
 def run_comparison(prices_path, universe_path, start, split, end, output_dir,
-                   capital=10_000_000, config_path=None,stop_limit_enabled=None,initial_stop_method=None):
+                   capital=10_000_000, config_path=None,stop_limit_enabled=None,initial_stop_method=None,pyramiding_enabled=None):
     if not start < split <= end:
         raise ValueError('start < split <= end 순서여야 합니다.')
     prices,universe,rules,limits=read_inputs(prices_path,universe_path,end,config_path)
     if stop_limit_enabled is not None:rules=replace(rules,stop_limit_enabled=stop_limit_enabled)
     if initial_stop_method is not None:rules=replace(rules,initial_stop_method=initial_stop_method,initial_stop_reference='entry_fill')
+    if pyramiding_enabled is not None:
+        rules=replace(rules,pyramiding_enabled=pyramiding_enabled,
+            pyramiding_review_enabled=rules.pyramiding_review_enabled or pyramiding_enabled)
+    rules.validate()
     if rules.entry_method=='setup' and 'industry_peer_history' in universe:
         from .industries import require_peer_sessions
         require_peer_sessions(prices,universe,start,end)
     prepared,rejected=features(prices,universe,rules)
+    if pyramiding_enabled is not None:
+        # Isolate additional buys: both comparison arms use identical initial-buy sizing.
+        prepared['campaign_risk_enabled']=True
+        prepared['pyramiding_enabled']=rules.pyramiding_enabled
+        prepared['pyramiding_max_additions']=rules.pyramiding_max_additions
     root=Path(output_dir); root.mkdir(parents=True,exist_ok=True)
     rejected.to_csv(root/'rejected-bars.csv',index=False)
     clean,_=clean_research_prices(prices)
@@ -88,6 +104,11 @@ def run_comparison(prices_path, universe_path, start, split, end, output_dir,
                 reviews=review_events(events)
                 reviews.to_csv(target/'pyramiding-review.csv',index=False,encoding='utf-8-sig')
             summary['results'][key]=metrics(curve,trades,capital)
+            if rules.pyramiding_enabled:
+                save_pyramiding_logs(target,events)
+                additions=orders[orders.order_intent.eq('add')] if 'order_intent' in orders else pd.DataFrame()
+                summary['results'][key].update(filled_additions=int(additions.status.eq('filled').sum()) if not additions.empty else 0,
+                    rejected_additions=int(additions.status.eq('rejected').sum()) if not additions.empty else 0)
             save_json(target/'final-state.json',state)
     benchmarks={}
     for symbol in sorted(set(universe.benchmark)):
@@ -158,6 +179,7 @@ def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_0
         from .pyramiding import review_events
         reviews=review_events(events)
         reviews.to_csv(root/'pyramiding-review.csv',index=False,encoding='utf-8-sig')
+    if rules.pyramiding_enabled:save_pyramiding_logs(root,events)
     state.update(config_fingerprint=fingerprint,input_fingerprint=history_fingerprint,
                  generated_at=datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),source=str(prices_path),
                  limitations=LIMITATIONS,execution='local simulation; no broker order API')
@@ -170,7 +192,12 @@ def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_0
             'mansfield_ready_count':int(todays.mansfield_rs.notna().sum())}
     if rules.pyramiding_review_enabled:
         result.update(pyramiding_review_candidates=int(reviews.eligible_for_risk_review.sum()),
-            pyramiding_execution='review_only; combined risk management pending')
+            pyramiding_execution='local_simulation' if rules.pyramiding_enabled else 'review_only; combined risk management pending')
+    if rules.pyramiding_enabled:
+        additions=orders[orders.order_intent.eq('add')] if 'order_intent' in orders else pd.DataFrame()
+        result.update(pending_additions=sum(row.get('order_intent')=='add' for row in state['pending']),
+            filled_additions=int(additions.status.eq('filled').sum()) if not additions.empty else 0,
+            rejected_additions=int(additions.status.eq('rejected').sum()) if not additions.empty else 0)
     save_json(root/'report.json',result)
     return result
 
