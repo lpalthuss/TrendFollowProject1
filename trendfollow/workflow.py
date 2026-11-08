@@ -83,6 +83,10 @@ def run_comparison(prices_path, universe_path, start, split, end, output_dir,
             target=root/key; target.mkdir(exist_ok=True)
             for name,frame in [('equity',curve),('trades',trades),('orders',orders),('events',events)]:
                 frame.to_csv(target/f'{name}.csv',index=False,encoding='utf-8-sig')
+            if rules.pyramiding_review_enabled:
+                from .pyramiding import review_events
+                reviews=review_events(events)
+                reviews.to_csv(target/'pyramiding-review.csv',index=False,encoding='utf-8-sig')
             summary['results'][key]=metrics(curve,trades,capital)
             save_json(target/'final-state.json',state)
     benchmarks={}
@@ -150,6 +154,10 @@ def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_0
     root.mkdir(parents=True,exist_ok=True)
     for name,frame in [('signals',todays),('equity',curve),('trades',trades),('orders',orders),('events',events)]:
         frame.to_csv(root/f'{name}.csv',index=False,encoding='utf-8-sig')
+    if rules.pyramiding_review_enabled:
+        from .pyramiding import review_events
+        reviews=review_events(events)
+        reviews.to_csv(root/'pyramiding-review.csv',index=False,encoding='utf-8-sig')
     state.update(config_fingerprint=fingerprint,input_fingerprint=history_fingerprint,
                  generated_at=datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),source=str(prices_path),
                  limitations=LIMITATIONS,execution='local simulation; no broker order API')
@@ -160,6 +168,9 @@ def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_0
             'state':str(state_file),'mode':'paper_only','rs_method':rules.rs_method,
             'rs_candidates':int(todays.signal_rs.sum()),'mansfield_candidates':int(todays.signal_mansfield.sum()),
             'mansfield_ready_count':int(todays.mansfield_rs.notna().sum())}
+    if rules.pyramiding_review_enabled:
+        result.update(pyramiding_review_candidates=int(reviews.eligible_for_risk_review.sum()),
+            pyramiding_execution='review_only; combined risk management pending')
     save_json(root/'report.json',result)
     return result
 

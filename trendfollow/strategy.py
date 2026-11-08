@@ -47,8 +47,11 @@ class Rules:
     rs_exit_percentile: float = 50
     rs_exit_mansfield: float = 0
     rs_exit_confirmations: int = 2
+    pyramiding_review_enabled: bool = False
 
     def validate(self):
+        if not isinstance(self.pyramiding_review_enabled,bool):raise ValueError('pyramiding_review_enabled는 true/false여야 합니다.')
+        if self.pyramiding_review_enabled and self.entry_method!='setup':raise ValueError('추가매수 검토는 셋업 전략을 사용하세요.')
         if self.initial_stop_method not in {'atr','fixed','hybrid'}:raise ValueError('초기 손절 방식은 atr/fixed/hybrid여야 합니다.')
         if self.initial_stop_reference not in {'signal_close','entry_fill'}:raise ValueError('초기 손절 기준은 signal_close/entry_fill이어야 합니다.')
         if self.initial_stop_method!='atr' and self.initial_stop_reference!='entry_fill':
@@ -235,7 +238,8 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
         result['allocation_score'] = np.nan
         from .rs_exit import exit_columns
         from .stop_limit import apply_stop_limit
-        return apply_stop_limit(exit_columns(result,rules,as_of),rules)
+        from .pyramiding import review_columns
+        return review_columns(apply_stop_limit(exit_columns(result,rules,as_of),rules),rules)
     # Rank only in the explicitly supplied analysis universe; not a market-wide RS claim.
     result['rs_percentile'] = result.return_126d.rank(method='average', pct=True) * 100
     for i, row in result.iterrows():
@@ -269,4 +273,6 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
     result=exit_columns(result,rules,as_of)
     from .stop_limit import apply_stop_limit
     result=apply_stop_limit(result,rules)
+    from .pyramiding import review_columns
+    result=review_columns(result,rules)
     return result.sort_values(['allocation_score', 'symbol'], ascending=[False, True], na_position='last')

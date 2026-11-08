@@ -114,6 +114,8 @@ def features(prices, universe, rules=Rules(), exit_days=20):
     result=exit_columns(result,rules)
     from .stop_limit import apply_stop_limit
     result=apply_stop_limit(result,rules)
+    from .pyramiding import review_columns
+    result=review_columns(result,rules)
     return result.sort_values(['date','symbol']).reset_index(drop=True), rejected
 
 
@@ -236,6 +238,10 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
                         initial_stop_method=row['initial_stop_method'],initial_stop_branch=row['initial_stop_branch'],
                         initial_stop_reference=row['initial_stop_reference'],
                         signal_atr=float(row['atr']))
+                if row.get('pyramiding_review_enabled',False):
+                    from .pyramiding import setup_identity
+                    positions[symbol].update(pyramiding_review_enabled=True,
+                        entry_setup_id=setup_identity(row),pyramiding_review_seen=[])
                 orders.append(dict(date=str(day.date()),symbol=symbol,status='filled',quantity=quantity,
                                    fill_price=fill,signal_date=row['date'],effective_units=row['effective_units'],
                                    market_unit_regime=row.get('market_unit_regime','disabled'),
@@ -259,6 +265,7 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
             pos['last_price']=float(bar['close'])
             if not pos['success'] and bar['close']>=pos['target_3r']:
                 pos['success']=True
+                if pos.get('pyramiding_review_enabled',False):pos['success_3r_date']=str(day.date())
                 if mode=='progressive':
                     units=min(limits.max_units,units+1)
                     events.append(dict(date=str(day.date()),symbol=symbol,kind='success_3r',units=units))
@@ -273,9 +280,22 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
                     if decision:events.append(dict(date=str(day.date()),symbol=symbol,kind='rs_exit_scheduled',**decision))
                 if symbol in positions and pd.notna(row['trailing_channel']):
                     positions[symbol]['stop_price']=max(positions[symbol]['stop_price'],float(row['trailing_channel']))
+                if symbol in positions and row.get('pyramiding_review_enabled',False):
+                    from .pyramiding import evaluate_addition
+                    review=evaluate_addition(positions[symbol],row,day,limits)
+                    events.append(dict(kind='pyramiding_review',**review))
             score = 'allocation_score' if 'allocation_score' in todays_features else 'rs_percentile'
             selected=todays_features[todays_features.signal].sort_values([score,'symbol'],ascending=[False,True])
+            if 'pyramiding_review_enabled' in selected:
+                selected=selected[~(selected.pyramiding_review_enabled.eq(True)&selected.symbol.isin(positions))]
             pending=json_records(selected)
+        observed=set(todays_features.symbol) if todays_features is not None else set()
+        for symbol,pos in positions.items():
+            if pos.get('pyramiding_review_enabled',False) and symbol not in observed:
+                from .pyramiding import evaluate_addition
+                review=evaluate_addition(pos,dict(symbol=symbol,date=day),day,limits)
+                review['review_reasons']='missing_signal_row,'+review['review_reasons']
+                events.append(dict(kind='pyramiding_review',**review))
         marked=sum(pos['quantity']*pos['last_price'] for pos in positions.values())
         curve.append(dict(date=str(day.date()),equity=cash+marked,cash=cash,positions=len(positions),
                           units=units,stale_positions=sum(pos.get('exit_pending',False) for pos in positions.values())))
