@@ -4,7 +4,17 @@
 
 ## 시작
 
+실제 장중 연결 시작은 `intraday-live --observation on --plan ... --out ...`, 종료는 다른 터미널에서 `intraday-live --observation off`, 확인은 `intraday-live --observation status`다. 생략 시 저장된 설정을 존중하며 OFF에서는 인증·연결·구독을 시작하지 않는다. 종료 확인과 제어 파일 범위는 [INTRADAY.md](INTRADAY.md)에 설명했다.
+
+장중 관측과 종가 결과의 대조 명령 `intraday-close`는 [INTRADAY_CLOSE.md](INTRADAY_CLOSE.md)에 정리했다. 관측 OFF·기록 누락·부분 관측을 구분하고, 같은 저항선·고정 산업 동료 기준으로 종가 유지 여부를 계산한다.
+
 셋업·인더스트리 액션을 적용한 RS/Mansfield RS 두 모의계좌의 시작 조건과 일별 실행 절차는 [PAPER_VALIDATION.md](PAPER_VALIDATION.md)에 정리했다.
+
+장중 돌파·손절·산업 동반 상승의 잠정 상태를 KIS 실시간 시세로 관측·재생하는 절차는 [INTRADAY.md](INTRADAY.md)에 있다. 장중 경로는 주문·체결을 실행하지 않고, RS는 전일 값으로 고정하며 거래량 미확인 상태를 진입 확정으로 표시하지 않는다.
+
+장중 판단은 기본 5초 간격이고 저장은 기본 요약이다. 보유 손절선 접촉은 시세 수신 즉시 별도 확인한다. `--evaluation-seconds`로 간격을, `--tick-storage all|summary`로 저장 방식을 선택한다.
+
+모든 메시지가 기본 120초 동안 없으면 연결 무응답으로 판단해 재접속·재구독한다. `--idle-timeout`으로 기준을 조절하며, PINGPONG만 수신되는 연결과 개별 종목 시세 부재를 구분한다. 마지막 수신 시각과 복구 이력은 `summary.json`·`connection-events.jsonl`에 기록한다.
 
 Python 3.11 이상. 프로젝트 폴더에서 PowerShell로 실행한다.
 

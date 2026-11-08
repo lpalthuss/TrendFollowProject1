@@ -10,7 +10,8 @@ requires-python = ">=3.11"
 dependencies = ["pandas>=2.2,<3", "numpy>=1.26,<3", "requests>=2.31,<3", "python-dotenv>=1,<2"]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<10"]
+test = ["pytest>=8,<10", "websocket-client>=1.8,<2"]
+intraday = ["websocket-client>=1.8,<2"]
 
 [project.scripts]
 trendfollow = "trendfollow.cli:main"

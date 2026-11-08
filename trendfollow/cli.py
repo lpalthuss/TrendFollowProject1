@@ -214,9 +214,58 @@ def main(argv=None):
     daily.add_argument('--config')
     daily.add_argument('--env-file', default='.env')
     daily.add_argument('--verify-provider', choices=['kis','kiwoom'], default='kiwoom')
+    intraday = subs.add_parser('intraday-prepare',help='장중 관측용 전일 셋업·산업 감시 계획 생성')
+    for key in ['signals','prices','universe','session','config','out']:
+        intraday.add_argument(f'--{key}',required=True)
+    intraday.add_argument('--symbols',nargs='+',required=True)
+    intraday.add_argument('--paper-state')
+    replay_parser = subs.add_parser('intraday-replay',help='저장된 시세로 장중 관측 신호 재생')
+    for key in ['plan','ticks','out']:
+        replay_parser.add_argument(f'--{key}',required=True)
+    live_parser = subs.add_parser('intraday-live',help='KIS 실시간 시세 관측·기록 (주문 없음)')
+    live_parser.add_argument('--plan')
+    live_parser.add_argument('--out')
+    live_parser.add_argument('--observation',choices=['on','off','status'],help='실제 연결 시작·중단·상태 확인. 생략 시 저장된 설정 적용')
+    live_parser.add_argument('--control-file',default='outputs/intraday/control.json')
+    live_parser.add_argument('--stop-wait-seconds',type=float,default=10,help='OFF 종료 확인 대기 초 (0~60)')
+    live_parser.add_argument('--env-file',default='.env')
+    live_parser.add_argument('--seconds',type=float,default=300)
+    live_parser.add_argument('--evaluation-seconds',type=float,default=5,help='돌파·산업 판단 간격 (기본 5초)')
+    live_parser.add_argument('--tick-storage',choices=['all','summary'],default='summary',help='전체 체결 또는 주기별 요약 저장')
+    live_parser.add_argument('--idle-timeout',type=float,default=120,help='모든 메시지의 무응답 재접속 기준 초 (기본 120초)')
+    live_parser.add_argument('--probe',action='store_true',help='휴장 중에도 접속·구독 응답만 확인')
+    close_parser = subs.add_parser('intraday-close',help='장중 관측과 완료 종가의 돌파·산업 상태 대조')
+    for key in ['plan','prices','out']:
+        close_parser.add_argument(f'--{key}',required=True)
+    close_parser.add_argument('--peer-returns',help='해당 거래일의 산업 동료 수익률 CSV')
+    close_parser.add_argument('--run-dir',help='실제 관측 또는 재생 출력 폴더')
+    close_parser.add_argument('--observation',choices=['on','off'],help='생략 시 기록과 저장된 관측 설정으로 결정')
+    close_parser.add_argument('--control-file',default='outputs/intraday/control.json')
     args = parser.parse_args(argv)
     try:
-        if args.command == 'demo':
+        if args.command == 'intraday-close':
+            from .intraday_close import close_comparison
+            from .observation_control import read_control
+            observation=args.observation
+            if observation is None:
+                has_run=args.run_dir is not None and (Path(args.run_dir)/'summary.json').exists()
+                observation='on' if has_run or read_control(args.control_file)['enabled'] else 'off'
+            print(json.dumps(close_comparison(args.plan,args.prices,args.peer_returns,args.out,
+                args.run_dir,observation),ensure_ascii=False))
+        elif args.command == 'intraday-prepare':
+            from .intraday import prepare_plan
+            plan=prepare_plan(args.signals,args.prices,args.universe,args.session,args.symbols,args.config,args.out,args.paper_state)
+            print(json.dumps({'mode':plan['mode'],'targets':list(plan['targets']),
+                'subscriptions':len(plan['subscriptions']),'session':plan['session'],'plan':args.out},ensure_ascii=False))
+        elif args.command == 'intraday-replay':
+            from .intraday import replay_ticks
+            print(json.dumps(replay_ticks(args.plan,args.ticks,args.out),ensure_ascii=False))
+        elif args.command == 'intraday-live':
+            from .kis_stream import watch
+            print(json.dumps(watch(args.plan,args.out,args.env_file,args.seconds,args.probe,
+                args.evaluation_seconds,args.tick_storage,args.idle_timeout,args.control_file,
+                args.observation,args.stop_wait_seconds),ensure_ascii=False))
+        elif args.command == 'demo':
             out = Path(args.out)
             generate(out)
             run_scan(out/'prices.csv', out/'universe.csv', out/'account.json', '2026-11-06', out, synthetic=True)

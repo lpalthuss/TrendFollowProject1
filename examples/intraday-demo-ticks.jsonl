@@ -1,0 +1,9 @@
+{"tick": {"symbol": "069500", "timestamp": "2026-11-09T09:01:00+09:00", "price": 100, "previous_close": 100, "day_low": 100, "cumulative_volume": 100, "volume_vs_previous_same_time": 2.0}, "received_at": "2026-11-09T09:01:00+09:00"}
+{"tick": {"symbol": "000002", "timestamp": "2026-11-09T09:01:00+09:00", "price": 102, "previous_close": 100, "day_low": 100, "cumulative_volume": 100, "volume_vs_previous_same_time": 2.0}, "received_at": "2026-11-09T09:01:00+09:00"}
+{"tick": {"symbol": "000003", "timestamp": "2026-11-09T09:01:00+09:00", "price": 103, "previous_close": 100, "day_low": 100, "cumulative_volume": 100, "volume_vs_previous_same_time": 2.0}, "received_at": "2026-11-09T09:01:00+09:00"}
+{"tick": {"symbol": "000004", "timestamp": "2026-11-09T09:01:00+09:00", "price": 101, "previous_close": 100, "day_low": 100, "cumulative_volume": 100, "volume_vs_previous_same_time": 2.0}, "received_at": "2026-11-09T09:01:00+09:00"}
+{"tick": {"symbol": "000001", "timestamp": "2026-11-09T09:01:01+09:00", "price": 106, "previous_close": 100, "day_low": 100, "cumulative_volume": 100, "volume_vs_previous_same_time": 2.0}, "received_at": "2026-11-09T09:01:01+09:00"}
+{"tick": {"symbol": "000001", "timestamp": "2026-11-09T09:01:02+09:00", "price": 104, "previous_close": 100, "day_low": 100, "cumulative_volume": 110, "volume_vs_previous_same_time": 2.0}, "received_at": "2026-11-09T09:01:02+09:00"}
+{"tick": {"symbol": "000001", "timestamp": "2026-11-09T09:01:03+09:00", "price": 94, "previous_close": 100, "day_low": 94, "cumulative_volume": 120, "volume_vs_previous_same_time": 2.0}, "received_at": "2026-11-09T09:01:03+09:00"}
+{"kind": "clock", "received_at": "2026-11-09T09:02:05+09:00"}
+{"kind": "connection_reset", "received_at": "2026-11-09T09:02:06+09:00"}

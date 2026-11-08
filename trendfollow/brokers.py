@@ -51,7 +51,7 @@ class QuoteClient:
                      {'live': 'https://api.kiwoom.com', 'paper': 'https://mockapi.kiwoom.com'})[credentials.environment]
 
     def _send(self, method, path, **kwargs):
-        allowed = {'/oauth2/tokenP', '/oauth2/token', '/api/dostk/chart',
+        allowed = {'/oauth2/tokenP', '/oauth2/token', '/oauth2/Approval', '/api/dostk/chart',
                    '/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice'}
         if path not in allowed:
             raise BrokerError('시세 조회·인증 외의 경로는 지원하지 않습니다.')
