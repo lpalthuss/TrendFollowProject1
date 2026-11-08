@@ -89,6 +89,8 @@ def features(prices, universe, rules=Rules(), exit_days=20):
     if not output:
         raise ValueError('계산 가능한 유니버스·벤치마크 데이터가 없습니다.')
     result = pd.concat(output,ignore_index=True)
+    from .initial_stop import planning_stops
+    result=planning_stops(result,rules)
     if rules.market_units_enabled:
         from .market_units import market_unit_features
         result = result.merge(market_unit_features(p,universe,rules),on=['date','symbol'],how='left',validate='one_to_one')
@@ -153,6 +155,9 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
         trade = dict(symbol=symbol,entry_date=pos['entry_date'],exit_date=str(day.date()),
             quantity=pos['quantity'],entry_price=pos['entry_price'],exit_price=fill,
             pnl=pnl,r_multiple=pnl/pos['initial_risk'],exit_reason=reason,success_3r=pos['success'])
+        if 'initial_stop_price' in pos:
+            trade.update({k:pos[k] for k in ['initial_stop_price','initial_stop_method',
+                'initial_stop_reference','initial_stop_branch','signal_atr','initial_risk']})
         rs_decision=pos.get('rs_exit_pending')
         if rs_decision:
             trade.update(rs_exit_signal_date=rs_decision['signal_date'],
@@ -226,9 +231,18 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
                     entry_price=fill,entry_total=entry_total,initial_risk=initial_risk,
                     stop_price=float(row['stop_price']),target_3r=fill+3*initial_risk/quantity,
                     last_price=fill,success=False,exit_pending=False)
+                if row.get('initial_stop_reference')=='entry_fill':
+                    positions[symbol].update(initial_stop_price=float(row['stop_price']),
+                        initial_stop_method=row['initial_stop_method'],initial_stop_branch=row['initial_stop_branch'],
+                        initial_stop_reference=row['initial_stop_reference'],
+                        signal_atr=float(row['atr']))
                 orders.append(dict(date=str(day.date()),symbol=symbol,status='filled',quantity=quantity,
                                    fill_price=fill,signal_date=row['date'],effective_units=row['effective_units'],
-                                   market_unit_regime=row.get('market_unit_regime','disabled')))
+                                   market_unit_regime=row.get('market_unit_regime','disabled'),
+                                   initial_stop_price=float(row['stop_price']),
+                                   initial_stop_method=row.get('initial_stop_method','legacy_atr'),
+                                   initial_stop_reference=row.get('initial_stop_reference','signal_close'),
+                                   initial_stop_branch=row.get('initial_stop_branch','atr')))
         pending=[]
         # A same-day low below the stop wins over a same-day high above the 3R threshold.
         for symbol in sorted(list(positions)):

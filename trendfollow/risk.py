@@ -71,6 +71,7 @@ def allocate(candidates: pd.DataFrame, account: Account, limits: Limits = Limits
     result['cash_required'] = 0.
     result['allocation_reason'] = 'not_a_signal'
     result['effective_units'] = limits.units
+    result['estimated_entry_price']=result.get('reference_price',pd.Series(float('nan'),index=result.index))*(1+limits.entry_slippage)
     if 'market_unit_cap' in result:
         def effective_units(cap):
             if pd.isna(cap):
@@ -110,9 +111,25 @@ def allocate(candidates: pd.DataFrame, account: Account, limits: Limits = Limits
             result.at[i,'allocation_reason'] = 'blocked_market_units'
             continue
         price, stop = float(row.reference_price), float(row.stop_price)
+        if row.get('initial_stop_reference')=='entry_fill':
+            from .initial_stop import initial_stop
+            decision=initial_stop(price*(1+limits.entry_slippage),float(row.get('atr',float('nan'))),
+                float(row['stop_atr_multiple']),float(row['fixed_stop_fraction']),row['initial_stop_method'])
+            stop=decision['stop_price']
+            for key,value in decision.items():result.at[i,key]=value
+            if not 0<stop<price:
+                result.at[i,'allocation_reason']='invalid_entry_stop';continue
+            exceeded=decision['stop_fraction']>float(row['max_stop_fraction'])
+            result.at[i,'stop_limit_exceeded']=exceeded
+            if row.get('stop_limit_enabled',True) and exceeded:
+                result.at[i,'allocation_reason']='blocked_stop_limit_at_entry';continue
         if not (math.isfinite(price) and math.isfinite(stop) and 0 < stop < price):
             raise ValueError('후보의 진입·손절 가격이 유효하지 않습니다.')
         risk = risk_per_share(price, stop)
+        if row.get('initial_stop_reference')=='entry_fill':
+            fill=price*(1+limits.entry_slippage)
+            fee=limits.cost_rate/2
+            risk=fill*(1+fee)-stop*(1-limits.exit_slippage)*(1-fee)
         cash_per_share = price * (1+limits.entry_slippage+limits.cost_rate)
         budget = account.equity*limits.max_trade_risk*units/limits.max_units
         sector_room = max(0, account.equity*limits.max_sector-sectors.get(row.sector, 0))

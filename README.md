@@ -331,3 +331,6 @@ python -m trendfollow industry-sync --overrides examples/industry-overrides.csv
 현재 스냅샷만으로 과거 산업 동반 상승을 백테스트할 수 없다. 산업 동료 수익률이 없는 거래일을 포함한 `backtest`·모의 계좌 재생은 거절하며, 실제 당시 산업 구성 이력은 별도로 확보해야 한다.
 
 API 근거: [KIS 주식 일봉 공식 예제](https://github.com/koreainvestment/open-trading-api/tree/main/examples_llm/domestic_stock/inquire_daily_itemchartprice), [KIS 토큰 발급 예제](https://github.com/koreainvestment/open-trading-api/tree/main/examples_llm/auth/auth_token), [키움 공식 예제·스펙](https://github.com/Kiwoom-Securities/Kiwoom-REST-API), [키움 REST 소개](https://openapi.kiwoom.com/intro). 키움 `au10001`, `ka10081`은 연결된 스펙 MCP에서 계약과 공식 예제를 확인했다.
+## 초기 손절 방식 비교
+
+진입 시 고정 8%·2ATR·자동 전환 `max(8%, 2ATR/체결가)`의 손절가와 수량을 선택·비교할 수 있다. 비교용 세 설정은 체결가 기준을 사용하며 신호일 ATR을 고정한다. 보유 중 손절가를 내리지 않는다. 기존 ATR 기본 설정과 모의계좌는 유지한다. 설정·실행 방법과 기존 방식과의 차이는 [INITIAL_STOP.md](INITIAL_STOP.md)에 있다.

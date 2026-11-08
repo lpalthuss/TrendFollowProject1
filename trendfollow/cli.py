@@ -150,6 +150,11 @@ def main(argv=None):
         stop_compare.add_argument(f'--{key}',required=True)
     stop_compare.add_argument('--config')
     stop_compare.add_argument('--out',default='outputs/stop-limit-comparison')
+    initial_compare=subs.add_parser('compare-initial-stops',help='같은 모의 체결가 기준 고정·ATR·자동 전환 손절·수량 비교')
+    for key in ['prices','universe','account','as-of']:
+        initial_compare.add_argument(f'--{key}',required=True)
+    initial_compare.add_argument('--config')
+    initial_compare.add_argument('--out',default='outputs/initial-stop-comparison')
     compare_rs = subs.add_parser('compare-rs', help='RS 순위와 Mansfield를 동일 계좌 가정으로 각각 비교')
     for key in ['prices','universe','account','as-of']:
         compare_rs.add_argument(f'--{key}',required=True)
@@ -203,6 +208,7 @@ def main(argv=None):
     backtest.add_argument('--capital', type=float, default=10000000)
     backtest.add_argument('--config')
     backtest.add_argument('--stop-limit',choices=['on','off'],help='다른 설정은 유지하고 손절 폭 제한만 변경')
+    backtest.add_argument('--initial-stop-method',choices=['fixed','atr','hybrid'],help='모의 체결가 기준 초기 손절 비교')
     backtest.add_argument('--out', default='outputs/backtest')
     paper = subs.add_parser('paper', help='로컬 모의 계좌 장마감 체크포인트 (동일 날짜 중복 실행 방지)')
     paper.add_argument('--prices', required=True)
@@ -260,7 +266,13 @@ def main(argv=None):
     close_parser.add_argument('--control-file',default='outputs/intraday/control.json')
     args = parser.parse_args(argv)
     try:
-        if args.command == 'compare-stop-limit':
+        if args.command == 'compare-initial-stops':
+            from .initial_stop import compare_initial_stops
+            now=datetime.now(ZoneInfo('Asia/Seoul'));target=pd.Timestamp(args.as_of)
+            if target.date()>now.date() or target.date()==now.date() and now.hour*60+now.minute<970:
+                raise ValueError('완료된 장마감 거래일만 비교하세요. 당일은 16:10 이후 허용합니다.')
+            print(json.dumps(compare_initial_stops(args.prices,args.universe,args.account,args.as_of,args.config,args.out),ensure_ascii=False))
+        elif args.command == 'compare-stop-limit':
             from .stop_limit import compare_stop_limit
             now=datetime.now(ZoneInfo('Asia/Seoul'));target=pd.Timestamp(args.as_of)
             if target.date()>now.date() or target.date()==now.date() and now.hour*60+now.minute<970:
@@ -370,7 +382,7 @@ def main(argv=None):
         elif args.command == 'backtest':
             summary = run_comparison(args.prices,args.universe,args.start,args.split,args.end,
                                      args.out,args.capital,args.config,
-                                     None if args.stop_limit is None else args.stop_limit=='on')
+                                     None if args.stop_limit is None else args.stop_limit=='on',args.initial_stop_method)
             print(f'백테스트 완료: {Path(args.out).resolve()} | 탐색 연구: 생존·유동성 선택 편향 존재')
         elif args.command == 'paper':
             now=datetime.now(ZoneInfo('Asia/Seoul')); target=pd.Timestamp(args.as_of)

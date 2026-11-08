@@ -57,11 +57,12 @@ def paper_input_digest(prices,universe,rules):
 
 
 def run_comparison(prices_path, universe_path, start, split, end, output_dir,
-                   capital=10_000_000, config_path=None,stop_limit_enabled=None):
+                   capital=10_000_000, config_path=None,stop_limit_enabled=None,initial_stop_method=None):
     if not start < split <= end:
         raise ValueError('start < split <= end 순서여야 합니다.')
     prices,universe,rules,limits=read_inputs(prices_path,universe_path,end,config_path)
     if stop_limit_enabled is not None:rules=replace(rules,stop_limit_enabled=stop_limit_enabled)
+    if initial_stop_method is not None:rules=replace(rules,initial_stop_method=initial_stop_method,initial_stop_reference='entry_fill')
     if rules.entry_method=='setup' and 'industry_peer_history' in universe:
         from .industries import require_peer_sessions
         require_peer_sessions(prices,universe,start,end)

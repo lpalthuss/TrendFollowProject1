@@ -22,6 +22,9 @@ class Rules:
     stop_atr: float = 2
     max_stop_fraction: float = .15
     stop_limit_enabled: bool = True
+    initial_stop_method: str = 'atr'
+    initial_stop_reference: str = 'signal_close'
+    fixed_stop_fraction: float = .08
     rs_method: str = 'percentile'
     mansfield_weeks: int = 52
     min_mansfield: float = 0
@@ -46,6 +49,12 @@ class Rules:
     rs_exit_confirmations: int = 2
 
     def validate(self):
+        if self.initial_stop_method not in {'atr','fixed','hybrid'}:raise ValueError('초기 손절 방식은 atr/fixed/hybrid여야 합니다.')
+        if self.initial_stop_reference not in {'signal_close','entry_fill'}:raise ValueError('초기 손절 기준은 signal_close/entry_fill이어야 합니다.')
+        if self.initial_stop_method!='atr' and self.initial_stop_reference!='entry_fill':
+            raise ValueError('고정·자동 전환 비교는 entry_fill 기준을 사용하세요.')
+        if not math.isfinite(self.fixed_stop_fraction) or not 0<self.fixed_stop_fraction<1:
+            raise ValueError('고정 손절 폭은 0 초과 1 미만이어야 합니다.')
         if not isinstance(self.stop_limit_enabled,bool):raise ValueError('stop_limit_enabled는 true/false여야 합니다.')
         if not isinstance(self.rs_exit_enabled,bool):raise ValueError('rs_exit_enabled는 true/false여야 합니다.')
         if not math.isfinite(self.rs_exit_percentile) or not 0<=self.rs_exit_percentile<=100:
@@ -189,6 +198,9 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
         turnover = float((f.close * f.volume).iloc[-21:-1].mean())
         atr = wilder_atr(f, rules.atr_days)
         stop = close - rules.stop_atr * atr
+        from .initial_stop import initial_stop
+        if rules.initial_stop_method!='atr':
+            stop=initial_stop(close,atr,rules.stop_atr,rules.fixed_stop_fraction,rules.initial_stop_method)['stop_price']
         if rules.entry_method=='setup':
             row.update(setup_features(f,rules,calendar=b.index).iloc[-1].to_dict())
             if symbol in sectors.index:
@@ -212,6 +224,8 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
                    volume_ratio=volume_ratio, avg_turnover=turnover)
         rows.append(row)
     result = pd.DataFrame(rows)
+    from .initial_stop import planning_stops
+    result=planning_stops(result,rules)
     if rules.market_units_enabled:
         from .market_units import market_unit_features
         market = market_unit_features(p,universe,rules)
