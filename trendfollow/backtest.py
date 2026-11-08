@@ -87,6 +87,9 @@ def features(prices, universe, rules=Rules(), exit_days=20):
     if not output:
         raise ValueError('계산 가능한 유니버스·벤치마크 데이터가 없습니다.')
     result = pd.concat(output,ignore_index=True)
+    if rules.market_units_enabled:
+        from .market_units import market_unit_features
+        result = result.merge(market_unit_features(p,universe,rules),on=['date','symbol'],how='left',validate='one_to_one')
     if rules.entry_method=='setup':
         result=result.merge(sector_features(p,universe,rules),on=['date','symbol'],how='left',validate='one_to_one')
     result['rs_percentile'] = result.return_126d.where(result.eligible_history).groupby(result.date).rank(pct=True)*100
@@ -201,7 +204,8 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
                     stop_price=float(row['stop_price']),target_3r=fill+3*initial_risk/quantity,
                     last_price=fill,success=False,exit_pending=False)
                 orders.append(dict(date=str(day.date()),symbol=symbol,status='filled',quantity=quantity,
-                                   fill_price=fill,signal_date=row['date']))
+                                   fill_price=fill,signal_date=row['date'],effective_units=row['effective_units'],
+                                   market_unit_regime=row.get('market_unit_regime','disabled')))
         pending=[]
         # A same-day low below the stop wins over a same-day high above the 3R threshold.
         for symbol in sorted(list(positions)):

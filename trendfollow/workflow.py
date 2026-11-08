@@ -43,6 +43,9 @@ def paper_input_digest(prices,universe,rules):
     symbols=set(universe.symbol.astype(str))|set(universe.benchmark.astype(str))
     if rules.rs_method=='mansfield':
         symbols|={mansfield_benchmark_symbol(item,rules) for item in universe.to_dict('records')}
+    if rules.market_units_enabled:
+        from .market_units import market_symbol
+        symbols|={market_symbol(item,rules) for item in universe.to_dict('records')}
     # Extra observation-only index rows must not invalidate a percentile paper account.
     digest=hashlib.sha256(prices[prices.symbol.isin(symbols)].to_csv(index=False).encode())
     if rules.entry_method=='setup' and 'industry_peer_history' in universe:
@@ -177,12 +180,16 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
     universe=pd.read_csv(universe_path,dtype={'symbol':str,'benchmark':str})
     config=json.loads(Path(config_path).read_text(encoding='utf-8-sig')) if config_path else {}
     active_rules=Rules(**config.get('rules',{}));active_rules.validate()
-    include_indices=active_rules.mansfield_benchmark=='market_index'
+    include_indices=(active_rules.mansfield_benchmark=='market_index' or
+                     active_rules.market_units_enabled and active_rules.market_units_benchmark=='market_index')
     source=NaverResearchSource(Path(data_dir)/'raw')
     benchmark_symbols=sorted(set(universe.benchmark))
     probe_symbols=set(benchmark_symbols)
-    if include_indices:
+    if active_rules.mansfield_benchmark=='market_index':
         probe_symbols|={mansfield_benchmark_symbol(item,active_rules) for item in universe.to_dict('records')}
+    if active_rules.market_units_enabled:
+        from .market_units import market_symbol
+        probe_symbols|={market_symbol(item,active_rules) for item in universe.to_dict('records')}
     probes=[source.daily(symbol,as_of,as_of) for symbol in sorted(probe_symbols)]
     if any(f.empty for f in probes):
         return {'status':'skipped_no_confirmed_session','as_of':as_of}

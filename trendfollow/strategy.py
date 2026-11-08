@@ -34,8 +34,23 @@ class Rules:
     sector_require_action: bool = True
     sector_min_peers: int = 3
     sector_min_breadth: float = .6
+    market_units_enabled: bool = False
+    market_units_benchmark: str = 'universe'
+    market_units_ma_days: int = 60
+    market_units_strong_cap: int = 5
+    market_units_weak_cap: int = 1
 
     def validate(self):
+        if not isinstance(self.market_units_enabled, bool):
+            raise ValueError('market_units_enabled는 true/false여야 합니다.')
+        if self.market_units_benchmark not in {'universe','market_index'}:
+            raise ValueError('시장 유닛 기준은 universe 또는 market_index여야 합니다.')
+        for name in ['market_units_ma_days','market_units_strong_cap','market_units_weak_cap']:
+            value = getattr(self,name)
+            if isinstance(value,bool) or not isinstance(value,int) or value < (1 if name=='market_units_ma_days' else 0):
+                raise ValueError('시장 유닛 기간은 양의 정수, 상한은 0 이상의 정수여야 합니다.')
+        if self.market_units_weak_cap > self.market_units_strong_cap:
+            raise ValueError('약세 유닛 상한은 강세 상한보다 클 수 없습니다.')
         for name in ['rs_days', 'breakout_days', 'weekly_ma', 'weekly_slope', 'atr_days', 'mansfield_weeks']:
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
@@ -183,6 +198,10 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
                    volume_ratio=volume_ratio, avg_turnover=turnover)
         rows.append(row)
     result = pd.DataFrame(rows)
+    if rules.market_units_enabled:
+        from .market_units import market_unit_features
+        market = market_unit_features(p,universe,rules)
+        result = result.merge(market[market.date==asof].drop(columns='date'),on='symbol',how='left',validate='one_to_one')
     if 'return_126d' not in result:
         result['rs_percentile'] = np.nan
         result['allocation_score'] = np.nan

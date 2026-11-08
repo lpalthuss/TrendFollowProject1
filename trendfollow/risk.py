@@ -70,6 +70,15 @@ def allocate(candidates: pd.DataFrame, account: Account, limits: Limits = Limits
     result['planned_risk'] = 0.
     result['cash_required'] = 0.
     result['allocation_reason'] = 'not_a_signal'
+    result['effective_units'] = limits.units
+    if 'market_unit_cap' in result:
+        def effective_units(cap):
+            if pd.isna(cap):
+                return 0
+            if isinstance(cap,bool) or not math.isfinite(cap) or cap < 0 or int(cap) != cap:
+                raise ValueError('시장 유닛 상한이 유효하지 않습니다.')
+            return min(limits.units,int(cap))
+        result['effective_units'] = result.market_unit_cap.map(effective_units)
     cash = max(0., account.cash - account.pending_cash - account.equity*limits.cash_reserve)
     def risk_per_share(price, stop):
         return max(0., price*(1+limits.entry_slippage)-stop*(1-limits.exit_slippage)) + price*limits.cost_rate
@@ -96,12 +105,16 @@ def allocate(candidates: pd.DataFrame, account: Account, limits: Limits = Limits
             result.at[i, 'allocation_reason'] = 'already_held'; continue
         if not isinstance(row.sector, str) or not row.sector.strip():
             result.at[i, 'allocation_reason'] = 'missing_sector'; continue
+        units = int(row.effective_units)
+        if not units:
+            result.at[i,'allocation_reason'] = 'blocked_market_units'
+            continue
         price, stop = float(row.reference_price), float(row.stop_price)
         if not (math.isfinite(price) and math.isfinite(stop) and 0 < stop < price):
             raise ValueError('후보의 진입·손절 가격이 유효하지 않습니다.')
         risk = risk_per_share(price, stop)
         cash_per_share = price * (1+limits.entry_slippage+limits.cost_rate)
-        budget = account.equity*limits.max_trade_risk*limits.units/limits.max_units
+        budget = account.equity*limits.max_trade_risk*units/limits.max_units
         sector_room = max(0, account.equity*limits.max_sector-sectors.get(row.sector, 0))
         caps = {'unit_risk': budget/risk, 'portfolio_risk': risk_left/risk,
                 'cash': cash/cash_per_share, 'position': account.equity*limits.max_position/cash_per_share,

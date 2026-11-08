@@ -284,6 +284,24 @@ python -m trendfollow daily --config examples/config-setup.json --universe data/
 
 산업 코드가 실제로 변경되면 전략의 산업 위험 한도와 동료 구성이 달라지므로 기존 계좌의 변경을 탐지한다. 단순 관찰 시각·출처 설명 변경만으로 계좌를 초기화하지 않는다. 동일 거래일의 과거 동료 수익률이 정정되면 이미 처리한 데이터 변경으로 감지한다. 해당 거래일의 산업 스냅샷이 없으면 `daily`는 갱신을 요구한다.
 
+### 시장 추세에 따른 신규 진입 유닛 상한
+
+시장 유닛 기능은 기본적으로 꺼져 있다. 별도 예제 `examples/config-setup-market-units.json`과 `examples/config-setup-mansfield-market-units.json`에서 활성화했다. 두 예제는 종목의 시장에 따라 실제 KOSPI/KOSDAQ 지수를 사용한다. `market_units_benchmark=universe`를 선택하면 기존 유니버스의 벤치마크 ETF를 사용한다. Mansfield RS 비교 기준과는 독립적인 설정이다.
+
+초기 연구 규칙은 시장 종가가 60거래일 단순이동평균(당일 포함)을 **초과**하면 강세 상한 5유닛, 그 이하는 약세 상한 1유닛이다. 실제 신규 진입 유닛은 `min(거래 성과 유닛, 시장 상한)`이다. 5유닛 체계에서 거래당 최대 위험 1%일 때 1유닛은 계좌의 0.2% 계획 위험이다. 강세가 됐다고 성과 유닛을 자동으로 올리지 않는다. 이 상한 정책과 숫자는 검증용 가설이며 영상에서 확정한 매매 규칙이 아니다.
+
+설정 항목은 `market_units_enabled`, `market_units_benchmark`, `market_units_ma_days`, `market_units_strong_cap`, `market_units_weak_cap`이다. 상한은 0으로도 지정할 수 있다. 비교 시세가 없으면 오류를 내며, 해당 거래일 시세나 이동평균 계산 구간이 부족하면 상한 0으로 신규 진입을 막는다. 누락된 지수 종가를 이전 날짜 값으로 채우지 않는다.
+
+`signals.csv`와 스캔 결과의 `market_unit_benchmark`, `market_unit_close`, `market_unit_ma`, `market_unit_regime`, `market_unit_cap`에서 판단 근거를 확인한다. 스캔 수량 배분의 `effective_units`는 적용 유닛이며, 모의운용 체결 기록에도 적용 유닛과 시장 상태를 남긴다. 최종 종목 신호와 시장 상한에 따른 수량 제한은 별도다. 신호가 있어도 상한 0이면 주문 계획은 거절된다.
+
+종가에 결정한 시장 상한을 다음 거래일 시가 진입에 적용한다. 다음 날 종가를 미리 참조하지 않는다. 기존 보유분 강제 축소나 추가매수는 하지 않고, 가격 손절·트레일링은 기존대로 작동한다. 기존 모의계좌의 전략을 자동 전환하지 않는다. 비교 실행 시 새 상태 파일을 지정해야 한다.
+
+```powershell
+python -m trendfollow daily --config examples/config-setup-market-units.json --universe data/industries/universe.csv --data-dir data/market/history-market-units --state outputs/paper-setup-market-units/state.json --verify-provider kiwoom
+```
+
+앞서 설명한 대로 장마감 산업 자료를 먼저 갱신하고 실행한다. 지수 데이터는 활성 설정에 맞춰 자동 수집한다. 새 예제 계좌는 아직 시작하지 않았다.
+
 ### 세부 사업군 보완
 
 `examples/industry-overrides.csv` 형식으로 일부 종목을 보완할 수 있다. `symbol,industry_code,industry_name,valid_from,reason,source_url`을 기록한다. 같은 사업군으로 묶을 종목에는 시장 구분 없이 동일한 `industry_code`를 지정한다.
