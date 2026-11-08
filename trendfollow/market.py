@@ -10,9 +10,11 @@ import re
 import threading
 import time
 import zipfile
+import uuid
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import numpy as np
 import requests
 
 
@@ -145,8 +147,14 @@ class NaverResearchSource:
         return pd.DataFrame(rows, columns=['date','symbol','open','high','low','close','volume'])
 
 
-def acquire_research(universe_path, output_dir, start, end, refresh=False, include_market_indices=False):
+def acquire_research(universe_path, output_dir, start, end, refresh=False, include_market_indices=False,required_session=None):
+    from .research_store import recover_research,publish_research,write_json
     root = Path(output_dir); root.mkdir(parents=True, exist_ok=True)
+    recover_research(root)
+    first,last=pd.Timestamp(start),pd.Timestamp(end)
+    if (pd.isna(first) or pd.isna(last) or first>last or first.tz is not None or last.tz is not None
+            or first!=first.normalize() or last!=last.normalize()):
+        raise ValueError('연구 데이터 수집 날짜 범위를 확인하세요.')
     universe = pd.read_csv(universe_path, dtype={'symbol':str,'benchmark':str})
     symbols = set(universe.symbol) | set(universe.benchmark)
     if include_market_indices:
@@ -165,25 +173,65 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
                 frame = future.result()
                 if frame.empty:
                     raise ValueError('요청 기간에 일봉이 없습니다.')
+                required={'date','symbol','open','high','low','close','volume'}
+                if not required.issubset(frame):raise ValueError('일봉 필드가 누락되었습니다.')
+                dates=pd.to_datetime(frame.date,format='%Y-%m-%d',errors='raise')
+                if (dates.isna().any() or dates.dt.tz is not None or not dates.eq(dates.dt.normalize()).all()
+                        or not dates.between(first,last).all()):raise ValueError('수집 일봉의 거래일 범위가 올바르지 않습니다.')
+                if not frame.symbol.astype(str).eq(symbol).all():raise ValueError('요청 종목과 응답 종목이 다릅니다.')
+                if dates.duplicated().any():raise ValueError('수집 일봉에 중복 거래일이 있습니다.')
+                values=frame[['open','high','low','close','volume']].apply(pd.to_numeric,errors='raise')
+                if not np.isfinite(values.to_numpy()).all():raise ValueError('수집 일봉에 유효하지 않은 수치가 있습니다.')
+                # Preserve raw zero/malformed OHLC bars; features() quarantines these.
+                frame=frame.copy();frame['date']=dates.dt.strftime('%Y-%m-%d')
+                frame[values.columns]=values
                 frames.append(frame)
-            except (ValueError, requests.RequestException) as exc:
+            except (ValueError,TypeError,requests.RequestException) as exc:
                 errors.append({'symbol':symbol,'reason':str(exc)})
             if number % 25 == 0 or number == len(symbols):
                 print(f'일봉 수집 {number}/{len(symbols)} | 실패 {len(errors)}', flush=True)
-    if not frames:
-        raise ValueError('수집된 데이터가 없습니다.')
-    prices = pd.concat(frames, ignore_index=True).sort_values(['symbol','date'])
-    prices.to_csv(root/'prices.csv', index=False)
+    prices=(pd.concat(frames,ignore_index=True).sort_values(['symbol','date']) if frames else
+        pd.DataFrame(columns=['date','symbol','open','high','low','close','volume']))
+    benchmarks=set(universe.benchmark)
+    if include_market_indices:benchmarks|=markets
+    latest=prices.groupby('symbol').date.max().to_dict()
+    sessions={latest[s] for s in benchmarks if s in latest}
+    if not errors and (len(sessions)!=1 or any(s not in latest for s in benchmarks)):
+        errors.append({'symbol':'benchmarks','reason':'벤치마크 기준 거래일이 일치하지 않습니다.'})
+    if not errors and any(day>next(iter(sessions)) for day in latest.values()):
+        errors.append({'symbol':'benchmarks','reason':'벤치마크가 종목의 최신 거래일보다 오래되었습니다.'})
+    if not errors and required_session is not None and sessions!={str(pd.Timestamp(required_session).date())}:
+        errors.append({'symbol':'benchmarks','reason':'요청한 확정 거래일의 벤치마크가 없습니다.'})
+    if not errors and (root/'prices.csv').exists():
+        # Detect a truncated response even when every symbol returned some rows.
+        old=pd.read_csv(root/'prices.csv',usecols=['symbol','date'],dtype=str)
+        old=old[old.symbol.isin(symbols)&old.date.between(str(first.date()),str(last.date()))]
+        missing=pd.MultiIndex.from_frame(old[['symbol','date']]).difference(pd.MultiIndex.from_frame(prices[['symbol','date']]))
+        if len(missing):errors.append({'symbol':'history','reason':f'기존 수집 구간의 {len(missing)}개 일봉이 누락되었습니다.'})
+    attempt=root/'acquisition-attempts';attempt.mkdir(exist_ok=True)
+    stamp=datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%dT%H%M%S')+'-'+uuid.uuid4().hex[:12]
+    attempt_path=attempt/(stamp+'.json')
     manifest = {'source':'NAVER public chart, research-only', 'start':start,'end':end,
         'universe_snapshot_at':datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
         'requested_symbols':len(symbols),'collected_symbols':int(prices.symbol.nunique()),
         'rows':len(prices),'errors':errors,
+        'status':'failed' if errors else 'published','published':not errors,
+        'attempt_report':str(attempt_path),
         'included_market_indices':include_market_indices,
         'universe_sha256':hashlib.sha256(Path(universe_path).read_bytes()).hexdigest(),
         'limitations':['current survivor/liquidity-selected universe; historical selection bias',
                       'vendor-adjusted OHLC: not executable raw prices',
                       'source adjusted-volume conventions unverified']}
-    (root/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+    if errors:
+        write_json(attempt_path,manifest)
+        if not frames:raise ValueError('수집된 데이터가 없습니다. 기존 가격·매니페스트는 보존됩니다.')
+        return manifest
+    try:publish_research(root,prices,manifest,on_publish=lambda:write_json(attempt_path,manifest))
+    except (OSError,ValueError):
+        manifest.update(status='publication_failed',published=False)
+        manifest['errors'].append({'symbol':'publication','reason':'게시 실패. 기존 파일 복구 상태를 확인하세요.'})
+        write_json(attempt_path,manifest)
+        raise
     return manifest
 
 

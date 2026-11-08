@@ -23,6 +23,8 @@ LIMITATIONS = [
 
 
 def read_inputs(prices_path, universe_path, end, config_path=None):
+    from .research_store import require_published_research
+    require_published_research(prices_path)
     prices=pd.read_csv(prices_path,dtype={'symbol':str})
     prices=prices[prices.date<=end]
     universe=pd.read_csv(universe_path,dtype={'symbol':str,'benchmark':str},keep_default_na=False)
@@ -249,7 +251,7 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
         calendar=source.daily(benchmark_symbols[0],state['last_date'],as_of)
         if int((calendar.date>state['last_date']).sum())>1:
             raise ValueError('미처리 거래일이 여러 개입니다. --as-of로 각 거래일을 순서대로 실행하세요.')
-    manifest=acquire_research(universe_path,data_dir,'2020-01-01',as_of,include_market_indices=include_indices)
+    manifest=acquire_research(universe_path,data_dir,'2020-01-01',as_of,include_market_indices=include_indices,required_session=as_of)
     if manifest['errors']:
         raise ValueError('일부 연구 데이터 수집에 실패했습니다. 모의 계좌는 변경하지 않습니다.')
     prices_path=Path(data_dir)/'prices.csv'

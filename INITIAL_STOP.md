@@ -39,10 +39,12 @@
 PowerShell에서 동일 가격·산업 유니버스·계좌를 세 방식에 독립 적용한다. 출력 폴더는 기존 폴더를 덮어쓰지 않도록 새 경로를 사용한다.
 
 ```powershell
-python -m trendfollow compare-initial-stops --prices data/market/history/prices.csv --universe data/industries/universe.csv --account examples/account.json --as-of 2026-11-06 --config examples/config-initial-stop-hybrid.json --out outputs/initial-stop-comparison/2026-11-06
+python -m trendfollow compare-initial-stops --prices data/market/history/clean-prices.csv --universe data/industries/universe.csv --account examples/account.json --as-of 2026-11-06 --config examples/config-initial-stop-hybrid.json --out outputs/initial-stop-comparison/2026-11-06
 ```
 
 `comparison.csv`와 방식별 `candidates-fixed.csv`, `candidates-atr.csv`, `candidates-hybrid.csv`, 설정·집계인 `comparison.json`을 저장한다. 세 수량은 각각 같은 계좌를 사용한 별도 시나리오이므로 합산하지 않는다. 당일 스캔 차이만으로 수익률 우열을 판단하지 않는다.
+
+이 비교 명령과 `scan`은 가격을 엄격하게 검증하므로 0원 OHLC 등이 격리된 정제본을 사용한다. 위 경로는 2026-11-06 기준 정제본 예시이며, 이후 날짜를 비교하려면 해당 날짜까지 갱신·정제한 자료가 필요하다. `paper`·`daily`의 기존 계좌 입력은 원본을 유지하고 계산 단계에서 잘못된 봉을 격리하므로, 비교용 정제본을 기존 모의계좌 입력에 덮어쓰지 않는다.
 
 기존 `scan`, `paper`, `daily`에도 각 비교 설정을 전달할 수 있다. Mansfield 비교는 세 설정의 RS 관련 항목을 동일하게 변경해서 사용한다.
 

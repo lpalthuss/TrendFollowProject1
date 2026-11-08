@@ -25,6 +25,8 @@ def apply_stop_limit(frame,rules):
 
 
 def compare_stop_limit(prices_path,universe_path,account_path,as_of,config_path,output):
+    from .research_store import require_published_research
+    require_published_research(prices_path)
     from .strategy import Rules,screen
     from .risk import Account,Limits,allocate
     if Path(output).exists():raise FileExistsError('비교 출력 폴더가 이미 있습니다.')

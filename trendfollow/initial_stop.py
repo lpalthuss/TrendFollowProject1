@@ -51,6 +51,8 @@ def planning_stops(frame,rules):
 
 
 def compare_initial_stops(prices_path,universe_path,account_path,as_of,config_path,output):
+    from .research_store import require_published_research
+    require_published_research(prices_path)
     from .strategy import Rules,screen
     from .risk import Account,Limits,allocate
     root=Path(output)

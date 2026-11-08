@@ -24,6 +24,8 @@ def read_universe(path):
 
 
 def run_scan(prices_path, universe_path, account_path, asof, out, units=1, events=None, synthetic=False, config=None, rs_method=None, mansfield_benchmark=None, entry_method=None):
+    from .research_store import require_published_research
+    require_published_research(prices_path)
     prices = pd.read_csv(prices_path, dtype={'symbol': str})
     universe = read_universe(universe_path)
     account = Account(**json.loads(Path(account_path).read_text(encoding='utf-8-sig')))
@@ -376,6 +378,8 @@ def main(argv=None):
             print(json.dumps(report,ensure_ascii=False))
         elif args.command == 'research-data':
             manifest = acquire_research(args.universe,args.out,args.start,args.end,args.refresh,args.include_indices)
+            if manifest['errors']:
+                raise ValueError(f'일부 연구 데이터 수집에 실패했습니다. 기존 파일은 보존됩니다. 기록: {manifest["attempt_report"]}')
             print(f'수집 완료: {manifest["collected_symbols"]}종목, {manifest["rows"]}행')
         elif args.command == 'index-data':
             metadata=add_index_data(args.prices,args.out,args.cache_dir,args.start,args.end)
