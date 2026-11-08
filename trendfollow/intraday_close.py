@@ -136,7 +136,7 @@ def close_comparison(plan_path, prices_path, peer_returns_path, output,
         status = observed['status']
         if status == 'recorded' and not quotes: status = 'no_target_quotes'
         seen = {name:truth_seen(events,name) if status=='recorded' else None
-                for name in ['breakout_present','industry_action','entry_watch','holding_stop_breached']}
+                for name in ['breakout_present','industry_action','entry_watch','holding_stop_breached','volume_pass','entry_confirmed']}
         previous, today = bar(symbol,asof),bar(symbol,session)
         basis_valid = (abs(float(previous.close)/target['previous_close']-1) <= .001) if previous is not None else None
         close = float(today.close) if today is not None else None
@@ -176,6 +176,7 @@ def close_comparison(plan_path, prices_path, peer_returns_path, output,
             'observation_run_status':observed['source_status'],'close_data_status':close_status,
             'intraday_breakout_seen':seen['breakout_present'],'intraday_industry_action_seen':seen['industry_action'],
             'intraday_entry_watch_seen':seen['entry_watch'],'intraday_stop_contact_seen':seen['holding_stop_breached'],
+            'intraday_volume_verified_seen':seen['volume_pass'],'intraday_entry_confirmed_seen':seen['entry_confirmed'],
             'first_quote_at':quotes[0].isoformat() if quotes else None,'last_quote_at':quotes[-1].isoformat() if quotes else None,
             'recorded_quote_samples':len(quotes),'partial_session':partial,
             'quote_gap_seconds':unknown_gap_seconds,'connection_gap_count':observed['connection_gaps'],
@@ -200,7 +201,7 @@ def close_comparison(plan_path, prices_path, peer_returns_path, output,
         'breakouts_held_at_close':sum(r['breakout_outcome']=='held_at_close' for r in rows) if comparable_breakouts else None,
         'partial_session_targets':sum(r['partial_session'] is True for r in rows),'rejected_price_bars':len(rejected),
         'comparison_scope':'recorded observations, not proof of full-session signal absence',
-        'limitations':['Frozen prior-close RS; no intraday volume confirmation or trade profitability evaluation.',
+        'limitations':['Frozen prior-close RS; volume verification requires a frozen historical profile; no trade profitability evaluation.',
             'Partial recordings and missing quotes cannot prove no signal during the full trading day.',
             'Daily high/low does not establish the time of a breakout or stop contact.'],
         'source_hashes':{str(p):hashlib.sha256(Path(p).read_bytes()).hexdigest()

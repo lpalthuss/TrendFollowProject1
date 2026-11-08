@@ -4,6 +4,8 @@
 
 ## 시작
 
+장중 거래량은 완료 분의 누적량을 과거 동시간 평균과 비교할 수 있다. 기본은 최근 최대 20개 수집 거래일 중 최소 5일·1.5배이며, 이력이 없으면 검증을 보류한다. 기준 생성과 계획 연결은 [INTRADAY_VOLUME.md](INTRADAY_VOLUME.md)에 있다.
+
 실제 장중 연결 시작은 `intraday-live --observation on --plan ... --out ...`, 종료는 다른 터미널에서 `intraday-live --observation off`, 확인은 `intraday-live --observation status`다. 생략 시 저장된 설정을 존중하며 OFF에서는 인증·연결·구독을 시작하지 않는다. 종료 확인과 제어 파일 범위는 [INTRADAY.md](INTRADAY.md)에 설명했다.
 
 장중 관측과 종가 결과의 대조 명령 `intraday-close`는 [INTRADAY_CLOSE.md](INTRADAY_CLOSE.md)에 정리했다. 관측 OFF·기록 누락·부분 관측을 구분하고, 같은 저항선·고정 산업 동료 기준으로 종가 유지 여부를 계산한다.

@@ -35,6 +35,15 @@ def restore_snapshot(monitor, record):
     monitor.quotes = quotes
     monitor.invalidated = set(record['invalidated'])
     monitor.basis_mismatch = set(record['basis_mismatch'])
+    monitor.volume_samples={}
+    for symbol,sample in record.get('volume_samples',{}).items():
+        at=stamp(sample['sample_timestamp'])
+        cutoff=stamp(monitor.plan['session']+'T'+sample['minute']+'+09:00')
+        if symbol not in monitor.plan['targets'] or cutoff>now or not 0<=(cutoff-at).total_seconds()<=60:
+            raise ValueError('요약 거래량 표본 시각·종목이 유효하지 않습니다.')
+        volume=finite(sample['cumulative_volume'])
+        if volume<0:raise ValueError('요약 누적 거래량이 음수입니다.')
+        monitor.volume_samples[symbol]=dict(sample)
 
 
 class ObservationSession:
@@ -93,7 +102,8 @@ class ObservationSession:
         record = {'kind':'evaluation','received_at':now.isoformat()}
         if self.storage == 'summary':
             record.update(kind='quote_snapshot',quotes={k:dict(v) for k,v in self.monitor.quotes.items()},
-                          invalidated=sorted(self.monitor.invalidated),basis_mismatch=sorted(self.monitor.basis_mismatch))
+                          invalidated=sorted(self.monitor.invalidated),basis_mismatch=sorted(self.monitor.basis_mismatch),
+                          volume_samples={k:dict(v) for k,v in self.monitor.volume_samples.items()})
         self.record(record)
         self.emit(self.monitor.evaluate(now))
         self.evaluations += 1

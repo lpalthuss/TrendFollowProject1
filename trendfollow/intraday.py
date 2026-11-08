@@ -31,7 +31,7 @@ def finite(value, positive=False):
 
 
 def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
-                 config_path, output, paper_state=None):
+                 config_path, output, paper_state=None, volume_profile=None):
     """Freeze prior-close setup/RS filters; include every eligible industry peer."""
     config = json.loads(Path(config_path).read_text(encoding='utf-8-sig'))
     rules = Rules(**config.get('rules', {})); rules.validate()
@@ -141,6 +141,14 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
         'subscriptions': sorted(subscriptions),
         'source_hashes': {str(path): hashlib.sha256(Path(path).read_bytes()).hexdigest()
                           for path in input_paths}}
+    if volume_profile:
+        from .intraday_volume import validate_reference
+        profile=json.loads(Path(volume_profile).read_text(encoding='utf-8'))
+        validate_reference(profile,as_of,False)
+        profile['symbols']={s:profile['symbols'][s] for s in targets if s in profile['symbols']}
+        plan['volume_reference']=profile
+        plan['volume_confirmation']='same_time_history'
+        plan['source_hashes'][str(volume_profile)]=hashlib.sha256(Path(volume_profile).read_bytes()).hexdigest()
     validate_plan(plan)
     output = Path(output); output.parent.mkdir(parents=True,exist_ok=True)
     if output.exists(): raise ValueError('기존 감시 계획은 덮어쓰지 않습니다. 새 출력 경로를 사용하세요.')
@@ -149,6 +157,9 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
 
 
 def validate_plan(plan):
+    if 'volume_reference' in plan:
+        from .intraday_volume import validate_reference
+        validate_reference(plan['volume_reference'],plan['as_of'],bool(plan.get('synthetic')))
     if plan.get('version') != 1 or plan.get('mode') != 'observation_only' or plan.get('exchange') != 'KRX':
         raise ValueError('지원하지 않는 장중 계획입니다.')
     day = datetime.strptime(plan['session'],'%Y-%m-%d').date()
@@ -183,9 +194,11 @@ class IntradayMonitor:
         self.plan, self.quotes, self.last, self.invalidated = plan, {}, {}, set()
         self.basis_mismatch = set()
         self.last_stops = {}
+        self.volume_samples = {}
 
     def reset_connection(self):
         self.quotes.clear()  # Never reuse quotes across a connection gap.
+        self.volume_samples.clear()
 
     def update(self, tick, received_at, evaluate=True):
         now = stamp(received_at); event = stamp(tick['timestamp'])
@@ -217,6 +230,8 @@ class IntradayMonitor:
             self.quotes.pop(symbol,None)
             self.basis_mismatch.add(symbol)
             return self.evaluate(now) if evaluate else self.evaluate_stops(now,symbol)
+        from .intraday_volume import capture_tick_boundary
+        capture_tick_boundary(self,symbol,normalized,old,now)
         self.quotes[symbol] = normalized
         if target and target['healthy_floor'] is not None and normalized['day_low'] < target['healthy_floor']:
             self.invalidated.add(symbol)
@@ -271,16 +286,21 @@ class IntradayMonitor:
                     if quote and target['holding_stop'] is not None and symbol not in self.basis_mismatch else None)
             watch = (bool(breakout and target['prior_filters_pass'] and (action or not self.plan['sector_require_action']))
                      if valid and (available or not self.plan['sector_require_action']) else None)
+            from .intraday_volume import volume_check
+            volume=volume_check(self,symbol,now,quote)
+            confirmed=bool(watch is True and volume['volume_pass'] is True)
             state = {'breakout_present': breakout, 'holding_stop_breached': stop,
                 'industry_action': action, 'entry_watch': watch, 'setup_invalidated': symbol in self.invalidated,
-                'price_basis_mismatch':symbol in self.basis_mismatch}
+                'price_basis_mismatch':symbol in self.basis_mismatch,
+                'volume_pass':volume['volume_pass'],'volume_status':volume['volume_status'],
+                'entry_confirmed':confirmed}
             if state != self.last.get(symbol):
                 events.append({'timestamp':now.isoformat(),'symbol':symbol,'kind':'signal_state',
                     **state,'peer_count':count,'expected_peer_count':expected,'peer_coverage':coverage,
                     'peer_up_fraction':breadth,'peer_excess_return':mean_excess,
                     'price':quote['price'] if quote else None,
                     'volume_vs_previous_same_time':quote.get('volume_vs_previous_same_time') if quote else None,
-                    'entry_confirmed':False,'volume_confirmation':self.plan['volume_confirmation'],
+                    **volume,'volume_confirmation':self.plan['volume_confirmation'],
                     'rs_timing':self.plan['rs_timing'],'mode':'observation_only'})
                 self.last[symbol] = state
         return events

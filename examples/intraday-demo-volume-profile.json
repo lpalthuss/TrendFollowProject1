@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "exchange": "KRX",
+  "provider": "kis",
+  "synthetic": true,
+  "as_of": "2026-11-06",
+  "lookback": 20,
+  "min_sessions": 5,
+  "multiple": 1.5,
+  "max_sample_age_seconds": 60,
+  "symbols": {
+    "000001": {
+      "09:01:00": {
+        "session_count": 5,
+        "sessions": [
+          "2026-11-02",
+          "2026-11-03",
+          "2026-11-04",
+          "2026-11-05",
+          "2026-11-06"
+        ],
+        "mean_cumulative_volume": 1000.0
+      },
+      "09:02:00": {
+        "session_count": 5,
+        "sessions": [
+          "2026-11-02",
+          "2026-11-03",
+          "2026-11-04",
+          "2026-11-05",
+          "2026-11-06"
+        ],
+        "mean_cumulative_volume": 2000.0
+      }
+    }
+  },
+  "history_sha256": "aaed72adde1853129bcb918d4ba9e49361d3db6419731cc9a061cd1c01943bc6"
+}

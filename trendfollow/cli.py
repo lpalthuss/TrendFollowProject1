@@ -219,6 +219,17 @@ def main(argv=None):
         intraday.add_argument(f'--{key}',required=True)
     intraday.add_argument('--symbols',nargs='+',required=True)
     intraday.add_argument('--paper-state')
+    intraday.add_argument('--volume-profile',help='과거 동시간 누적 거래량 기준 JSON')
+    volume_import=subs.add_parser('intraday-volume-import',help='종료된 관측 기록에서 분별 누적 거래량 이력 수집')
+    volume_import.add_argument('--run-dirs',nargs='+',required=True)
+    volume_import.add_argument('--out',default='data/intraday-volume/samples.csv')
+    volume_profile=subs.add_parser('intraday-volume-profile',help='과거 동시간 누적 거래량 평균 기준 생성')
+    for key in ['history','as-of','out']:
+        volume_profile.add_argument(f'--{key}',required=True)
+    volume_profile.add_argument('--lookback',type=int,default=20)
+    volume_profile.add_argument('--min-sessions',type=int,default=5)
+    volume_profile.add_argument('--multiple',type=float,default=1.5)
+    volume_profile.add_argument('--max-sample-age-seconds',type=int,default=60)
     replay_parser = subs.add_parser('intraday-replay',help='저장된 시세로 장중 관측 신호 재생')
     for key in ['plan','ticks','out']:
         replay_parser.add_argument(f'--{key}',required=True)
@@ -243,7 +254,13 @@ def main(argv=None):
     close_parser.add_argument('--control-file',default='outputs/intraday/control.json')
     args = parser.parse_args(argv)
     try:
-        if args.command == 'intraday-close':
+        if args.command == 'intraday-volume-import':
+            from .intraday_volume import import_runs
+            print(json.dumps(import_runs(args.run_dirs,args.out),ensure_ascii=False))
+        elif args.command == 'intraday-volume-profile':
+            from .intraday_volume import build_reference
+            print(json.dumps(build_reference(args.history,args.as_of,args.out,args.lookback,args.min_sessions,args.multiple,args.max_sample_age_seconds),ensure_ascii=False))
+        elif args.command == 'intraday-close':
             from .intraday_close import close_comparison
             from .observation_control import read_control
             observation=args.observation
@@ -254,7 +271,7 @@ def main(argv=None):
                 args.run_dir,observation),ensure_ascii=False))
         elif args.command == 'intraday-prepare':
             from .intraday import prepare_plan
-            plan=prepare_plan(args.signals,args.prices,args.universe,args.session,args.symbols,args.config,args.out,args.paper_state)
+            plan=prepare_plan(args.signals,args.prices,args.universe,args.session,args.symbols,args.config,args.out,args.paper_state,args.volume_profile)
             print(json.dumps({'mode':plan['mode'],'targets':list(plan['targets']),
                 'subscriptions':len(plan['subscriptions']),'session':plan['session'],'plan':args.out},ensure_ascii=False))
         elif args.command == 'intraday-replay':

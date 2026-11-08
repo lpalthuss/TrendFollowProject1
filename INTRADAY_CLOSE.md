@@ -1,6 +1,6 @@
 # 장중 관측과 종가 결과 자동 대조
 
-`intraday-close`는 장중에 기록된 가격·산업 상태를 감시일 종가와 대조한다. 주문·가상 체결·계좌 상태 변경은 하지 않는다. 같은 시간대 거래량 검증·장중 RS 재계산·손익 평가나 완성된 전략 진입 신호를 확정하는 기능은 아니다.
+`intraday-close`는 장중에 기록된 가격·산업 상태를 감시일 종가와 대조한다. 주문·가상 체결·계좌 상태 변경은 하지 않는다. 장중에 계산한 동시간 거래량 검증과 진입 관측 조건 충족 이력도 요약하지만, 보고서에서 거래량 기준·RS를 새로 계산하거나 손익·실제 체결을 확정하지는 않는다.
 
 ## 실제 거래일 실행
 
@@ -21,6 +21,7 @@ python -m trendfollow intraday-close --plan outputs/intraday/live-2026-11-09-fir
 - `close_setup_healthy`: 감시일 전체 저가가 허용 조정 범위를 지켰는지. 종가가 저항선 위라는 이유만으로 셋업 건전성까지 충족했다고 보지 않는다.
 - `intraday_industry_action_seen`, `close_industry_action`, `industry_outcome`: 산업 동반 상승 관측과 종가 유지 여부. **계획에 고정된 동료 목록**을 사용하고 자신은 제외한다. 동료별 고정 비교 ETF를 사용하며 현재 산업 분류 변경 수는 별도로 기록한다.
 - `intraday_stop_contact_seen`, `close_stop_contact`: 보유 손절선 접촉 관측과 감시일 전체 저가의 접촉 여부.
+- `intraday_volume_verified_seen`, `intraday_entry_confirmed_seen`: 동시간 거래량 통과와 설정된 진입 관측 조건 충족 이력. 거래량 기준이 없으면 거래량 검증 값은 `null`이다.
 - `close_stop_contact_without_observation`: 일봉에서는 손절 접촉이 있지만 관측 기록에 없었는지. 접촉이 관측 시간 밖에 발생했을 수도 있으므로 감시 중 누락이라고 단정하지 않는다.
 
 기업행사 등으로 기준일 종가가 계획의 전일 종가와 0.1%를 초과해 다르면 가격 기준 불일치로 가격·손절 대조를 보류한다. 일봉 누락·가격 기준 문제는 `close_data_status`, 산업 자료 부족은 동료 커버리지에서 확인한다. 일봉 고가·저가만으로 장중 돌파·손절 접촉 시각을 알아낼 수는 없다.
