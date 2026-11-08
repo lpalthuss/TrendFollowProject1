@@ -36,6 +36,9 @@ def decision_rule_settings(rules):
     """Indicator-only additions must not invalidate existing percentile paper accounts."""
     from dataclasses import asdict
     values = asdict(rules)
+    if not rules.rs_exit_enabled:
+        from .rs_exit import RS_EXIT_SETTINGS
+        for key in RS_EXIT_SETTINGS:values.pop(key,None)
     if not rules.market_units_enabled:
         from .market_units import MARKET_UNIT_SETTINGS
         for key in MARKET_UNIT_SETTINGS:

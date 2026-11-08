@@ -55,7 +55,9 @@ def features(prices, universe, rules=Rules(), exit_days=20):
         f['excess_return'] = f.return_126d-b.close.pct_change(rules.rs_days,fill_method=None).reindex(f.index)
         mrs_benchmark = mansfield_benchmark_symbol(item, rules)
         mb = frames[mrs_benchmark]
-        mansfield = mansfield_weekly(f.close, mb.close.reindex(b.index), rules.mansfield_weeks).reindex(f.index, method='ffill')
+        weekly_mrs=mansfield_weekly(f.close, mb.close.reindex(b.index), rules.mansfield_weeks)
+        mansfield = weekly_mrs.reindex(f.index, method='ffill')
+        f['mansfield_observation_date']=pd.Series(weekly_mrs.index,index=weekly_mrs.index).reindex(f.index,method='ffill')
         f['mansfield_rs'] = mansfield.mansfield_rs
         f['mansfield_change_1w'] = mansfield.mansfield_change_1w
         # A stale/missing index session must not make yesterday's ratio look current.
@@ -107,6 +109,8 @@ def features(prices, universe, rules=Rules(), exit_days=20):
     result['signal_mansfield'] = common & (result.mansfield_rs>rules.min_mansfield)
     result['signal'] = result.signal_rs if rules.rs_method == 'percentile' else result.signal_mansfield
     result['allocation_score'] = result.rs_percentile if rules.rs_method == 'percentile' else result.mansfield_rs
+    from .rs_exit import exit_columns
+    result=exit_columns(result,rules)
     return result.sort_values(['date','symbol']).reset_index(drop=True), rejected
 
 
@@ -148,6 +152,14 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
         trade = dict(symbol=symbol,entry_date=pos['entry_date'],exit_date=str(day.date()),
             quantity=pos['quantity'],entry_price=pos['entry_price'],exit_price=fill,
             pnl=pnl,r_multiple=pnl/pos['initial_risk'],exit_reason=reason,success_3r=pos['success'])
+        rs_decision=pos.get('rs_exit_pending')
+        if rs_decision:
+            trade.update(rs_exit_signal_date=rs_decision['signal_date'],
+                rs_exit_observation_date=rs_decision['observation_date'],rs_exit_indicator=rs_decision['indicator_value'],
+                rs_exit_threshold=rs_decision['threshold'])
+            orders.append(dict(date=str(day.date()),symbol=symbol,side='sell',status='filled',
+                quantity=pos['quantity'],fill_price=fill,reason=reason,signal_date=rs_decision['signal_date']))
+            rs_exited_today.add(symbol)
         trades.append(trade)
         if mode=='progressive' and pnl<0 and not pos['success']:
             units=max(1,units-1)
@@ -155,22 +167,32 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
 
     for raw_day in sessions:
         day=pd.Timestamp(raw_day); today=bars.get(day,{})
+        rs_exited_today=set()
         # Overnight stop gaps and missing-data exits use the next available open.
         for symbol in sorted(list(positions)):
             pos=positions[symbol]; bar=today.get(symbol)
             if bar is None or bar['volume'] <= 0:
+                if pos.get('rs_exit_pending'):
+                    orders.append(dict(date=str(day.date()),symbol=symbol,side='sell',status='deferred',
+                        reason='missing_or_untradable_open',signal_date=pos['rs_exit_pending']['signal_date']))
                 continue
-            if bar['open']<=pos['stop_price'] or pos.get('exit_pending',False):
+            if bar['open']<=pos['stop_price'] or pos.get('exit_pending',False) or pos.get('rs_exit_pending'):
                 if bar['high']==bar['low']:
                     pos['exit_pending']=True
+                    if pos.get('rs_exit_pending'):
+                        orders.append(dict(date=str(day.date()),symbol=symbol,side='sell',status='deferred',
+                            reason='locked_single_price_bar',signal_date=pos['rs_exit_pending']['signal_date']))
                     continue
-                sell(symbol,day,float(bar['open']),'gap_stop' if bar['open']<=pos['stop_price'] else 'missing_data_exit')
+                reason=('gap_stop' if bar['open']<=pos['stop_price'] else pos['rs_exit_pending']['reason']
+                        if pos.get('rs_exit_pending') else 'missing_data_exit')
+                sell(symbol,day,float(bar['open']),reason)
         # Missing next-session bars cancel the intended entry rather than defer indefinitely.
         candidates=[]
         for pending_row in pending:
             symbol=pending_row['symbol']; bar=today.get(symbol)
             reason=None
-            if symbol in positions: reason='already_held'
+            if symbol in rs_exited_today: reason='rs_exit_same_session_reentry_blocked'
+            elif symbol in positions: reason='already_held'
             elif bar is None or bar['volume']<=0: reason='missing_or_untradable_open'
             elif bar['high']==bar['low']: reason='locked_single_price_bar'
             elif bar['open']>pending_row['reference_price']*(1+max_entry_gap): reason='entry_gap_limit'
@@ -230,6 +252,10 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
         if todays_features is not None:
             for row in todays_features.to_dict('records'):
                 symbol=row['symbol']
+                if symbol in positions:
+                    from .rs_exit import update_position
+                    decision=update_position(positions[symbol],row,day)
+                    if decision:events.append(dict(date=str(day.date()),symbol=symbol,kind='rs_exit_scheduled',**decision))
                 if symbol in positions and pd.notna(row['trailing_channel']):
                     positions[symbol]['stop_price']=max(positions[symbol]['stop_price'],float(row['trailing_channel']))
             score = 'allocation_score' if 'allocation_score' in todays_features else 'rs_percentile'
@@ -246,8 +272,9 @@ def simulate(prices, signals, universe, start, end, initial_cash=10_000_000,
 def json_records(frame):
     import json
     f=frame.copy()
-    if 'date' in f:
-        f['date']=f.date.dt.strftime('%Y-%m-%d')
+    for column in ['date','mansfield_observation_date','rs_exit_observation_date']:
+        if column in f:
+            f[column]=pd.to_datetime(f[column]).dt.strftime('%Y-%m-%d')
     return json.loads(f.to_json(orient='records'))
 
 

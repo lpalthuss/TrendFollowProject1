@@ -39,8 +39,18 @@ class Rules:
     market_units_ma_days: int = 60
     market_units_strong_cap: int = 5
     market_units_weak_cap: int = 1
+    rs_exit_enabled: bool = False
+    rs_exit_percentile: float = 50
+    rs_exit_mansfield: float = 0
+    rs_exit_confirmations: int = 2
 
     def validate(self):
+        if not isinstance(self.rs_exit_enabled,bool):raise ValueError('rs_exit_enabled는 true/false여야 합니다.')
+        if not math.isfinite(self.rs_exit_percentile) or not 0<=self.rs_exit_percentile<=100:
+            raise ValueError('RS 청산 순위 기준은 0~100이어야 합니다.')
+        if not math.isfinite(self.rs_exit_mansfield):raise ValueError('Mansfield 청산 기준은 유한한 수여야 합니다.')
+        if isinstance(self.rs_exit_confirmations,bool) or not isinstance(self.rs_exit_confirmations,int) or self.rs_exit_confirmations<1:
+            raise ValueError('RS 약화 확인 횟수는 양의 정수여야 합니다.')
         if not isinstance(self.market_units_enabled, bool):
             raise ValueError('market_units_enabled는 true/false여야 합니다.')
         if self.market_units_benchmark not in {'universe','market_index'}:
@@ -147,6 +157,7 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
         f, b = frames.get(symbol), frames.get(benchmark)
         row = dict(item, signal=False, signal_rs=False, signal_mansfield=False,
                    rs_method=rules.rs_method, mansfield_rs=math.nan, mansfield_change_1w=math.nan,
+                   mansfield_observation_date=None,
                    mansfield_benchmark=mrs_benchmark,
                    entry_method=rules.entry_method,
                    reasons='', quantity=0)
@@ -191,7 +202,8 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
         completed = mrs[mrs.index <= asof]
         if not completed.empty:
             row.update(mansfield_rs=float(completed.mansfield_rs.iloc[-1]),
-                       mansfield_change_1w=float(completed.mansfield_change_1w.iloc[-1]))
+                       mansfield_change_1w=float(completed.mansfield_change_1w.iloc[-1]),
+                       mansfield_observation_date=completed.index[-1])
         row.update(reference_price=close, stop_price=stop, atr=atr, atr_pct=100*atr/close,
                    return_126d=ret, excess_return=ret-bret, weekly_trend=bool(trend),
                    prior_breakout_high=high, breakout=bool(close > high),
@@ -205,7 +217,8 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
     if 'return_126d' not in result:
         result['rs_percentile'] = np.nan
         result['allocation_score'] = np.nan
-        return result
+        from .rs_exit import exit_columns
+        return exit_columns(result,rules,as_of)
     # Rank only in the explicitly supplied analysis universe; not a market-wide RS claim.
     result['rs_percentile'] = result.return_126d.rank(method='average', pct=True) * 100
     for i, row in result.iterrows():
@@ -236,4 +249,6 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
         result.at[i, 'signal'] = not reasons
         result.at[i, 'reasons'] = ','.join(reasons)
     result['allocation_score'] = result.rs_percentile if rules.rs_method == 'percentile' else result.mansfield_rs
+    from .rs_exit import exit_columns
+    result=exit_columns(result,rules,as_of)
     return result.sort_values(['allocation_score', 'symbol'], ascending=[False, True], na_position='last')
