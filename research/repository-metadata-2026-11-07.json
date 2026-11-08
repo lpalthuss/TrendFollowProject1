@@ -1,0 +1,83 @@
+[
+  {
+    "full_name": "koreainvestment/open-trading-api",
+    "html_url": "https://github.com/koreainvestment/open-trading-api",
+    "pushed_at": "2026-10-27T15:26:12Z",
+    "archived": false,
+    "stargazers_count": 1660,
+    "license": null,
+    "default_branch": "main"
+  },
+  {
+    "full_name": "Kiwoom-Securities/Kiwoom-REST-API",
+    "html_url": "https://github.com/Kiwoom-Securities/Kiwoom-REST-API",
+    "pushed_at": "2026-11-05T00:47:17Z",
+    "archived": false,
+    "stargazers_count": 75,
+    "license": {
+      "key": "other",
+      "name": "Other",
+      "spdx_id": "NOASSERTION",
+      "url": null,
+      "node_id": "MDc6TGljZW5zZTA="
+    },
+    "default_branch": "main"
+  },
+  {
+    "full_name": "maebsy/kr-super-momentum",
+    "html_url": "https://github.com/maebsy/kr-super-momentum",
+    "pushed_at": "2026-02-13T10:49:20Z",
+    "archived": true,
+    "stargazers_count": 1,
+    "license": null,
+    "default_branch": "main"
+  },
+  {
+    "full_name": "DamianJUNG/turtle_trading_webapp",
+    "html_url": "https://github.com/DamianJUNG/turtle_trading_webapp",
+    "pushed_at": "2025-06-15T16:34:58Z",
+    "archived": false,
+    "stargazers_count": 0,
+    "license": null,
+    "default_branch": "main"
+  },
+  {
+    "full_name": "sharebook-kr/pykrx",
+    "html_url": "https://github.com/sharebook-kr/pykrx",
+    "pushed_at": "2026-10-29T08:25:39Z",
+    "archived": false,
+    "stargazers_count": 1110,
+    "license": null,
+    "default_branch": "master"
+  },
+  {
+    "full_name": "FinanceData/FinanceDataReader",
+    "html_url": "https://github.com/FinanceData/FinanceDataReader",
+    "pushed_at": "2026-05-13T19:12:11Z",
+    "archived": false,
+    "stargazers_count": 1572,
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    },
+    "default_branch": "master"
+  },
+  {
+    "full_name": "kernc/backtesting.py",
+    "html_url": "https://github.com/kernc/backtesting.py",
+    "pushed_at": "2026-08-05T12:39:16Z",
+    "archived": false,
+    "stargazers_count": 9208,
+    "license": {
+      "key": "agpl-3.0",
+      "name": "GNU Affero General Public License v3.0",
+      "spdx_id": "AGPL-3.0",
+      "url": "https://api.github.com/licenses/agpl-3.0",
+      "node_id": "MDc6TGljZW5zZTE="
+    },
+    "default_branch": "master"
+  }
+]

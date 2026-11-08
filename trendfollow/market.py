@@ -1,0 +1,210 @@
+"""Public master snapshots and reproducible, cached research data acquisition."""
+import ast
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+import hashlib
+import io
+import json
+from pathlib import Path
+import re
+import threading
+import time
+import zipfile
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import requests
+
+
+def download_master(directory: Path):
+    directory.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for market in ['kospi', 'kosdaq']:
+        url = f'https://raw.githubusercontent.com/koreainvestment/open-trading-api/main/stocks_info/kis_{market}_code_mst.py'
+        reference = requests.get(url, timeout=30)
+        reference.raise_for_status()
+        # Parse constant field definitions; never execute downloaded Python code.
+        definitions = {}
+        for node in ast.walk(ast.parse(reference.text)):
+            if (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id in {'field_specs', 'part2_columns'}):
+                definitions[node.targets[0].id] = ast.literal_eval(node.value)
+        widths, names = definitions['field_specs'], definitions['part2_columns']
+        if len(widths) != len(names):
+            raise ValueError('공식 마스터 필드 수가 일치하지 않습니다.')
+        response = requests.get(f'https://new.real.download.dws.co.kr/common/master/{market}_code.mst.zip', timeout=30)
+        response.raise_for_status()
+        (directory/f'{market}.zip').write_bytes(response.content)
+        (directory/f'{market}_parser_reference.py.txt').write_text(reference.text, encoding='utf-8')
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        text = archive.read(f'{market}_code.mst').decode('cp949')
+        rows = []
+        for line in text.splitlines():
+            header, tail = line[:-sum(widths)], line[-sum(widths):]
+            row = {'symbol': header[:9].strip(), 'isin': header[9:21].strip(),
+                   'name': header[21:].strip(), 'market': market.upper()}
+            offset = 0
+            for width, name in zip(widths, names):
+                row[name] = tail[offset:offset+width].strip()
+                offset += width
+            rows.append(row)
+        frame = pd.DataFrame(rows)
+        frame.to_csv(directory/f'{market}.csv', index=False, encoding='utf-8-sig')
+        frames.append(frame)
+    return frames
+
+
+def build_universe(frames, min_recent_turnover=1e9):
+    """Current snapshot only. Pre-volume liquidity proxy is an explicit research selection bias."""
+    records, excluded = [], []
+    for market, frame in zip(['KOSPI', 'KOSDAQ'], frames):
+        pi = market == 'KOSPI'
+        fields = (['그룹코드','거래정지','정리매매','관리종목','저유동성','우선주','SPAC',
+                   '지수업종대분류','기준가','전일거래량'] if pi else
+                  ['증권그룹구분코드','거래정지 여부','정리매매 여부','관리 종목 여부','저유동성종목 여부',
+                   '우선주 구분 코드','기업인수목적회사여부','지수업종 대분류 코드','주식 기준가','전일 거래량'])
+        for row in frame.fillna('').to_dict('records'):
+            vals = [str(row.get(f, '')).strip() for f in fields]
+            group, halted, liquidation, admin, low_liq, preferred, spac, industry, price, volume = vals
+            # Prefer the finest nonzero published index-industry code, otherwise use broad group.
+            industry_fields = (['지수업종소분류','지수업종중분류'] if pi else
+                               ['지수업종 소분류 코드','지수 업종 중분류 코드'])
+            for field in industry_fields:
+                value = str(row.get(field,'')).strip()
+                if value and value != '0000':
+                    industry = value
+                    break
+            reasons = []
+            if group not in {'ST', 'FS'} or not re.fullmatch('[0-9A-Z]{6}', str(row['symbol'])):
+                reasons.append('not_ordinary_stock')
+            for code, value in [('halted', halted), ('liquidation', liquidation), ('administrative', admin),
+                                ('low_liquidity_flag', low_liq), ('spac', spac)]:
+                if value != 'N':
+                    reasons.append(code)
+            if preferred != '0':
+                reasons.append('preferred_or_other_class')
+            if not industry or industry == '0000':
+                reasons.append('missing_industry')
+            try:
+                recent_turnover = float(price)*float(volume)
+            except ValueError:
+                recent_turnover = 0
+            if recent_turnover < min_recent_turnover:
+                reasons.append('recent_turnover_proxy_below_threshold')
+            base = {'symbol': row['symbol'], 'name': row['name'], 'market': market,
+                    'sector': f'{market}:{industry}', 'benchmark': '069500' if pi else '229200',
+                    'recent_turnover_proxy': recent_turnover}
+            if reasons:
+                excluded.append(dict(base, reasons=','.join(reasons)))
+            else:
+                records.append(base)
+    return pd.DataFrame(records), pd.DataFrame(excluded)
+
+
+class NaverResearchSource:
+    """Public chart used by FinanceDataReader; global request pacing even across worker threads."""
+    def __init__(self, cache_dir: Path, interval=.55):
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.interval, self.last = interval, 0.
+        self.lock = threading.Lock()
+
+    def daily(self, symbol, start, end, refresh=False):
+        if symbol not in {'KOSPI','KOSDAQ'} and not re.fullmatch('[0-9A-Z]{6}', str(symbol)):
+            raise ValueError('잘못된 종목코드입니다.')
+        cache = self.cache_dir/f'{symbol}-{end}.xml'
+        if cache.exists() and not refresh:
+            content = cache.read_bytes()
+        else:
+            for attempt in range(3):
+                try:
+                    with self.lock:
+                        time.sleep(max(0, self.interval-(time.monotonic()-self.last)))
+                        self.last = time.monotonic()
+                    response = requests.get('https://fchart.stock.naver.com/sise.nhn',
+                        params={'timeframe':'day', 'count':6000, 'requestType':0, 'symbol':symbol}, timeout=30)
+                    response.raise_for_status()
+                    content = response.content
+                    if b'<item ' not in content:
+                        raise ValueError('네이버 일봉 레코드가 없습니다.')
+                    cache.write_bytes(content)
+                    break
+                except (requests.RequestException, ValueError):
+                    if attempt == 2:
+                        raise ValueError(f'{symbol}: 공개 일봉 수집 실패') from None
+                    time.sleep(2*(attempt+1))
+        rows = []
+        for item in re.findall(r'<item data="(.*?)"', content.decode('utf-8', errors='replace')):
+            vals = item.split('|')
+            if len(vals) != 6:
+                raise ValueError('공개 차트 필드 개수가 변경되었습니다.')
+            raw_date = vals[0]
+            day = f'{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}'
+            if start <= day <= end:
+                rows.append([day, symbol, *map(float, vals[1:])])
+        return pd.DataFrame(rows, columns=['date','symbol','open','high','low','close','volume'])
+
+
+def acquire_research(universe_path, output_dir, start, end, refresh=False, include_market_indices=False):
+    root = Path(output_dir); root.mkdir(parents=True, exist_ok=True)
+    universe = pd.read_csv(universe_path, dtype={'symbol':str,'benchmark':str})
+    symbols = set(universe.symbol) | set(universe.benchmark)
+    if include_market_indices:
+        markets = set(universe.get('market',pd.Series(dtype=str)))
+        if not markets or markets-{'KOSPI','KOSDAQ'}:
+            raise ValueError('지수 수집에는 universe의 market(KOSPI/KOSDAQ)이 필요합니다.')
+        symbols |= markets
+    symbols = sorted(symbols)
+    source = NaverResearchSource(root/'raw')
+    frames, errors = [], []
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(source.daily, symbol, start, end, refresh): symbol for symbol in symbols}
+        for number, future in enumerate(as_completed(futures), 1):
+            symbol = futures[future]
+            try:
+                frame = future.result()
+                if frame.empty:
+                    raise ValueError('요청 기간에 일봉이 없습니다.')
+                frames.append(frame)
+            except (ValueError, requests.RequestException) as exc:
+                errors.append({'symbol':symbol,'reason':str(exc)})
+            if number % 25 == 0 or number == len(symbols):
+                print(f'일봉 수집 {number}/{len(symbols)} | 실패 {len(errors)}', flush=True)
+    if not frames:
+        raise ValueError('수집된 데이터가 없습니다.')
+    prices = pd.concat(frames, ignore_index=True).sort_values(['symbol','date'])
+    prices.to_csv(root/'prices.csv', index=False)
+    manifest = {'source':'NAVER public chart, research-only', 'start':start,'end':end,
+        'universe_snapshot_at':datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
+        'requested_symbols':len(symbols),'collected_symbols':int(prices.symbol.nunique()),
+        'rows':len(prices),'errors':errors,
+        'included_market_indices':include_market_indices,
+        'universe_sha256':hashlib.sha256(Path(universe_path).read_bytes()).hexdigest(),
+        'limitations':['current survivor/liquidity-selected universe; historical selection bias',
+                      'vendor-adjusted OHLC: not executable raw prices',
+                      'source adjusted-volume conventions unverified']}
+    (root/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+    return manifest
+
+
+def add_index_data(prices_path, output_path, cache_dir, start, end):
+    from .backtest import clean_research_prices
+    source=NaverResearchSource(Path(cache_dir))
+    prices=pd.read_csv(prices_path,dtype={'symbol':str})
+    prices=prices[~prices.symbol.isin(['KOSPI','KOSDAQ'])]
+    indices=[source.daily(symbol,start,end) for symbol in ['KOSPI','KOSDAQ']]
+    if any(f.empty or f.date.max()<end for f in indices):
+        raise ValueError('요청 종료일의 지수 일봉을 확인할 수 없습니다. 완료된 거래일을 지정하세요.')
+    combined=pd.concat([prices,*indices],ignore_index=True).sort_values(['symbol','date'])
+    clean,bad=clean_research_prices(combined)
+    # Never silently discard newly fetched malformed index bars.
+    if not bad.empty and bad.symbol.isin(['KOSPI','KOSDAQ']).any():
+        raise ValueError('지수 가격 검증에 실패했습니다.')
+    out=Path(output_path);out.parent.mkdir(parents=True,exist_ok=True)
+    combined.to_csv(out,index=False)
+    metadata={'source':'NAVER public index chart','price_unit':'index points','indices':['KOSPI','KOSDAQ'],
+              'index_rows':sum(len(f) for f in indices),'start':start,'end':end,
+              'volume_note':'지수 거래량은 본 계산에 사용하지 않으며 증권사 주 단위와 비교하지 않습니다.',
+              'stock_prices_source':str(prices_path)}
+    out.with_suffix('.indices.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
+    return metadata

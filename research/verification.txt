@@ -1,0 +1,6 @@
+2026-11-07 KST
+Scope: public docs, repository metadata, partial source inspection. No strategy backtest or live API calls.
+YouTube: Korean automatic captions fetched successfully; may contain recognition errors.
+DamianJUNG/turtle_trading_webapp main/app.py: ast.parse failed on line 1; content begins with a shell git-apply wrapper.
+maebsy/kr-super-momentum: GitHub API archived=true.
+Kiwoom ka10081: spec and official example reviewed through connected spec MCP.

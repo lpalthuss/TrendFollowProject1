@@ -1,0 +1,8 @@
+{
+  "equity": 10000000,
+  "cash": 10000000,
+  "positions": [],
+  "pending_cash": 0,
+  "pending_risk": 0,
+  "pending_symbols": []
+}

@@ -1,0 +1,54 @@
+{
+  "as_of": "2026-11-06",
+  "connection": {
+    "kis": "authenticated_and_quotes_received",
+    "kiwoom": "authenticated_and_quotes_received"
+  },
+  "symbols": [
+    "000660",
+    "005930",
+    "069500"
+  ],
+  "kis_rows": 1347,
+  "kiwoom_rows": 1347,
+  "unmatched_sessions": 0,
+  "columns": {
+    "open": {
+      "different_rows": 379,
+      "max_absolute_difference": 3.0
+    },
+    "high": {
+      "different_rows": 386,
+      "max_absolute_difference": 32000.0
+    },
+    "low": {
+      "different_rows": 395,
+      "max_absolute_difference": 25000.0
+    },
+    "close": {
+      "different_rows": 443,
+      "max_absolute_difference": 33000.0
+    },
+    "volume": {
+      "different_rows": 442,
+      "max_absolute_difference": 1497.0
+    }
+  },
+  "account_basis": "example: equity=10000000 KRW, cash=10000000 KRW, no positions; not queried from broker",
+  "scope": "example universe only; not a market-wide screening; no order or account API invoked",
+  "kis_candidate_count": 0,
+  "kiwoom_candidate_count": 0,
+  "historical_close_max_difference_pct": 2.698282910874898,
+  "historical_close_rows_above_0_1_pct": 60,
+  "latest_session_close_and_volume_agree": true,
+  "anomaly_recheck": {
+    "symbol": "000660",
+    "date": "2026-10-20",
+    "kis_adjusted_close": 1223000,
+    "kis_raw_close": 1223000,
+    "kiwoom_adjusted_close": 1190000,
+    "kiwoom_raw_close": 1190000,
+    "volume_both": 3464412,
+    "finding": "discrepancy persists in adjusted and raw requests; cause unverified; retain separate data sources"
+  }
+}
