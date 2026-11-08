@@ -21,6 +21,7 @@ class Rules:
     atr_days: int = 14
     stop_atr: float = 2
     max_stop_fraction: float = .15
+    stop_limit_enabled: bool = True
     rs_method: str = 'percentile'
     mansfield_weeks: int = 52
     min_mansfield: float = 0
@@ -45,6 +46,7 @@ class Rules:
     rs_exit_confirmations: int = 2
 
     def validate(self):
+        if not isinstance(self.stop_limit_enabled,bool):raise ValueError('stop_limit_enabled는 true/false여야 합니다.')
         if not isinstance(self.rs_exit_enabled,bool):raise ValueError('rs_exit_enabled는 true/false여야 합니다.')
         if not math.isfinite(self.rs_exit_percentile) or not 0<=self.rs_exit_percentile<=100:
             raise ValueError('RS 청산 순위 기준은 0~100이어야 합니다.')
@@ -218,7 +220,8 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
         result['rs_percentile'] = np.nan
         result['allocation_score'] = np.nan
         from .rs_exit import exit_columns
-        return exit_columns(result,rules,as_of)
+        from .stop_limit import apply_stop_limit
+        return apply_stop_limit(exit_columns(result,rules,as_of),rules)
     # Rank only in the explicitly supplied analysis universe; not a market-wide RS claim.
     result['rs_percentile'] = result.return_126d.rank(method='average', pct=True) * 100
     for i, row in result.iterrows():
@@ -227,8 +230,7 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
         tests = {'weak_weekly_trend': row.weekly_trend,
                  'weak_volume': row.volume_ratio >= rules.volume_multiple,
                  'low_liquidity': row.avg_turnover >= rules.min_turnover,
-                 'invalid_stop': 0 < row.stop_price < row.reference_price and
-                    (row.reference_price-row.stop_price)/row.reference_price <= rules.max_stop_fraction}
+                 'invalid_stop': 0 < row.stop_price < row.reference_price}
         if rules.entry_method=='breakout':
             tests['no_breakout']=row.breakout
         else:
@@ -251,4 +253,6 @@ def screen(prices: pd.DataFrame, universe: pd.DataFrame, as_of: str,
     result['allocation_score'] = result.rs_percentile if rules.rs_method == 'percentile' else result.mansfield_rs
     from .rs_exit import exit_columns
     result=exit_columns(result,rules,as_of)
+    from .stop_limit import apply_stop_limit
+    result=apply_stop_limit(result,rules)
     return result.sort_values(['allocation_score', 'symbol'], ascending=[False, True], na_position='last')

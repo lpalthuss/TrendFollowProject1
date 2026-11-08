@@ -145,6 +145,11 @@ def main(argv=None):
         compare_entry.add_argument(f'--{key}',required=True)
     compare_entry.add_argument('--config')
     compare_entry.add_argument('--out',default='outputs/entry-comparison')
+    stop_compare=subs.add_parser('compare-stop-limit',help='동일 조건에서 손절 폭 제한 ON/OFF 후보·수량 비교')
+    for key in ['prices','universe','account','as-of']:
+        stop_compare.add_argument(f'--{key}',required=True)
+    stop_compare.add_argument('--config')
+    stop_compare.add_argument('--out',default='outputs/stop-limit-comparison')
     compare_rs = subs.add_parser('compare-rs', help='RS 순위와 Mansfield를 동일 계좌 가정으로 각각 비교')
     for key in ['prices','universe','account','as-of']:
         compare_rs.add_argument(f'--{key}',required=True)
@@ -197,6 +202,7 @@ def main(argv=None):
     backtest.add_argument('--end', required=True)
     backtest.add_argument('--capital', type=float, default=10000000)
     backtest.add_argument('--config')
+    backtest.add_argument('--stop-limit',choices=['on','off'],help='다른 설정은 유지하고 손절 폭 제한만 변경')
     backtest.add_argument('--out', default='outputs/backtest')
     paper = subs.add_parser('paper', help='로컬 모의 계좌 장마감 체크포인트 (동일 날짜 중복 실행 방지)')
     paper.add_argument('--prices', required=True)
@@ -254,7 +260,13 @@ def main(argv=None):
     close_parser.add_argument('--control-file',default='outputs/intraday/control.json')
     args = parser.parse_args(argv)
     try:
-        if args.command == 'intraday-volume-import':
+        if args.command == 'compare-stop-limit':
+            from .stop_limit import compare_stop_limit
+            now=datetime.now(ZoneInfo('Asia/Seoul'));target=pd.Timestamp(args.as_of)
+            if target.date()>now.date() or target.date()==now.date() and now.hour*60+now.minute<970:
+                raise ValueError('완료된 장마감 거래일만 비교하세요. 당일은 16:10 이후 허용합니다.')
+            print(json.dumps(compare_stop_limit(args.prices,args.universe,args.account,args.as_of,args.config,args.out),ensure_ascii=False))
+        elif args.command == 'intraday-volume-import':
             from .intraday_volume import import_runs
             print(json.dumps(import_runs(args.run_dirs,args.out),ensure_ascii=False))
         elif args.command == 'intraday-volume-profile':
@@ -357,7 +369,8 @@ def main(argv=None):
             print(f'KOSPI·KOSDAQ 지수 {metadata["index_rows"]}행 추가 → {Path(args.out).resolve()}')
         elif args.command == 'backtest':
             summary = run_comparison(args.prices,args.universe,args.start,args.split,args.end,
-                                     args.out,args.capital,args.config)
+                                     args.out,args.capital,args.config,
+                                     None if args.stop_limit is None else args.stop_limit=='on')
             print(f'백테스트 완료: {Path(args.out).resolve()} | 탐색 연구: 생존·유동성 선택 편향 존재')
         elif args.command == 'paper':
             now=datetime.now(ZoneInfo('Asia/Seoul')); target=pd.Timestamp(args.as_of)

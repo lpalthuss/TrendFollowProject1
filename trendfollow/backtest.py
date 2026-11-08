@@ -97,8 +97,7 @@ def features(prices, universe, rules=Rules(), exit_days=20):
     result['rs_percentile'] = result.return_126d.where(result.eligible_history).groupby(result.date).rank(pct=True)*100
     common = (result.eligible_history & result.weekly_trend &
         (result.volume_ratio>=rules.volume_multiple)&
-        (result.avg_turnover>=rules.min_turnover)&(result.stop_price>0)&
-        ((result.close-result.stop_price)/result.close<=rules.max_stop_fraction))
+        (result.avg_turnover>=rules.min_turnover)&(result.stop_price>0)&(result.stop_price<result.close))
     if rules.entry_method=='breakout':
         common &= result.close>result.prior_breakout_high
     else:
@@ -111,6 +110,8 @@ def features(prices, universe, rules=Rules(), exit_days=20):
     result['allocation_score'] = result.rs_percentile if rules.rs_method == 'percentile' else result.mansfield_rs
     from .rs_exit import exit_columns
     result=exit_columns(result,rules)
+    from .stop_limit import apply_stop_limit
+    result=apply_stop_limit(result,rules)
     return result.sort_values(['date','symbol']).reset_index(drop=True), rejected
 
 

@@ -36,6 +36,7 @@ def decision_rule_settings(rules):
     """Indicator-only additions must not invalidate existing percentile paper accounts."""
     from dataclasses import asdict
     values = asdict(rules)
+    if rules.stop_limit_enabled:values.pop('stop_limit_enabled',None)
     if not rules.rs_exit_enabled:
         from .rs_exit import RS_EXIT_SETTINGS
         for key in RS_EXIT_SETTINGS:values.pop(key,None)

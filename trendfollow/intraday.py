@@ -94,7 +94,7 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
         for field in ['weekly_trend','eligible_history']:
             if not bool(row[field]): reasons.append(field)
         if row.avg_turnover < rules.min_turnover: reasons.append('low_liquidity')
-        if not 0 < row.stop_price < row.reference_price or (row.reference_price-row.stop_price)/row.reference_price > rules.max_stop_fraction:
+        if not 0 < row.stop_price < row.reference_price or rules.stop_limit_enabled and (row.reference_price-row.stop_price)/row.reference_price > rules.max_stop_fraction:
             reasons.append('invalid_stop')
         if rules.rs_method == 'percentile':
             if not row.rs_percentile >= rules.min_rs or not row.excess_return > 0: reasons.append('weak_prior_rs')
