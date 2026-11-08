@@ -130,6 +130,8 @@ def run_rs_comparison(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='추세추종 장마감 분석·위험 계획. 주문 기능 없음.')
     subs = parser.add_subparsers(dest='command', required=True)
+    ui=subs.add_parser('ui',help='로컬 운용 웹 UI')
+    ui.add_argument('--port',type=int,default=8765)
     demo = subs.add_parser('demo', help='API 없이 합성 데이터로 전체 흐름 실행')
     demo.add_argument('--out', default='outputs/demo')
     scan = subs.add_parser('scan', help='CSV 일봉을 분석')
@@ -269,6 +271,10 @@ def main(argv=None):
     close_parser.add_argument('--control-file',default='outputs/intraday/control.json')
     args = parser.parse_args(argv)
     try:
+        if args.command=='ui':
+            from .ui_server import serve
+            serve(Path.cwd(),args.port)
+            return
         if args.command == 'compare-initial-stops':
             from .initial_stop import compare_initial_stops
             now=datetime.now(ZoneInfo('Asia/Seoul'));target=pd.Timestamp(args.as_of)

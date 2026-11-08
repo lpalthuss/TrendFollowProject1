@@ -19,6 +19,9 @@ trendfollow = "trendfollow.cli:main"
 [tool.setuptools.packages.find]
 include = ["trendfollow*"]
 
+[tool.setuptools.package-data]
+trendfollow = ["web/*.html", "web/*.js", "web/*.css"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
