@@ -211,6 +211,10 @@ def test_server_cookie_origin_csrf_and_no_secret_file_routes(project):
         connection.request('GET','/api/bootstrap');response=connection.getresponse();assert response.status==403;response.read()
         connection.request('GET','/');response=connection.getresponse();assert response.status==200
         cookie=response.getheader('Set-Cookie').split(';')[0];assert b'ui' in response.read()
+        connection.request('GET','/app.js')
+        response=connection.getresponse()
+        assert response.status==200 and response.getheader('Content-Type').startswith('text/javascript')
+        assert b'filterRows' in response.read()
         connection.request('GET','/api/bootstrap',headers={'Cookie':cookie})
         response=connection.getresponse();bootstrap=json.loads(response.read());assert response.status==200
         payload=json.dumps(dict(name='UI 계좌',rules={},limits={}))
