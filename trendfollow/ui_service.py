@@ -126,13 +126,42 @@ class Operations:
         available=[p for p in candidates if p.exists()]
         return max(available,key=lambda p:p.stat().st_mtime_ns) if available else None
 
-    def pulse(self,key):
-        w=self.workspace(key);paths=[self.path(w['state']),self.path(w['config'])]
+    def guidance(self,key,as_of=None):
+        w=self.workspace(key);rules,_=self.configuration(w);state=self.state(w)
+        now=datetime.now(KST)
+        recommended=pd.Timestamp(now.date())
+        if now.hour*60+now.minute<970:recommended-=pd.Timedelta(days=1)
+        while recommended.weekday()>=5:recommended-=pd.Timedelta(days=1)
+        target=as_of or str(recommended.date())
+        try:day=pd.Timestamp(datetime.strptime(target,'%Y-%m-%d').date())
+        except (ValueError,TypeError):raise ValueError('기준일을 YYYY-MM-DD로 입력하세요.')
+        needs_industry=rules.entry_method=='setup'
+        dates=[]
+        u=read_csv(self.path(w['universe']))
+        if needs_industry and 'industry_peer_history' in u:
+            files=set(u.industry_peer_history.dropna().astype(str))-{''}
+            if len(files)==1:
+                peer=self.path(next(iter(files)))
+                if peer.exists():dates=sorted(pd.read_csv(peer,usecols=['date']).date.astype(str).unique().tolist())
+        blocked=None
+        if day.date()>now.date():
+            blocked='미래 날짜는 처리할 수 없습니다. 완료된 거래일을 선택하세요.'
+        elif day.date()==now.date() and now.hour*60+now.minute<970:
+            blocked='당일 종가 처리는 한국시간 16:10 이후 가능합니다.'
+        elif day.weekday()>=5:blocked='주말입니다. 완료된 거래일을 선택하세요.'
+        elif state and target<state['last_date']:blocked='계좌 처리일보다 과거로 되돌릴 수 없습니다.'
+        return dict(today=str(now.date()),now=now.isoformat(),recommended_as_of=str(recommended.date()),
+            as_of=target,requires_industry=needs_industry,industry_ready=not needs_industry or target in dates,
+            industry_latest=dates[-1] if dates else None,processed=bool(state and state['last_date']==target),
+            blocked=blocked)
+
+    def pulse(self,key,as_of=None):
+        w=self.workspace(key);paths=[self.path(w['state']),self.path(w['config']),self.path(w['universe']),self.root/'data/industries/peer-returns.csv']
         signal=self.latest_signals(w)
         if signal:paths.append(signal)
         revision='|'.join(f'{p}:{p.stat().st_mtime_ns}' for p in paths if p.exists())
         with self.lock:jobs=list(self.jobs.values())[-25:]
-        return dict(revision=revision,jobs=jobs)
+        return dict(revision=revision,jobs=jobs,guidance=self.guidance(key,as_of))
 
     def snapshot(self,key):
         w=self.workspace(key);rules,limits=self.configuration(w);state=self.state(w)

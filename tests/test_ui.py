@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import threading
 import time
+from datetime import datetime
 
 import pandas as pd
 import pytest
@@ -15,6 +16,44 @@ from trendfollow.risk import Limits
 from trendfollow.strategy import Rules
 from trendfollow.ui_service import Operations
 from trendfollow.ui_server import make_server
+
+
+def test_guidance_distinguishes_missing_industry_processed_day_and_date_gates(ops,project,monkeypatch):
+    from trendfollow import ui_service
+    class AfterClose(datetime):
+        @classmethod
+        def now(cls,tz=None):return cls(2026,11,9,18,0,tzinfo=tz)
+    monkeypatch.setattr(ui_service,'datetime',AfterClose)
+    w=create(ops)
+    g=ops.guidance(w['id'])
+    assert g['as_of']=='2026-11-09' and g['industry_ready'] and not g['processed']
+    assert ops.guidance(w['id'],'2026-11-10')['blocked']
+    assert ops.guidance(w['id'],'2026-11-08')['blocked']
+    job=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
+    assert job['status']=='completed'
+    assert ops.guidance(w['id'],'2026-11-06')['processed']
+    assert ops.guidance(w['id'],'2026-11-05')['blocked']
+    directory=project/'data/industries';directory.mkdir()
+    u=pd.read_csv(project/'data/market/universe.csv')
+    peer=directory/'peer-returns.csv'
+    u['industry_peer_history']=str(peer);u.to_csv(directory/'universe.csv',index=False)
+    setup=create(ops,rules=asdict(Rules(entry_method='setup')))
+    assert not ops.guidance(setup['id'])['industry_ready']
+    pd.DataFrame({'date':['2026-11-06']}).to_csv(peer,index=False)
+    assert not ops.guidance(setup['id'])['industry_ready']
+    pd.DataFrame({'date':['2026-11-09']}).to_csv(peer,index=False)
+    assert ops.guidance(setup['id'])['industry_ready']
+
+
+def test_before_close_guidance_defaults_to_previous_completed_weekday(ops,monkeypatch):
+    from trendfollow import ui_service
+    class BeforeClose(datetime):
+        @classmethod
+        def now(cls,tz=None):return cls(2026,11,9,15,40,tzinfo=tz)
+    monkeypatch.setattr(ui_service,'datetime',BeforeClose)
+    w=create(ops)
+    assert ops.guidance(w['id'])['as_of']=='2026-11-06'
+    assert ops.guidance(w['id'],'2026-11-09')['blocked']
 
 
 @pytest.fixture

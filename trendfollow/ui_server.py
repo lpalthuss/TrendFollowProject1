@@ -48,7 +48,7 @@ def make_server(root,port=8765):
                 key=query.get('workspace',[''])[0]
                 if url.path=='/api/bootstrap':result=dict(workspaces=operations.workspaces(),presets=operations.presets(),csrf=token)
                 elif url.path=='/api/snapshot':result=operations.snapshot(key)
-                elif url.path=='/api/pulse':result=operations.pulse(key)
+                elif url.path=='/api/pulse':result=operations.pulse(key,query.get('as_of',[None])[0])
                 elif url.path=='/api/intraday':result=operations.intraday(key or None)
                 elif url.path=='/api/prices':result=operations.prices(key,query.get('symbol',[''])[0])
                 else:return self.send(404,{'error':'요청한 화면을 찾을 수 없습니다.'})
