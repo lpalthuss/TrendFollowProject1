@@ -23,7 +23,16 @@ def atomic_json(path, value):
     temporary = path.with_name(uuid.uuid4().hex[:12]+'.tmp')
     try:
         temporary.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8')
-        temporary.replace(path)
+        # Windows readers can briefly deny replacement of an open target.
+        # Keep the previous complete JSON visible and retry only sharing errors.
+        for attempt in range(10):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(.025)
     finally:
         if temporary.exists():temporary.unlink()
 
@@ -47,7 +56,7 @@ def control_lock(path):
                 break
             except OSError:
                 if time.monotonic()>=deadline:
-                    raise ValueError('장중 제어 설정 잠금을 얻지 못했습니다. 잠시 후 재시도하세요.') from None
+                    raise ValueError('파일 실행·저장 잠금을 얻지 못했습니다. 다른 작업 완료 후 재시도하세요.') from None
                 time.sleep(.05)
         try:yield
         finally:

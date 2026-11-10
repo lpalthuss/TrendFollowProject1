@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .industries import load_peer_history
-from .strategy import Rules
+from .config import Rules
 
 KST = ZoneInfo('Asia/Seoul')
 MAX_SUBSCRIPTIONS = 40

@@ -1,0 +1,18 @@
+{
+  "filter": "filters.js",
+  "browser": [
+    "state.js",
+    "api.js",
+    "dom.js",
+    "notifications.js",
+    "market.js",
+    "portfolio.js",
+    "settings.js",
+    "jobs.js",
+    "intraday.js",
+    "workflow.js",
+    "recovery.js",
+    "controller.js",
+    "bootstrap.js"
+  ]
+}

@@ -23,7 +23,7 @@ def test_guidance_distinguishes_missing_industry_processed_day_and_date_gates(op
     class AfterClose(datetime):
         @classmethod
         def now(cls,tz=None):return cls(2026,11,9,18,0,tzinfo=tz)
-    monkeypatch.setattr(ui_service,'datetime',AfterClose)
+    monkeypatch.setattr(ops,'clock',lambda:AfterClose.now(ui_service.KST))
     w=create(ops)
     g=ops.guidance(w['id'])
     assert g['as_of']=='2026-11-09' and g['industry_ready'] and not g['processed']
@@ -50,7 +50,7 @@ def test_before_close_guidance_defaults_to_previous_completed_weekday(ops,monkey
     class BeforeClose(datetime):
         @classmethod
         def now(cls,tz=None):return cls(2026,11,9,15,40,tzinfo=tz)
-    monkeypatch.setattr(ui_service,'datetime',BeforeClose)
+    monkeypatch.setattr(ops,'clock',lambda:BeforeClose.now(ui_service.KST))
     w=create(ops)
     assert ops.guidance(w['id'])['as_of']=='2026-11-06'
     assert ops.guidance(w['id'],'2026-11-09')['blocked']

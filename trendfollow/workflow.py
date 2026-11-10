@@ -10,7 +10,7 @@ import pandas as pd
 
 from .backtest import clean_research_prices, features, json_records, metrics, simulate
 from .risk import Limits
-from .strategy import Rules
+from .config import Rules
 from .relative_strength import decision_rule_settings, mansfield_benchmark_symbol
 
 

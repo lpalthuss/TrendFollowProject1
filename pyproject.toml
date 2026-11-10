@@ -12,6 +12,7 @@ dependencies = ["pandas>=2.2,<3", "numpy>=1.26,<3", "requests>=2.31,<3", "python
 [project.optional-dependencies]
 test = ["pytest>=8,<10", "websocket-client>=1.8,<2"]
 intraday = ["websocket-client>=1.8,<2"]
+dev = ["black==26.10.1"]
 
 [project.scripts]
 trendfollow = "trendfollow.cli:main"
@@ -20,7 +21,7 @@ trendfollow = "trendfollow.cli:main"
 include = ["trendfollow*"]
 
 [tool.setuptools.package-data]
-trendfollow = ["web/*.html", "web/*.js", "web/*.css"]
+trendfollow = ["web/*.html", "web/*.js", "web/*.css", "web/manifest.json", "web/src/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

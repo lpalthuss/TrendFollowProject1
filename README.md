@@ -1,28 +1,28 @@
 # 추세추종 장마감 분석 도구
 
-국내 주식의 일봉·완료 주봉을 분석하고 장중 잠정 신호를 관측한다. 후보·위험 예산과 로컬 모의 진입·청산·추가매수 결과를 CSV·JSON으로 기록한다. **증권사 주문·실제 계좌 동기화 기능은 없다.** 조사 배경은 [RESEARCH.md](RESEARCH.md), 현재 기능·활성 설정·검증 상태는 [CURRENT_STATE.md](CURRENT_STATE.md)에 있다.
+국내 주식의 일봉·완료 주봉을 분석하고 장중 잠정 신호를 관측한다. 후보·위험 예산과 로컬 모의 진입·청산·추가매수 결과를 CSV·JSON으로 기록한다. **증권사 주문·실제 계좌 동기화 기능은 없다.** 조사 배경은 [RESEARCH.md](docs/RESEARCH.md), 현재 기능·활성 설정·검증 상태는 [CURRENT_STATE.md](docs/CURRENT_STATE.md)에 있다.
 
 ## 시작
 
 ### 로컬 운용 화면
 
-`python -m trendfollow ui` 실행 후 `http://127.0.0.1:8765`에 접속한다. 첫 화면의 운용 순서에서 계좌·설정 → 종가 처리 → 결과 확인 → 선택적 장중 관측을 진행한다. 종목·산업·보유·체결 상세도 확인할 수 있다. 예약 실행과 증권사 주문은 연결하지 않았다. 상세 방법은 [UI.md](UI.md)에 있다.
+`python -m trendfollow ui` 실행 후 `http://127.0.0.1:8765`에 접속한다. 첫 화면의 운용 순서에서 계좌·설정 → 종가 처리 → 결과 확인 → 선택적 장중 관측을 진행한다. 종목·산업·보유·체결 상세도 확인할 수 있다. 예약 실행과 증권사 주문은 연결하지 않았다. 상세 방법은 [UI.md](docs/UI.md)에 있다.
 
-3R 달성 뒤 새 셋업·재돌파가 나온 보유 종목의 검토 전용 모드와 최대 3회 추가매수 모의 체결 모드를 지원한다. 기본 OFF이며 공통 손절선 상향과 기존·추가분 합산 위험 한도를 적용한다. 현재 1% 운용 설정을 유지하고 2% 초과 위험 설정은 거절한다. 기준과 실행 방법은 [PYRAMIDING.md](PYRAMIDING.md), 검토 전용 설명은 [PYRAMIDING_REVIEW.md](PYRAMIDING_REVIEW.md)에 있다.
+3R 달성 뒤 새 셋업·재돌파가 나온 보유 종목의 검토 전용 모드와 최대 3회 추가매수 모의 체결 모드를 지원한다. 기본 OFF이며 공통 손절선 상향과 기존·추가분 합산 위험 한도를 적용한다. 현재 1% 운용 설정을 유지하고 2% 초과 위험 설정은 거절한다. 기준과 실행 방법은 [PYRAMIDING.md](docs/PYRAMIDING.md), 검토 전용 설명은 [PYRAMIDING_REVIEW.md](docs/PYRAMIDING_REVIEW.md)에 있다.
 
-초기 손절 폭 15% 제한을 유지하거나 해제해 나머지 조건이 같은 후보·수량을 비교할 수 있다. 기본은 기존대로 제한 ON이며, 비교 명령과 백테스트 옵션은 [STOP_LIMIT_COMPARISON.md](STOP_LIMIT_COMPARISON.md)에 있다.
+초기 손절 폭 15% 제한을 유지하거나 해제해 나머지 조건이 같은 후보·수량을 비교할 수 있다. 기본은 기존대로 제한 ON이며, 비교 명령과 백테스트 옵션은 [STOP_LIMIT_COMPARISON.md](docs/STOP_LIMIT_COMPARISON.md)에 있다.
 
-선택한 RS·Mansfield RS의 약화로 다음 거래일 모의 청산을 예약하는 규칙을 추가했다. 기본 비활성이며 별도 예제에서 비교할 수 있다. 기준·완료 주봉 확인·미체결 처리는 [RS_EXIT.md](RS_EXIT.md)에 있다.
+선택한 RS·Mansfield RS의 약화로 다음 거래일 모의 청산을 예약하는 규칙을 추가했다. 기본 비활성이며 별도 예제에서 비교할 수 있다. 기준·완료 주봉 확인·미체결 처리는 [RS_EXIT.md](docs/RS_EXIT.md)에 있다.
 
-장중 거래량은 완료 분의 누적량을 과거 동시간 평균과 비교할 수 있다. 기본은 최근 최대 20개 수집 거래일 중 최소 5일·1.5배이며, 이력이 없으면 검증을 보류한다. 기준 생성과 계획 연결은 [INTRADAY_VOLUME.md](INTRADAY_VOLUME.md)에 있다.
+장중 거래량은 완료 분의 누적량을 과거 동시간 평균과 비교할 수 있다. 기본은 최근 최대 20개 수집 거래일 중 최소 5일·1.5배이며, 이력이 없으면 검증을 보류한다. 기준 생성과 계획 연결은 [INTRADAY_VOLUME.md](docs/INTRADAY_VOLUME.md)에 있다.
 
-실제 장중 연결 시작은 `intraday-live --observation on --plan ... --out ...`, 종료는 다른 터미널에서 `intraday-live --observation off`, 확인은 `intraday-live --observation status`다. 생략 시 저장된 설정을 존중하며 OFF에서는 인증·연결·구독을 시작하지 않는다. 종료 확인과 제어 파일 범위는 [INTRADAY.md](INTRADAY.md)에 설명했다.
+실제 장중 연결 시작은 `intraday-live --observation on --plan ... --out ...`, 종료는 다른 터미널에서 `intraday-live --observation off`, 확인은 `intraday-live --observation status`다. 생략 시 저장된 설정을 존중하며 OFF에서는 인증·연결·구독을 시작하지 않는다. 종료 확인과 제어 파일 범위는 [INTRADAY.md](docs/INTRADAY.md)에 설명했다.
 
-장중 관측과 종가 결과의 대조 명령 `intraday-close`는 [INTRADAY_CLOSE.md](INTRADAY_CLOSE.md)에 정리했다. 관측 OFF·기록 누락·부분 관측을 구분하고, 같은 저항선·고정 산업 동료 기준으로 종가 유지 여부를 계산한다.
+장중 관측과 종가 결과의 대조 명령 `intraday-close`는 [INTRADAY_CLOSE.md](docs/INTRADAY_CLOSE.md)에 정리했다. 관측 OFF·기록 누락·부분 관측을 구분하고, 같은 저항선·고정 산업 동료 기준으로 종가 유지 여부를 계산한다.
 
-셋업·인더스트리 액션을 적용한 RS/Mansfield RS 두 모의계좌의 시작 조건과 일별 실행 절차는 [PAPER_VALIDATION.md](PAPER_VALIDATION.md)에 정리했다.
+셋업·인더스트리 액션을 적용한 RS/Mansfield RS 두 모의계좌의 시작 조건과 일별 실행 절차는 [PAPER_VALIDATION.md](docs/PAPER_VALIDATION.md)에 정리했다.
 
-장중 돌파·손절·산업 동반 상승의 잠정 상태를 KIS 실시간 시세로 관측·재생하는 절차는 [INTRADAY.md](INTRADAY.md)에 있다. 장중 경로는 주문·체결을 실행하지 않고, RS는 전일 값으로 고정하며 거래량 미확인 상태를 진입 확정으로 표시하지 않는다.
+장중 돌파·손절·산업 동반 상승의 잠정 상태를 KIS 실시간 시세로 관측·재생하는 절차는 [INTRADAY.md](docs/INTRADAY.md)에 있다. 장중 경로는 주문·체결을 실행하지 않고, RS는 전일 값으로 고정하며 거래량 미확인 상태를 진입 확정으로 표시하지 않는다.
 
 장중 판단은 기본 5초 간격이고 저장은 기본 요약이다. 보유 손절선 접촉은 시세 수신 즉시 별도 확인한다. `--evaluation-seconds`로 간격을, `--tick-storage all|summary`로 저장 방식을 선택한다.
 
@@ -77,7 +77,7 @@ python -m trendfollow fetch --provider kiwoom --universe examples/universe.csv -
 
 각 수집 명령은 별도 원천 파일을 만든다. KIS는 날짜 구간을 뒤로 이동하며 최대 100개씩, 키움은 연속조회 키로 수집한다. 페이지 한도·진행 불가·API 오류 시 실패하며 부분 수집 결과로 기존 CSV를 덮지 않는다. 원천·환경·가격 조정 방식은 같은 이름의 `.metadata.json`에 기록한다. 기본 요청 간격은 1.1초다.
 
-시세 연결은 공식 스펙·샘플을 참고하고 모의 HTTP 응답으로 테스트했다. 2026-11-08 두 증권사의 실전용 키로 인증·일봉 수집도 확인했다. 일부 과거 가격 차이가 남아 있으며 상세 결과는 [LIVE_VALIDATION.md](LIVE_VALIDATION.md)에 기록했다. 장기 이력의 정확성·완전성을 모두 검증한 것은 아니다. 두 원천 파일을 임의 혼합하지 않는다. 주문용 원주가·호가단위로의 변환은 아직 구현하지 않았다.
+시세 연결은 공식 스펙·샘플을 참고하고 모의 HTTP 응답으로 테스트했다. 2026-11-08 두 증권사의 실전용 키로 인증·일봉 수집도 확인했다. 일부 과거 가격 차이가 남아 있으며 상세 결과는 [LIVE_VALIDATION.md](docs/LIVE_VALIDATION.md)에 기록했다. 장기 이력의 정확성·완전성을 모두 검증한 것은 아니다. 두 원천 파일을 임의 혼합하지 않는다. 주문용 원주가·호가단위로의 변환은 아직 구현하지 않았다.
 
 ## 분석
 
@@ -129,14 +129,14 @@ python -m trendfollow scan --prices data/kis-prices.csv --universe examples/univ
 ## 검증과 한계
 
 ```powershell
-python -m pytest -q
+python -m trendfollow.checks
 ```
 
 미래 가격 행 배제, 전일 고가 돌파, 누락·중복 데이터 거절, Wilder 계산, 공동 위험·현금·업종 배분, 유닛 중복 이벤트, 앞자리 0 보존, HTTP 페이지 처리·비밀값 비출력을 검증한다.
 
 분석은 사용자가 지정한 **장 종료 거래일** 기준이다. CLI는 당일 한국시간 16:10 전과 미래 기준일을 거절한다. 실제 거래소 휴장·데이터 확정 시간을 자동 판별하지는 않는다. 주봉은 금요일 날짜가 기준일 이하인 것만 사용하므로 금요일 휴장인 주는 보수적으로 다음 주에 반영한다. 거래정지의 0원 OHLC나 누락 세션은 임의 보정하지 않는다.
 
-포트폴리오 연구 백테스트, 20일 저가 채널 트레일링, 갭 손절과 로컬 모의 계좌에 더해 파동 셋업·산업 동반 상승·RS 약화 청산·추가매수를 선택적으로 지원한다. 영상의 재량 판단 전체, 당시 유니버스·기업행동의 완전한 복원과 실제 체결 검증은 남아 있다. 현재 적용 상태는 [CURRENT_STATE.md](CURRENT_STATE.md), 단계별 이력은 [PROGRESS.md](PROGRESS.md)에 있다.
+포트폴리오 연구 백테스트, 20일 저가 채널 트레일링, 갭 손절과 로컬 모의 계좌에 더해 파동 셋업·산업 동반 상승·RS 약화 청산·추가매수를 선택적으로 지원한다. 영상의 재량 판단 전체, 당시 유니버스·기업행동의 완전한 복원과 실제 체결 검증은 남아 있다. 현재 적용 상태는 [CURRENT_STATE.md](docs/CURRENT_STATE.md), 단계별 이력은 [PROGRESS.md](docs/PROGRESS.md)에 있다.
 
 ## 전체 연구 흐름
 
@@ -339,8 +339,12 @@ python -m trendfollow industry-sync --overrides examples/industry-overrides.csv
 API 근거: [KIS 주식 일봉 공식 예제](https://github.com/koreainvestment/open-trading-api/tree/main/examples_llm/domestic_stock/inquire_daily_itemchartprice), [KIS 토큰 발급 예제](https://github.com/koreainvestment/open-trading-api/tree/main/examples_llm/auth/auth_token), [키움 공식 예제·스펙](https://github.com/Kiwoom-Securities/Kiwoom-REST-API), [키움 REST 소개](https://openapi.kiwoom.com/intro). 키움 `au10001`, `ka10081`은 연결된 스펙 MCP에서 계약과 공식 예제를 확인했다.
 ## 초기 손절 방식 비교
 
-진입 시 고정 8%·2ATR·자동 전환 `max(8%, 2ATR/체결가)`의 손절가와 수량을 선택·비교할 수 있다. 비교용 세 설정은 체결가 기준을 사용하며 신호일 ATR을 고정한다. 보유 중 손절가를 내리지 않는다. 기존 ATR 기본 설정과 모의계좌는 유지한다. 설정·실행 방법과 기존 방식과의 차이는 [INITIAL_STOP.md](INITIAL_STOP.md)에 있다.
+진입 시 고정 8%·2ATR·자동 전환 `max(8%, 2ATR/체결가)`의 손절가와 수량을 선택·비교할 수 있다. 비교용 세 설정은 체결가 기준을 사용하며 신호일 ATR을 고정한다. 보유 중 손절가를 내리지 않는다. 기존 ATR 기본 설정과 모의계좌는 유지한다. 설정·실행 방법과 기존 방식과의 차이는 [INITIAL_STOP.md](docs/INITIAL_STOP.md)에 있다.
 
 ## 과거 입력 정정 복구
 
-처리한 과거 가격·거래량·산업 자료가 바뀌면 원계좌를 보존하고 변경 대조를 요구한다. UI의 종가 처리 단계에서 검토 후 계속 운용하거나 정정 자료 기준의 별도 재계산 계좌를 만들 수 있다. 기존 결정·전체 입력 스냅샷·정정 및 승인 이력을 보존하며, 지문만 교체하는 우회는 허용하지 않는다. [DATA_REVISIONS.md](DATA_REVISIONS.md) 참고.
+처리한 과거 가격·거래량·산업 자료가 바뀌면 원계좌를 보존하고 변경 대조를 요구한다. UI의 종가 처리 단계에서 검토 후 계속 운용하거나 정정 자료 기준의 별도 재계산 계좌를 만들 수 있다. 기존 결정·전체 입력 스냅샷·정정 및 승인 이력을 보존하며, 지문만 교체하는 우회는 허용하지 않는다. [DATA_REVISIONS.md](docs/DATA_REVISIONS.md) 참고.
+
+## 개발·문서 진입점
+
+전체 문서는 [문서 목록](docs/README.md), 구조는 [ARCHITECTURE.md](docs/ARCHITECTURE.md), 설치·UI 빌드·통합 검증은 [DEVELOPMENT.md](docs/DEVELOPMENT.md)를 참고한다. 기존 최상위 문서 경로는 안내 링크로 유지한다. `examples/`·`data/`·`outputs/`의 운용 경로는 그대로 사용한다.
