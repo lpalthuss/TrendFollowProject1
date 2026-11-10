@@ -48,7 +48,7 @@ def save_pyramiding_logs(target,events):
         execution_events(events,kind,columns).to_csv(target/f'{name}.csv',index=False,encoding='utf-8-sig')
 
 
-def paper_input_digest(prices,universe,rules):
+def paper_input_digest(prices,universe,rules,peer_history=None):
     symbols=set(universe.symbol.astype(str))|set(universe.benchmark.astype(str))
     if rules.rs_method=='mansfield':
         symbols|={mansfield_benchmark_symbol(item,rules) for item in universe.to_dict('records')}
@@ -59,7 +59,7 @@ def paper_input_digest(prices,universe,rules):
     digest=hashlib.sha256(prices[prices.symbol.isin(symbols)].to_csv(index=False).encode())
     if rules.entry_method=='setup' and 'industry_peer_history' in universe:
         from .industries import load_peer_history,PEER_DECISION_COLUMNS
-        peers=load_peer_history(universe)
+        peers=load_peer_history(universe) if peer_history is None else peer_history
         peers=peers[peers.date<=pd.Timestamp(prices.date.max())].sort_values(['date','symbol'])
         digest.update(b'\nindustry-peer-history\n'+peers[PEER_DECISION_COLUMNS].to_csv(index=False).encode())
     return digest.hexdigest()
@@ -125,7 +125,14 @@ def run_comparison(prices_path, universe_path, start, split, end, output_dir,
 
 
 def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_000_000,config_path=None,
-                     approved_symbols=None):
+                     approved_symbols=None,revision_id=None):
+    from .observation_control import control_lock
+    with control_lock(Path(state_path)):
+        return _paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved_symbols,revision_id)
+
+
+def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_000_000,config_path=None,
+                     approved_symbols=None,revision_id=None):
     """First run seeds a close-of-day plan. Later runs simulate only subsequent sessions."""
     prices,universe,rules,limits=read_inputs(prices_path,universe_path,as_of,config_path)
     if rules.entry_method=='setup' and 'industry_peer_history' in universe:
@@ -143,11 +150,17 @@ def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_0
     fingerprint=hashlib.sha256(json.dumps({'universe':decision_universe_records(universe),
         'rules':decision_rule_settings(rules),'limits':asdict(limits),'capital':capital},sort_keys=True).encode()).hexdigest()
     history_fingerprint=paper_input_digest(prices,universe,rules)
+    applied_revision=None
     todays=prepared[prepared.date==asof]
     if state_file.exists():
         old=json.loads(state_file.read_text(encoding='utf-8'))
         if old['config_fingerprint']!=fingerprint:
             raise ValueError('모의 계좌 설정·유니버스가 변경되었습니다. 새 상태 파일을 사용하세요.')
+        if revision_id is not None:
+            from .revisions import validated_approval
+            applied_revision=validated_approval(state_path,revision_id,prices_path,universe_path,config_path,as_of)
+            if history_fingerprint!=applied_revision['new_snapshot']:
+                raise ValueError('계산 입력이 승인한 정정 스냅샷과 다릅니다. 변경 대조를 다시 실행하세요.')
         if old['last_date']>as_of:
             raise ValueError('모의 계좌를 과거 날짜로 되돌릴 수 없습니다.')
         if old['last_date']==as_of:
@@ -160,7 +173,15 @@ def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_0
         prior_history=prices[prices.date<=old['last_date']]
         prior_digest=paper_input_digest(prior_history,universe,rules)
         if prior_digest!=old['input_fingerprint']:
-            raise ValueError('이미 처리한 과거 일봉이 수정되었습니다. 가격 조정·수집 정정을 확인하세요. 모의 계좌는 보존됩니다.')
+            from .revisions import report_revision,validated_approval,approve_revision,DataRevisionError
+            if revision_id is None:
+                report=report_revision(prices_path,universe_path,config_path,state_path,as_of)
+                if not report['automatic_eligible']:raise DataRevisionError(report)
+                approve_revision(state_path,report['id'],prices_path,universe_path,config_path,as_of,automatic=True)
+                revision_id=report['id']
+            if applied_revision is None:applied_revision=validated_approval(state_path,revision_id,prices_path,universe_path,config_path,as_of)
+            if history_fingerprint!=applied_revision['new_snapshot']:
+                raise ValueError('계산 입력이 승인한 정정 스냅샷과 다릅니다. 변경 대조를 다시 실행하세요.')
         start=str((pd.Timestamp(old['last_date'])+pd.Timedelta(days=1)).date())
         if rules.entry_method=='setup' and 'industry_peer_history' in universe:
             from .industries import require_peer_sessions
@@ -185,8 +206,15 @@ def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_0
     state.update(config_fingerprint=fingerprint,input_fingerprint=history_fingerprint,
                  generated_at=datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),source=str(prices_path),
                  limitations=LIMITATIONS,execution='local simulation; no broker order API')
+    from .revisions import snapshot_inputs,write_json,report_path
+    state['input_snapshot']=snapshot_inputs(state_path,prices,universe,rules)
+    if state_file.exists():state['revision_lineage']=old.get('revision_lineage',[])
+    if applied_revision:
+        state['revision_lineage']=[*state.get('revision_lineage',[]),dict(report_id=revision_id,
+            prior_date=old['last_date'],applied_on=as_of,old_digest=old['input_fingerprint'],new_prior_digest=applied_revision['new_prior_digest'])]
     save_json(root/'state.json',state)
     save_json(state_file,state)
+    if applied_revision:write_json(report_path(state_path,revision_id)/'applied.json',dict(as_of=as_of,state_fingerprint=history_fingerprint))
     result={'status':'processed','as_of':as_of,'cash':state['cash'],'positions':len(state['positions']),
             'units':state['units'],'pending_signals':len(state['pending']),'rejected_bar_count':len(rejected),
             'state':str(state_file),'mode':'paper_only','rs_method':rules.rs_method,
@@ -258,6 +286,16 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
     prices,u,rules,limits=read_inputs(prices_path,universe_path,as_of,config_path)
     prepared,_=features(prices,u,rules)
     candidates=prepared[(prepared.date==day)&prepared.signal]
+    approved=verify_paper_candidates(candidates,prices,active_rules,as_of,state_path,env_file,verify_provider,include_indices)
+    report=paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved)
+    report['approved_signals']=len(approved)
+    return report
+
+
+def verify_paper_candidates(candidates,prices,active_rules,as_of,state_path,env_file,verify_provider,include_indices):
+    from .brokers import Credentials,QuoteClient
+    from .quality import compare_sources
+    day=pd.Timestamp(as_of)
     approved=[]; audits={}
     if not candidates.empty:
         client=QuoteClient(Credentials.load(verify_provider,Path(env_file)))
@@ -273,11 +311,23 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
             symbol_ok[symbol]=audit['price_mismatch_rows']==0 and audit['volume_mismatch_rows']==0
         approved=[row['symbol'] for row in candidates.to_dict('records')
                   if symbol_ok[row['symbol']] and symbol_ok[row['benchmark']]]
-    audit_root=state_file.parent/as_of
+    audit_root=Path(state_path).parent/as_of
     save_json(audit_root/'broker-audit.json',{'provider':verify_provider,'approved_symbols':approved,
         'mansfield_benchmark_policy':active_rules.mansfield_benchmark,
         'index_source':'NAVER public index chart; not cross-checked with stock quote API' if include_indices else None,
         'rejected_symbols':sorted(set(candidates.symbol)-set(approved)),'details':audits})
-    report=paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved)
-    report['approved_signals']=len(approved)
-    return report
+    return approved
+
+
+def continue_revised_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,revision_id,env_file,verify_provider='kiwoom'):
+    """Use reviewed stored inputs, preserve prior decisions, and re-audit today's candidates."""
+    from .revisions import validated_approval
+    validated_approval(state_path,revision_id,prices_path,universe_path,config_path,as_of)
+    prices,u,rules,_=read_inputs(prices_path,universe_path,as_of,config_path)
+    prepared,_=features(prices,u,rules)
+    candidates=prepared[prepared.date.eq(pd.Timestamp(as_of))&prepared.signal]
+    approved=verify_paper_candidates(candidates,prices,rules,as_of,state_path,env_file,verify_provider,
+        rules.mansfield_benchmark=='market_index' or rules.market_units_enabled and rules.market_units_benchmark=='market_index')
+    result=paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved,revision_id=revision_id)
+    result.update(revision_id=revision_id,approved_signals=len(approved))
+    return result

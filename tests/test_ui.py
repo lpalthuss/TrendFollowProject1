@@ -185,7 +185,7 @@ def test_serial_job_queue_rejects_overlapping_mutations(ops,monkeypatch):
 
 def test_restart_marks_unfinished_jobs_interrupted_without_running_them(project):
     file=project/'outputs/ui/jobs/job.json';file.parent.mkdir(parents=True)
-    file.write_text(json.dumps(dict(id='job',status='running',action='daily')))
+    file.write_text(json.dumps(dict(id='job',status='running',action='daily',owner_id='terminated-owner')))
     operations=Operations(project)
     try:assert operations.jobs['job']['status']=='interrupted'
     finally:operations.close()
@@ -233,3 +233,85 @@ def test_server_cookie_origin_csrf_and_no_secret_file_routes(project):
         response=connection.getresponse();assert response.status==403;response.read()
     finally:
         connection.close();server.shutdown();server.server_close();server.operations.close();thread.join(timeout=3)
+
+def test_revision_replay_is_a_separate_frozen_account_and_continue_preserves_source_history(ops,project):
+    w=create(ops,rules=asdict(Rules(min_turnover=1e20)))
+    first=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-05')))
+    assert first['status']=='completed'
+    original=ops.path(w['state']).read_bytes()
+    old_signals=(ops.path(w['state']).parent/'2026-11-05/signals.csv').read_bytes()
+    file=project/'data/market/history/prices.csv';p=pd.read_csv(file,dtype={'symbol':str})
+    p.loc[p.index[0],'volume']+=1;p.to_csv(file,index=False)
+    failed=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
+    assert failed['status']=='failed' and failed['revision_id']
+    data=ops.revision_view(w['id']);report=data['report']
+    assert data['rows'] and report['row_changes']>=1
+    assert ops.path(w['state']).read_bytes()==original
+    assert len(ops.revision_view(w['id'],source='prices')['rows'])==len(data['rows'])
+    replay=wait_job(ops,ops.submit(dict(workspace=w['id'],action='revision_replay',as_of='2026-11-06',report_id=report['id'])))
+    assert replay['status']=='completed',replay
+    new=ops.workspace(replay['result']['workspace_id'])
+    assert new['mode']=='recalculation' and ops.state(new)['last_date']=='2026-11-06'
+    assert ops.path(w['state']).read_bytes()==original
+    with pytest.raises(ValueError,match='고정 자료'):ops.submit(dict(workspace=new['id'],action='daily',as_of='2026-11-06'))
+    with pytest.raises(ValueError,match='확인'):ops.submit(dict(workspace=w['id'],action='revision_continue',as_of='2026-11-06',report_id=report['id']))
+    continued=wait_job(ops,ops.submit(dict(workspace=w['id'],action='revision_continue',as_of='2026-11-06',report_id=report['id'],reviewed=True,price_reviewed=True)))
+    assert continued['status']=='completed',continued
+    assert ops.state(w)['last_date']=='2026-11-06'
+    assert (ops.path(w['state']).parent/'2026-11-05/signals.csv').read_bytes()==old_signals
+    assert ops.revision_view(w['id'])['report']['applied']
+
+@pytest.mark.parametrize('phase',['headers','body'])
+@pytest.mark.parametrize('error',[ConnectionAbortedError,ConnectionResetError,BrokenPipeError,TimeoutError])
+def test_client_disconnect_does_not_send_another_error_response(project,phase,error):
+    server=make_server(project,0)
+    handler=object.__new__(server.RequestHandlerClass)
+    handler.server=server;handler.path='/api/bootstrap'
+    handler.headers={'Host':f'127.0.0.1:{server.server_port}'}
+    handler.authenticated=lambda:True
+    responses=[];handler.send_response=responses.append;handler.send_header=lambda *args:None
+    def closed(*args):raise error('client disconnected')
+    handler.end_headers=closed if phase=='headers' else lambda:None
+    class Writer:
+        write=closed
+    handler.wfile=Writer()
+    try:
+        handler.do_GET()
+        assert responses==[200] and handler.close_connection is True
+    finally:server.server_close();server.operations.close()
+
+
+def test_second_ui_keeps_live_job_and_refreshes_completion(ops,project,monkeypatch):
+    from trendfollow.ui_jobs import save_job
+    w=create(ops);started=threading.Event();release=threading.Event();second=None
+    def execute(key,*args):
+        ops.jobs[key]['status']='running';save_job(ops.home/'jobs'/f'{key}.json',ops.jobs[key]);started.set()
+        release.wait(5);ops.jobs[key]['status']='completed';save_job(ops.home/'jobs'/f'{key}.json',ops.jobs[key])
+    monkeypatch.setattr(ops,'execute',execute)
+    job=ops.submit(dict(workspace=w['id'],action='analyze',as_of='2026-11-06'))
+    assert started.wait(2)
+    try:
+        second=Operations(project)
+        assert second.jobs[job['id']]['status']=='running'
+        persisted=json.loads((ops.home/'jobs'/f'{job["id"]}.json').read_text(encoding='utf-8'))
+        assert persisted['status']=='running'
+        with pytest.raises(ValueError,match='진행 중'):second.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06'))
+        release.set();assert wait_job(ops,job)['status']=='completed'
+        ops.pool.submit(lambda:None).result(timeout=3)
+        assert next(j for j in second.pulse(w['id'])['jobs'] if j['id']==job['id'])['status']=='completed'
+    finally:
+        release.set()
+        if second:second.close()
+
+
+def test_legacy_running_job_is_not_asserted_interrupted_or_overwritten(project):
+    file=project/'outputs/ui/jobs/legacy.json';file.parent.mkdir(parents=True)
+    running=dict(id='legacy',action='daily',status='running')
+    file.write_text(json.dumps(running))
+    ops=Operations(project)
+    try:
+        assert ops.jobs['legacy']['status']=='unconfirmed'
+        assert json.loads(file.read_text())==running
+        file.write_text(json.dumps(dict(running,status='completed',result={'as_of':'2026-11-06'})))
+        ops.refresh_jobs();assert ops.jobs['legacy']['status']=='completed'
+    finally:ops.close()

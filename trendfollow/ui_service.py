@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 import hashlib
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -18,6 +19,7 @@ import pandas as pd
 from .risk import Account,Limits,allocate
 from .strategy import Rules
 from .workflow import read_inputs,paper_checkpoint,daily_run,save_json
+from .ui_jobs import acquire_lease,load_jobs,save_job
 
 KST=ZoneInfo('Asia/Seoul')
 BUILTINS={
@@ -43,15 +45,20 @@ class Operations:
         self.root=Path(root).resolve();self.home=self.root/'outputs/ui'
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='trendfollow-ui')
         self.lock=threading.RLock();self.jobs={};self.processes={}
+        self.instance_id=uuid.uuid4().hex;self.job_leases={}
         self.registry=self.home/'workspaces.json'
-        for p in sorted((self.home/'jobs').glob('*.json'),key=lambda p:p.stat().st_mtime_ns)[-100:]:
-            try:
-                job=json.loads(p.read_text(encoding='utf-8'))
-                if job['status'] in {'queued','running'}:
-                    job.update(status='interrupted',error='이전 UI 서버가 종료되었습니다. 계좌 처리일을 확인하고 수동 재실행하세요.')
-                    save_json(p,job)
+        self.refresh_jobs()
+
+    def refresh_jobs(self):
+        with self.lock:
+            for job in load_jobs(self.home,self.instance_id):
+                local=self.jobs.get(job['id'])
+                if local and job['id'] in self.job_leases:continue
                 self.jobs[job['id']]=job
-            except (ValueError,KeyError):continue
+
+    def release_job(self,key):
+        with self.lock:leases=self.job_leases.pop(key,())
+        for lease in leases:lease.release()
 
     def close(self):
         # Explicitly started quote workers have their own bounded lifetime and OFF control.
@@ -156,12 +163,37 @@ class Operations:
             blocked=blocked)
 
     def pulse(self,key,as_of=None):
+        self.refresh_jobs()
         w=self.workspace(key);paths=[self.path(w['state']),self.path(w['config']),self.path(w['universe']),self.root/'data/industries/peer-returns.csv']
         signal=self.latest_signals(w)
         if signal:paths.append(signal)
         revision='|'.join(f'{p}:{p.stat().st_mtime_ns}' for p in paths if p.exists())
         with self.lock:jobs=list(self.jobs.values())[-25:]
-        return dict(revision=revision,jobs=jobs,guidance=self.guidance(key,as_of))
+        return dict(revision=revision,jobs=jobs,guidance=self.guidance(key,as_of),recovery=self.revision_view(key,preview=False))
+
+    def revision_view(self,key,report_id=None,offset=0,symbol='',source='',date='',preview=True):
+        from .revisions import read_policy,report_path,sha
+        w=self.workspace(key);state_path=self.path(w['state'])
+        reports=sorted((state_path.parent/'revisions').glob('*/report.json'),key=lambda p:p.stat().st_mtime_ns)
+        if not reports:return dict(report=None,policy=read_policy(state_path),rows=[],total=0)
+        file=report_path(state_path,report_id)/'report.json' if report_id else reports[-1]
+        report=json.loads(file.read_text(encoding='utf-8'))
+        current=self.state(w)
+        report['applied']=(file.parent/'applied.json').exists() or any(x.get('report_id')==report['id'] for x in (current or {}).get('revision_lineage',[]))
+        report['stale']=not report['applied'] and (not state_path.exists() or sha(state_path)!=report['state_sha256'])
+        rows=[];total=report['row_changes']
+        if preview:
+            frame=read_csv(file.parent/'changes.csv')
+            if symbol:frame=frame[frame.symbol.str.contains(symbol,case=False,regex=False,na=False)]
+            if source:frame=frame[frame.source.eq(source)]
+            if date:frame=frame[frame.date.eq(date)]
+            total=len(frame);rows=json_rows(frame.iloc[max(0,offset):max(0,offset)+100])
+        return dict(report=report,policy=read_policy(state_path),rows=rows,total=total)
+
+    def revision_policy(self,payload):
+        from .revisions import set_policy
+        w=self.workspace(payload['workspace'])
+        return set_policy(self.path(w['state']),payload['policy'])
 
     def snapshot(self,key):
         w=self.workspace(key);rules,limits=self.configuration(w);state=self.state(w)
@@ -218,21 +250,39 @@ class Operations:
 
     def submit(self,payload):
         w=self.workspace(payload['workspace']);action=payload.get('action')
-        if action not in {'analyze','paper','daily','industry','prepare_intraday','intraday_close','volume_import','volume_profile'}:raise ValueError('지원하지 않는 작업입니다.')
+        if action not in {'analyze','paper','daily','industry','prepare_intraday','intraday_close','volume_import','volume_profile','revision_check','revision_continue','revision_replay'}:raise ValueError('지원하지 않는 작업입니다.')
         as_of=self.completed_date(payload.get('as_of'))
+        if w.get('mode')=='recalculation' and action not in {'analyze','revision_check'}:
+            raise ValueError('정정 재계산 계좌는 고정 자료를 사용하는 비교 결과입니다. 원계좌에서 운용을 계속하세요.')
+        if action=='revision_continue' and payload.get('reviewed') is not True:
+            raise ValueError('변경 내역과 이전 결정 보존 방식을 확인하세요.')
         if self.state(w) and action in {'analyze','paper','daily','prepare_intraday'} and self.snapshot(w['id'])['status']=='configuration_mismatch':
             raise ValueError('계좌 설정·유니버스가 변경되었습니다. 기존 계좌를 보존하고 새 비교 계좌를 사용하세요.')
         with self.lock:
+            self.refresh_jobs()
             if any(j['status'] in {'queued','running'} for j in self.jobs.values()):raise ValueError('다른 작업이 진행 중입니다. 완료 후 실행하세요.')
+            if any(j['status']=='unconfirmed' for j in self.jobs.values()):raise ValueError('실행 여부가 미확인인 이전 작업이 있습니다. 다른 서버와 계좌 결과를 먼저 확인하세요.')
+            shared=acquire_lease(self.home/'jobs'/'.executor.lock')
+            if shared is None:raise ValueError('다른 UI 서버에서 작업이 진행 중입니다. 완료 후 실행하세요.')
             key=uuid.uuid4().hex[:16]
-            job=dict(id=key,workspace=w['id'],action=action,as_of=as_of,status='queued',created_at=datetime.now(KST).isoformat())
+            lease=acquire_lease(self.home/'jobs'/f'{key}.lock')
+            if lease is None:
+                shared.release();raise ValueError('작업 실행권을 확보하지 못했습니다.')
+            self.job_leases[key]=(lease,shared)
+            job=dict(id=key,workspace=w['id'],action=action,as_of=as_of,status='queued',created_at=datetime.now(KST).isoformat(),
+                owner_id=self.instance_id,owner_pid=os.getpid())
             self.jobs[key]=job
-            save_json(self.home/'jobs'/f'{key}.json',job)
-            self.pool.submit(self.execute,key,w,dict(payload))
+            try:
+                save_job(self.home/'jobs'/f'{key}.json',job)
+                future=self.pool.submit(self.execute,key,w,dict(payload))
+                future.add_done_callback(lambda _future:self.release_job(key))
+            except Exception:
+                self.release_job(key);self.jobs.pop(key,None);raise
         return dict(job)
 
     def execute(self,key,w,payload):
-        job=self.jobs[key];job['status']='running';save_json(self.home/'jobs'/f'{key}.json',job)
+        job=dict(self.jobs[key]);job['status']='running';save_job(self.home/'jobs'/f'{key}.json',job)
+        with self.lock:self.jobs[key]=dict(job)
         try:
             action=payload['action'];as_of=job['as_of'];prices=self.path(w['data_dir'])/'prices.csv'
             universe=self.path(w['universe']);config=self.path(w['config']);state_path=self.path(w['state'])
@@ -258,6 +308,19 @@ class Operations:
                     signals=int(result.signal.sum()),allocated=int((result.quantity>0).sum()),
                     config_sha256=hashlib.sha256(config.read_bytes()).hexdigest())
                 save_json(out/'analysis.json',info);result=info
+            elif action=='revision_check':
+                from .revisions import report_revision
+                from .observation_control import control_lock
+                with control_lock(state_path):result=report_revision(prices,universe,config,state_path,as_of)
+            elif action=='revision_continue':
+                from .revisions import approve_revision
+                from .workflow import continue_revised_checkpoint
+                from .observation_control import control_lock
+                with control_lock(state_path):
+                    approve_revision(state_path,payload['report_id'],prices,universe,config,as_of,
+                        price_reviewed=payload.get('price_reviewed',False))
+                result=continue_revised_checkpoint(prices,universe,as_of,state_path,w['capital'],config,payload['report_id'],self.root/'.env')
+            elif action=='revision_replay':result=self.replay_revision(w,payload['report_id'],as_of)
             elif action=='paper':result=paper_checkpoint(prices,universe,as_of,state_path,w['capital'],config)
             elif action=='daily':result=daily_run(universe,self.path(w['data_dir']),state_path,as_of,w['capital'],config,self.root/'.env','kiwoom')
             elif action=='industry':
@@ -296,11 +359,44 @@ class Operations:
                 if plan['session']!=as_of:raise ValueError('대조 기준일을 관측 거래일과 맞추세요.')
                 result=close_comparison(run/'plan.json',prices,self.root/'data/industries/peer-returns.csv',out,run_dir=run)
             job.update(status='completed',result=result)
-        except (ValueError,FileNotFoundError) as error:job.update(status='failed',error=str(error))
+        except (ValueError,FileNotFoundError) as error:
+            job.update(status='failed',error=str(error))
+            if hasattr(error,'report'):job['revision_id']=error.report['id']
         except Exception:job.update(status='failed',error='작업 처리에 실패했습니다. 데이터·설정·출력 경로를 확인하세요.')
         finally:
             job['finished_at']=datetime.now(KST).isoformat()
-            save_json(self.home/'jobs'/f'{key}.json',job)
+            try:save_job(self.home/'jobs'/f'{key}.json',job)
+            finally:
+                with self.lock:
+                    self.release_job(key)
+                    self.jobs[key]=job
+
+    def replay_revision(self,w,report_id,as_of):
+        from .revisions import report_path,load_snapshot,snapshot_path,read_json,sha
+        state_path=self.path(w['state']);home=report_path(state_path,report_id);report=read_json(home/'report.json')
+        if report['as_of']!=as_of:raise ValueError('정정 보고서와 재계산 종료일이 다릅니다.')
+        if report['config_sha256']!=sha(self.path(w['config'])) or report['universe_sha256']!=sha(self.path(w['universe'])):
+            raise ValueError('보고서 이후 설정·유니버스가 바뀌었습니다. 다시 대조하세요.')
+        p,peers,_=load_snapshot(snapshot_path(state_path,report['new_snapshot']))
+        rules,limits=self.configuration(w)
+        row=self.create_workspace(dict(name=w['name'][:45]+' · 정정 재계산',capital=w['capital'],rules=asdict(rules),limits=asdict(limits)))
+        root=self.path(row['state']).parent;data=root/'recalculation-inputs';data.mkdir()
+        p.to_csv(data/'prices.csv',index=False)
+        u=read_csv(self.path(w['universe']))
+        if peers is not None:
+            peers.to_csv(data/'peers.csv',index=False);u['industry_peer_history']=str((data/'peers.csv').resolve())
+        u.to_csv(data/'universe.csv',index=False)
+        row.update(data_dir=str(data.relative_to(self.root)),universe=str((data/'universe.csv').relative_to(self.root)),
+            mode='recalculation',source_workspace=w['id'],revision_id=report_id)
+        with self.lock:save_json(self.registry,[row if x['id']==row['id'] else x for x in self.registry_rows()])
+        days=sorted(x.name for x in state_path.parent.iterdir() if x.is_dir() and re.fullmatch(r'\d{4}-\d{2}-\d{2}',x.name))
+        start=days[0] if days else report['account_as_of']
+        paper_checkpoint(data/'prices.csv',data/'universe.csv',start,self.path(row['state']),w['capital'],self.path(row['config']))
+        result=paper_checkpoint(data/'prices.csv',data/'universe.csv',as_of,self.path(row['state']),w['capital'],self.path(row['config']))
+        result.update(workspace_id=row['id'],comparison_start=start,source_workspace=w['id'],
+            mode='corrected_data_replay',warning='정정 자료로 과거 판단을 다시 계산한 연구 계좌입니다. 원계좌의 당시 운용 결과와 구분하세요.')
+        save_json(root/'recalculation.json',result)
+        return result
 
     def plans(self):
         result=[]

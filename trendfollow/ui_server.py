@@ -29,12 +29,19 @@ def make_server(root,port=8765):
 
         def send(self,status,value,kind='application/json; charset=utf-8',session=False):
             data=json.dumps(value,ensure_ascii=False,allow_nan=False).encode('utf-8') if kind.startswith('application/json') else value
-            self.send_response(status)
-            self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(data)))
-            self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
-            self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'")
-            if session:self.send_header('Set-Cookie',f'trendfollow_ui={token}; HttpOnly; SameSite=Strict; Path=/')
-            self.end_headers();self.wfile.write(data)
+            try:
+                self.send_response(status)
+                self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(data)))
+                self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+                self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'")
+                if session:self.send_header('Set-Cookie',f'trendfollow_ui={token}; HttpOnly; SameSite=Strict; Path=/')
+                self.end_headers();self.wfile.write(data)
+                return True
+            except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError,TimeoutError):
+                # The client has gone away. Do not send a second HTTP error response,
+                # and do not classify a detached background operation as failed.
+                self.close_connection=True
+                return False
 
         def do_GET(self):
             if not self.allowed():return self.send(403,{'error':'로컬 UI에서 접속하세요.'})
@@ -51,6 +58,8 @@ def make_server(root,port=8765):
                 elif url.path=='/api/pulse':result=operations.pulse(key,query.get('as_of',[None])[0])
                 elif url.path=='/api/intraday':result=operations.intraday(key or None)
                 elif url.path=='/api/prices':result=operations.prices(key,query.get('symbol',[''])[0])
+                elif url.path=='/api/revision':result=operations.revision_view(key,query.get('report_id',[None])[0],
+                    int(query.get('offset',['0'])[0]),query.get('symbol',[''])[0],query.get('source',[''])[0],query.get('date',[''])[0])
                 else:return self.send(404,{'error':'요청한 화면을 찾을 수 없습니다.'})
                 self.send(200,result)
             except (ValueError,FileNotFoundError) as error:self.send(400,{'error':str(error)})
@@ -68,6 +77,7 @@ def make_server(root,port=8765):
                 path=urlsplit(self.path).path
                 if path=='/api/workspaces':result=operations.create_workspace(payload)
                 elif path=='/api/jobs':result=operations.submit(payload)
+                elif path=='/api/revision/policy':result=operations.revision_policy(payload)
                 elif path=='/api/watch/start':result=operations.start_watch(payload)
                 elif path=='/api/watch/stop':result=operations.stop_watch()
                 else:return self.send(404,{'error':'지원하지 않는 작업입니다.'})
