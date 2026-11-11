@@ -347,4 +347,4 @@ API 근거: [KIS 주식 일봉 공식 예제](https://github.com/koreainvestment
 
 ## 개발·문서 진입점
 
-전체 문서는 [문서 목록](docs/README.md), 구조는 [ARCHITECTURE.md](docs/ARCHITECTURE.md), 설치·UI 빌드·통합 검증은 [DEVELOPMENT.md](docs/DEVELOPMENT.md)를 참고한다. 기존 최상위 문서 경로는 안내 링크로 유지한다. `examples/`·`data/`·`outputs/`의 운용 경로는 그대로 사용한다.
+전체 문서는 [문서 목록](docs/README.md), 구조는 [ARCHITECTURE.md](docs/ARCHITECTURE.md), 설치·UI 빌드·통합 검증은 [DEVELOPMENT.md](docs/DEVELOPMENT.md)를 참고한다. `examples/`·`data/`·`outputs/`의 운용 경로는 그대로 사용한다.
