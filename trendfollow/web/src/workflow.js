@@ -14,6 +14,7 @@ function flow(step) {
 }
 function renderFlow() {
   renderRecoveryControls();
+  renderWatchControls();
   if (!snapshot || !guidance) return;
   const s = snapshot,
     r = s.rules,
@@ -163,18 +164,6 @@ function renderFlow() {
     s.pending,
     "현재 저장된 진입·추가매수 대기가 없습니다.",
   );
-  const runs = watchData?.runs || [];
-  $("flow-watch-status").textContent =
-    r.entry_method !== "setup"
-      ? "현재 계좌는 고가 돌파 방식입니다. 장중 계획은 셋업 계좌에서 지원됩니다."
-      : !runs.length
-        ? "이 계좌의 장중 관측 기록이 없습니다. 오늘 종가 운용은 여기서 마쳐도 됩니다. 거래량 누적·종가 대조는 기록을 수집한 뒤 가능합니다."
-        : "선택 계좌의 최근 관측 기록이 있습니다. 관측 종료와 해당 거래일 종가 자료를 확인한 후 누적·대조하세요.";
-  $("prepare-watch").disabled =
-    busy || !g.processed || mismatch || r.entry_method !== "setup";
-  $("volume-import").disabled = busy || !runs.length;
-  $("close-compare").disabled = busy || !runs.length;
-  $("start-watch").disabled = !watchData?.plans.length;
 }
 document
   .querySelectorAll("[data-step]")

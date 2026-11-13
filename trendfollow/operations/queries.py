@@ -37,7 +37,7 @@ class OperationsQueries:
             recovery=self.context.revision_view(key, preview=False),
         )
 
-    def latest_signals(self, w):
+    def latest_signals(self, w, as_of=None):
         state = self.context.state(w)
         candidates = []
         if state:
@@ -50,6 +50,11 @@ class OperationsQueries:
         if directory.exists():
             candidates.extend(directory.glob("*/signals.csv"))
         available = [p for p in candidates if p.exists()]
+        if as_of:
+            available = [p for p in available if p.parent.name == as_of or (
+                p.parent.parent == directory and
+                pd.read_csv(p, usecols=["date"], nrows=1).date.astype(str).str[:10].eq(as_of).any()
+            )]
         return max(available, key=lambda p: p.stat().st_mtime_ns) if available else None
 
     def guidance(self, key, as_of=None):

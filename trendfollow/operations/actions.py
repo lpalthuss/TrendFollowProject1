@@ -14,6 +14,45 @@ class ActionRunner:
     def __init__(self, context):
         self.context = context
 
+    def prepare_watch_candidates(self, out, prices, frame, universe, members, symbols, as_of, rules, watch_mode):
+        from ..backtest import features
+        from ..market import acquire_research
+        from ..relative_strength import mansfield_benchmark_symbol
+
+        # Percentile RS needs the whole comparison universe. Mansfield is per symbol.
+        if watch_mode == "symbols" and rules.rs_method == "mansfield":
+            members = members[members.symbol.isin(symbols)]
+        required = set(members.symbol) | set(members.benchmark)
+        benchmarks = set(members.benchmark) | {
+            mansfield_benchmark_symbol(row, rules) for row in members.to_dict("records")
+        }
+        required |= benchmarks
+        if not frame.empty:
+            frame = frame[frame.date.le(as_of) & frame.symbol.isin(required)]
+        if frame.empty or not required.issubset(set(frame.loc[frame.date.eq(as_of), "symbol"])):
+            collection_universe = universe
+            if watch_mode == "symbols" and rules.rs_method == "mansfield":
+                collection_universe = out / "universe.csv"
+                members.to_csv(collection_universe, index=False)
+            source = out / "daily"
+            manifest = acquire_research(
+                collection_universe, source, "2020-01-01", as_of,
+                include_market_indices=rules.mansfield_benchmark == "market_index",
+                required_session=as_of,
+            )
+            if not manifest["published"]:
+                raise ValueError(f"{as_of} 확정 일봉을 모두 가져오지 못했습니다. 잠시 후 다시 시도하세요.")
+            prices = source / "prices.csv"
+            frame = read_csv(prices)
+
+        calculated, _ = features(frame, members, rules)
+        candidates = calculated[calculated.date.eq(pd.Timestamp(as_of))]
+        if not set(symbols).issubset(set(candidates.symbol)):
+            raise ValueError(f"{as_of} 감시 종목의 유효한 일봉이 없습니다.")
+        signal = out / "candidates.csv"
+        candidates.to_csv(signal, index=False, encoding="utf-8-sig")
+        return signal, prices
+
     def replay_revision(self, w, report_id, as_of):
         from ..revisions import (
             report_path,
@@ -213,13 +252,9 @@ class ActionRunner:
             )
         elif action == "prepare_intraday":
             from ..intraday import prepare_plan
+            from ..research_store import require_published_research
+            from .intraday import industry_ready
 
-            signal = self.context.latest_signals(w)
-            if signal is None:
-                raise ValueError("먼저 기준일 후보를 분석하세요.")
-            f = read_csv(signal)
-            if f.empty or str(f.date.iloc[0])[:10] != as_of:
-                raise ValueError("분석 기준일과 감시 준비 기준일이 다릅니다.")
             symbols = payload.get("symbols", [])
             if (
                 not isinstance(symbols, list)
@@ -230,9 +265,31 @@ class ActionRunner:
                 )
             ):
                 raise ValueError("감시할 종목을 선택하세요.")
+            if rules.entry_method != "setup" or rules.market_units_enabled:
+                raise ValueError("시장 유닛이 비활성화된 파동 셋업 계좌를 선택하세요.")
+            watch_mode = payload.get("watch_mode", "industry")
+            if watch_mode not in ("industry", "symbols"):
+                raise ValueError("감시 범위를 선택하세요.")
+            members = pd.read_csv(universe, dtype={"symbol": str, "benchmark": str}, keep_default_na=False)
+            if not set(symbols).issubset(set(members.symbol)):
+                raise ValueError("선택 계좌의 유니버스에 포함된 종목 코드를 입력하세요.")
+            if watch_mode == "industry" and not industry_ready(members, as_of):
+                raise ValueError(f"{as_of} 산업 구성 자료가 없습니다. 입력 종목만으로 감시 계획을 생성할 수 있습니다.")
+            state = self.context.state(w)
+            paper_state = state_path if state and state["last_date"] == as_of else None
+            held = list(state["positions"]) if paper_state and watch_mode == "industry" else []
+            targets = sorted(set(symbols + held))
+            signal = self.context.latest_signals(w, as_of)
+            require_published_research(prices)
+            frame = read_csv(prices)
             out = self.context.home / "intraday" / key
             out.mkdir(parents=True)
             plan = out / "plan.json"
+            if (signal is None or frame.empty
+                    or not set(targets).issubset(set(frame.loc[frame.date.eq(as_of), "symbol"]))):
+                signal, prices = self.prepare_watch_candidates(
+                    out, prices, frame, universe, members, targets, as_of, rules, watch_mode
+                )
             references = []
             for ref in (self.context.home / "volume").glob("reference-*.json"):
                 data = json.loads(ref.read_text(encoding="utf-8"))
@@ -247,11 +304,11 @@ class ActionRunner:
                 symbols,
                 config,
                 plan,
-                paper_state=state_path if state_path.exists() else None,
+                paper_state=paper_state,
                 volume_profile=reference,
+                watch_mode=watch_mode,
+                ui_workspace_id=w["id"],
             )
-            result["ui_workspace_id"] = w["id"]
-            save_json(plan, result)
             result = dict(
                 plan_id=key,
                 subscriptions=len(result["subscriptions"]),

@@ -337,10 +337,10 @@
           <h2>4. 장중 관측은 선택 사항입니다</h2>
           <div id="flow-watch-status" class="notice"></div>
           <p>
-            장마감 후에는 다음 관측일 계획만 준비하세요. 종가 결과 화면의 후보를
-            확인한 뒤 감시할 종목 코드를 입력합니다. 관측 ON은 해당 거래일
-            정규장에만 가능합니다. 종가 모의 처리는 관측 없이도 진행할 수
-            있습니다.
+            애프터마켓 종료 후에는 다음 관측일 계획을 준비하세요. 종가 결과
+            화면의 후보를 확인한 뒤 감시할 종목 코드를 입력합니다. 관측 ON은
+            해당 거래일 정규장과 NXT 애프터마켓 거래 시간에 가능합니다. 종가
+            모의 처리는 관측 없이도 진행할 수 있습니다.
           </p>
           <section id="intraday" class="watch-form">
             <div class="section-head">
@@ -357,23 +357,47 @@
                 >감시할 종목 코드<input
                   id="watch-symbols"
                   placeholder="005930, 000660" /></label
+              ><label
+                >감시 범위<select id="watch-mode">
+                  <option value="industry">전체 산업 포함</option>
+                  <option value="symbols">입력 종목만</option>
+                </select></label
               ><label>감시 거래일<input id="watch-session" type="date" /></label
-              ><button id="prepare-watch">선택 종목 감시 계획 생성</button>
+              ><button
+                id="prepare-watch"
+                disabled
+                aria-describedby="flow-watch-status watch-subscriptions"
+              >
+                자료 준비 및 계획 생성
+              </button>
             </div>
+            <p id="watch-subscriptions" class="muted" aria-live="polite"></p>
             <div class="watch-controls">
               <label>저장한 감시 계획<select id="watch-plan"></select></label
               ><label
-                >관측 시간(초)<input
+                >관측 시간(초) · 20:00 자동 종료<input
                   id="watch-seconds"
                   type="number"
-                  value="300"
+                  value="39600"
                   min="1"
-                  max="23400" /></label
-              ><button id="start-watch" class="primary">관측 ON</button
+                  max="39600" /></label
+              ><button
+                id="start-watch"
+                class="primary"
+                disabled
+                aria-describedby="watch-start-status"
+              >
+                관측 ON</button
               ><button id="stop-watch" class="danger">관측 OFF</button>
             </div>
+            <p id="watch-start-status" class="muted" aria-live="polite"></p>
             <div id="watch-info" class="notice"></div>
-            <div id="live-events" class="table-wrap"></div>
+            <div id="watch-quotes" class="table-wrap"></div>
+            <p id="watch-decision-status" class="muted" aria-live="polite"></p>
+            <div id="watch-decision-history">
+              <h3>평가 가능한 판단 이력</h3>
+              <div id="live-events" class="table-wrap"></div>
+            </div>
             <div class="action-strip">
               <p>
                 관측이 끝나고 종가 데이터가 확보되면 같은 계획으로 결과를

@@ -1,15 +1,17 @@
-"""KIS H0STCNT0 quote subscription only. No order/account subscriptions."""
+"""KIS regular and NXT after-market quote subscriptions. No account channels."""
 from datetime import datetime
 from contextlib import ExitStack
 import json
 import math
 from pathlib import Path
+import re
 import time
 
 from .brokers import BrokerError, Credentials, QuoteClient
 from .intraday import IntradayMonitor, KST, finite, stamp
 from .intraday_sampling import ObservationSession, validate_sampling
 from .connection_health import ConnectionHealth, ReceiveIdleTimeout
+from .krx_sessions import observation_market, require_previous_close
 from .observation_control import (DEFAULT_CONTROL, ControlledObservation, ObservationStopped,
                                   control_status, set_observation)
 
@@ -17,15 +19,16 @@ WS_URL = {'live':'ws://ops.koreainvestment.com:21000/tryitout',
           'paper':'ws://ops.koreainvestment.com:31000/tryitout'}
 
 
-def subscription(approval, symbol):
+def subscription(approval, symbol, market='krx'):
+    tr_id = 'H0UNCNT0' if market == 'nxt_after' else 'H0STCNT0'
     return {'header':{'approval_key':approval,'custtype':'P','tr_type':'1','content-type':'utf-8'},
-            'body':{'input':{'tr_id':'H0STCNT0','tr_key':symbol}}}
+            'body':{'input':{'tr_id':tr_id,'tr_key':symbol}}}
 
 
 def parse_trades(raw):
     """Official 47-field H0STCNT0 schema, including batched trades."""
     parts = raw.split('|',3)
-    if len(parts) != 4 or parts[0] != '0' or parts[1] != 'H0STCNT0':
+    if len(parts) != 4 or parts[0] != '0' or parts[1] not in {'H0STCNT0','H0UNCNT0'}:
         raise ValueError('지원하지 않는 KIS 실시간 시세 패킷입니다.')
     try:
         count = int(parts[2]); fields = parts[3].split('^')
@@ -34,6 +37,8 @@ def parse_trades(raw):
         ticks = []
         for i in range(count):
             f = fields[i*47:(i+1)*47]
+            if parts[1] == 'H0UNCNT0' and f[46] != '3':
+                continue  # Integrated feed can contain non-after trades.
             day = datetime.strptime(f[33]+f[1],'%Y%m%d%H%M%S').replace(tzinfo=KST)
             price, change = finite(f[2],True), abs(finite(f[4]))
             if f[3] in {'1','2'}: previous = price-change
@@ -44,7 +49,7 @@ def parse_trades(raw):
             if volume < 0 or prior_volume < 0: raise ValueError()
             ticks.append({'symbol':f[0],'timestamp':day.isoformat(),'price':price,
                 'previous_close':finite(previous,True),'day_low':finite(f[9],True),
-                'cumulative_volume':volume,
+                'cumulative_volume':volume,'market':'nxt_after' if parts[1]=='H0UNCNT0' else 'krx',
                 'volume_vs_previous_same_time':volume/prior_volume if prior_volume > 0 else None})
         return ticks
     except (ValueError,IndexError,OverflowError):
@@ -87,26 +92,39 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
     now = datetime.now(KST)
     if not probe and (now.weekday() >= 5 or str(now.date()) != plan['session']):
         return {'status':'skipped_outside_planned_session','orders_sent':0}
-    if not probe and not '09:00' <= now.strftime('%H:%M') <= '15:30':
-        return {'status':'skipped_outside_regular_session','orders_sent':0}
-    credentials = Credentials.load('kis',Path(env_file))
+    if not probe and observation_market(now) is None:
+        return {'status':'skipped_outside_observation_session','orders_sent':0}
+    if not probe:
+        require_previous_close(plan['session'], plan['as_of'])
     root = Path(output); root.mkdir(parents=True,exist_ok=False)
     (root/'plan.json').write_bytes(plan_bytes)
     summary = {'mode':'connection_probe' if probe else 'live_observation_only',
-        'provider':'kis','environment':credentials.environment,'quote_ticks':0,
+        'provider':'kis','quote_ticks':0,
+        'market':observation_market(now) if not probe else 'krx',
+        'watch_mode':plan.get('watch_mode','industry'),
+        'subscriptions_requested':len(plan['subscriptions']),
         'subscription_acks':0,'reconnections':0,'idle_reconnections':0,
         'orders_sent':0,'status':'starting','connection_state':'disconnected'}
     summary.update(evaluation_seconds=evaluation_seconds,tick_storage=tick_storage)
     import hashlib
     summary['plan_sha256'] = hashlib.sha256(plan_bytes).hexdigest()
+    sampler = None
     def save():
         summary.update(health.snapshot(time.monotonic()))
+        if sampler:
+            summary['latest_target_quotes'] = {
+                symbol: {**quote, 'planned_previous_close':plan['targets'][symbol]['previous_close'],
+                         'price_basis_mismatch':symbol in monitor.basis_mismatch}
+                for symbol,quote in monitor.latest_target_quotes.items()
+            }
         (root/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
     save()
     ws = None
-    sampler = None
     try:
         worker.check(force=True)
+        summary['stage'] = 'credentials'
+        credentials = Credentials.load('kis',Path(env_file))
+        summary['environment'] = credentials.environment
         summary['stage'] = 'approval_request'
         client = QuoteClient(credentials)
         body,_ = client._send('POST','/oauth2/Approval',json={
@@ -152,6 +170,15 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
                     sampler.finish(at)
                 stack.callback(finish_sampling)
             while time.monotonic() < deadline:
+                wall_now = datetime.now(KST)
+                if not probe and (str(wall_now.date()) != plan['session'] or
+                                  wall_now.hour >= 20):
+                    break
+                current_market = observation_market(wall_now) if not probe else 'krx'
+                if current_market is None:
+                    worker.check(force=True)
+                    time.sleep(min(1,max(0,deadline-time.monotonic())))
+                    continue
                 try:
                     worker.check(force=True)
                     summary['stage'] = 'websocket_connect'
@@ -160,19 +187,23 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
                     worker.check(force=True)
                     if not probe: ws.settimeout(min(1,evaluation_seconds,idle_timeout))
                     summary['stage'] = 'quote_subscription'
+                    summary['market'] = current_market
                     if sampler: sampler.reset_connection(datetime.now(KST).isoformat())
                     acknowledged = set()
+                    pending = iter(plan['subscriptions'])
+                    awaiting = next(pending)
                     summary['subscription_acks'] = 0
                     summary['connection_state'] = 'awaiting_messages'
-                    for symbol in plan['subscriptions']:
-                        worker.check()
-                        ws.send(json.dumps(subscription(approval,symbol)))
-                        time.sleep(.1)
+                    ws.send(json.dumps(subscription(approval,awaiting,current_market)))
                     health.connected(time.monotonic(),datetime.now(KST).isoformat())
                     connection_event('connected')
                     save()
                     while time.monotonic() < deadline:
                         worker.check()
+                        if not probe and observation_market(datetime.now(KST)) != current_market:
+                            summary['connection_state'] = 'market_transition'
+                            connection_event('market_transition')
+                            break
                         try:
                             raw = ws.recv()
                         except websocket.WebSocketTimeoutException:
@@ -202,12 +233,25 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
                                 ws.pong(raw.encode('utf-8'))
                                 connection_event('pingpong_replied')
                                 continue
-                            if control.get('body',{}).get('rt_cd') != '0':
-                                raise BrokerError('KIS 실시간 구독이 거절됐습니다. 환경·구독 한도를 확인하세요.')
-                            if header.get('tr_id') == 'H0STCNT0' and header.get('tr_key') in plan['subscriptions']:
-                                acknowledged.add(header['tr_key'])
+                            response = control.get('body',{})
+                            if response.get('rt_cd') != '0':
+                                code = response.get('msg_cd')
+                                if isinstance(code,str) and re.fullmatch(r'[A-Z]{4}\d{4,5}',code):
+                                    summary['kis_error_code'] = code
+                                summary['failure_reason'] = ('subscription_limit' if code == 'OPSP0008' else 'subscription_rejected')
+                                if awaiting is not None:
+                                    summary['rejected_symbol'] = awaiting
+                                raise BrokerError('KIS 실시간 구독이 거절됐습니다.')
+                            tr_id = subscription(approval,awaiting,current_market)['body']['input']['tr_id'] if awaiting is not None else None
+                            if awaiting is not None and header.get('tr_id') == tr_id and header.get('tr_key') == awaiting:
+                                acknowledged.add(awaiting)
                                 summary['subscription_acks'] = len(acknowledged)
+                                awaiting = next(pending,None)
                                 save()
+                                if awaiting is not None:
+                                    time.sleep(.1)
+                                    worker.check()
+                                    ws.send(json.dumps(subscription(approval,awaiting,current_market)))
                             if probe and len(acknowledged) == len(plan['subscriptions']):
                                 summary['status'] = 'subscriptions_acknowledged_no_tick_validation'
                                 return summary
@@ -222,6 +266,9 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
                             # Probe mode never feeds another trading day's data into a plan.
                             if not probe:
                                 sampler.tick(tick,received)
+                    if awaiting is not None and (probe or observation_market(datetime.now(KST)) == current_market):
+                        summary['failure_reason'] = 'subscription_incomplete'
+                        raise BrokerError('KIS 실시간 구독 승인이 완료되지 않았습니다.')
                     summary['status'] = 'completed' if summary['quote_ticks'] else 'no_trade_ticks_received'
                 except (websocket.WebSocketException,OSError,ReceiveIdleTimeout) as error:
                     summary['reconnections'] += 1
@@ -246,6 +293,9 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
         return summary
     except (BrokerError,ValueError,KeyError,TypeError):
         summary['status'] = 'failed'
+        summary.setdefault('failure_reason', {
+            'credentials':'credentials_error', 'approval_request':'approval_error',
+        }.get(summary.get('stage'), 'connection_error' if summary.get('last_disconnect_reason') else 'observation_failed'))
         raise BrokerError('KIS 장중 감시를 완료하지 못했습니다. 기존 모의계좌는 변경하지 않았습니다.') from None
     except KeyboardInterrupt:
         summary['status'] = 'interrupted'

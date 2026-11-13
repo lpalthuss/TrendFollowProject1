@@ -9,8 +9,9 @@ async function load(prime = true) {
   const selected = workspace,
     ticket = ++loadSequence;
   loading = true;
+  renderWatchControls();
   document
-    .querySelectorAll("[data-action],#prepare-watch")
+    .querySelectorAll("[data-action]")
     .forEach((b) => (b.disabled = true));
   try {
     const data = await api(
@@ -35,6 +36,7 @@ async function load(prime = true) {
   } catch (e) {
     if (selected !== workspace || ticket !== loadSequence) return;
     loading = false;
+    renderWatchControls();
     toast(e.message, true);
     $("context").textContent = e.message;
   }
@@ -93,14 +95,7 @@ function render() {
     `신호 기준 ${s.as_of || "없음"} / 계좌 기준 ${s.account_as_of || "미시작"} · 종가 계획과 모의 체결 구분`;
   $("updated").textContent =
     "화면 확인 " + new Date().toLocaleTimeString("ko-KR");
-  if (!$("watch-session").value && s.as_of) {
-    const date = new Date(s.as_of + "T12:00:00");
-    do {
-      date.setDate(date.getDate() + 1);
-    } while ([0, 6].includes(date.getDay()));
-    $("watch-session").value =
-      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-  }
+  renderWatchControls();
 }
 async function poll() {
   if (!workspace || polling || loading) return;

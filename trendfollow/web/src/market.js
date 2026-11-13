@@ -127,13 +127,10 @@ function renderStocks() {
         (r) => {
           const b = el("button", "선택", "quiet");
           b.onclick = () => {
-            const set = new Set(
-              $("watch-symbols")
-                .value.split(/[,\s]+/)
-                .filter(Boolean),
-            );
+            const set = new Set(watchSymbols());
             set.add(r.symbol);
             $("watch-symbols").value = [...set].join(", ");
+            renderWatchControls();
             toast("감시 목록에 " + r.symbol + " 추가");
           };
           return b;

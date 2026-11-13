@@ -7,7 +7,7 @@ name = "trendfollow-research"
 version = "0.1.0"
 description = "End-of-day trend screening and risk planning for Korean stocks"
 requires-python = ">=3.11"
-dependencies = ["pandas>=2.2,<3", "numpy>=1.26,<3", "requests>=2.31,<3", "python-dotenv>=1,<2"]
+dependencies = ["pandas>=2.2,<3", "numpy>=1.26,<3", "requests>=2.31,<3", "python-dotenv>=1,<2", "exchange-calendars>=4.13.1,<5"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10", "websocket-client>=1.8,<2"]

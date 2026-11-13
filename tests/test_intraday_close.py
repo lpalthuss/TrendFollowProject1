@@ -45,6 +45,17 @@ def test_price_breakout_failed_by_close_but_industry_held_and_stop_was_observed(
     assert all(files[key].read_bytes()==value for key,value in hashes.items())
 
 
+def test_after_market_signal_is_not_compared_to_earlier_krx_close(files):
+    events = [json.loads(line) for line in (files['run']/'events.jsonl').read_text().splitlines()]
+    for event in events:
+        event['market'] = 'nxt_after'
+    (files['run']/'events.jsonl').write_text(''.join(json.dumps(event)+'\n' for event in events))
+    summary,row=compare(files)
+    assert row['intraday_breakout_seen'] is None
+    assert summary['breakouts_seen'] is None
+    assert row['breakout_outcome']!='not_held_at_close'
+
+
 def test_retained_price_breakout_is_not_claimed_as_final_entry_confirmation(files):
     prices=pd.read_csv(files['prices'],dtype={'symbol':str})
     prices.loc[(prices.symbol=='000001')&(prices.date=='2026-11-09'),'close']=106

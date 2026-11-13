@@ -51,7 +51,13 @@ class JobManager:
             "revision_replay",
         }:
             raise ValueError("지원하지 않는 작업입니다.")
-        as_of = self.context.completed_date(payload.get("as_of"))
+        if action == "prepare_intraday":
+            from ..krx_sessions import require_previous_close
+
+            as_of = require_previous_close(payload.get("session"), payload.get("as_of"))
+        else:
+            as_of = payload.get("as_of")
+        as_of = self.context.completed_date(as_of)
         if w.get("mode") == "recalculation" and action not in {
             "analyze",
             "revision_check",

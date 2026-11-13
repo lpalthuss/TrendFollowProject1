@@ -110,13 +110,14 @@ def close_comparison(plan_path, prices_path, peer_returns_path, output,
     prices, rejected = clean_research_prices(raw)
     frames = {str(s):f.set_index('date') for s,f in prices.groupby('symbol')}
     asof, session = pd.Timestamp(plan['as_of']), pd.Timestamp(plan['session'])
-    benchmarks = {m['benchmark'] for m in plan['members'].values()}
-    for benchmark in benchmarks:
-        f = frames.get(benchmark)
+    symbols_only = plan.get('watch_mode') == 'symbols'
+    session_check_symbols = plan['targets'] if symbols_only else {m['benchmark'] for m in plan['members'].values()}
+    for symbol in session_check_symbols:
+        f = frames.get(symbol)
         if f is not None and ((f.index > asof)&(f.index < session)).any():
             raise ValueError('계획 기준일 이후 미반영 거래일이 있습니다. 최신 기준일의 계획으로 대조하세요.')
     peers = pd.DataFrame()
-    if peer_returns_path:
+    if peer_returns_path and not symbols_only:
         peers = pd.read_csv(peer_returns_path,dtype={'symbol':str},keep_default_na=False)
         if not {'date','symbol','day_return','quote_eligible'}.issubset(peers):
             raise ValueError('종가 산업 수익률 파일의 필드가 부족합니다.')
@@ -131,7 +132,9 @@ def close_comparison(plan_path, prices_path, peer_returns_path, output,
         f = frames.get(symbol)
         return f.loc[date] if f is not None and date in f.index else None
     for symbol,target in plan['targets'].items():
-        events = [e for e in observed['events'] if e['symbol']==symbol]
+        # The KRX close happened before NXT after-market trades. Compare only
+        # regular-session observations to that close.
+        events = [e for e in observed['events'] if e['symbol']==symbol and e.get('market')!='nxt_after']
         quotes = sorted(set(observed['quotes'][symbol]))
         status = observed['status']
         if status == 'recorded' and not quotes: status = 'no_target_quotes'
@@ -185,7 +188,8 @@ def close_comparison(plan_path, prices_path, peer_returns_path, output,
             'close_stop_contact':stop,'close_industry_action':industry,
             'close_peer_count':count,'expected_peer_count':expected,'close_peer_coverage':coverage,
             'close_peer_up_fraction':breadth,'close_peer_excess_return':mean_excess,
-            'peer_classification_changes':int(changed),'industry_scope':'frozen_plan_members',
+            'peer_classification_changes':int(changed),
+            'industry_scope':'not_evaluated' if symbols_only else 'frozen_plan_members',
             'breakout_outcome':outcome(seen['breakout_present'],close_breakout,status),
             'industry_outcome':outcome(seen['industry_action'],industry,status),
             'close_stop_contact_without_observation':bool(stop and seen['holding_stop_breached'] is not True) if stop is not None and status=='recorded' else None})

@@ -11,9 +11,9 @@ import pandas as pd
 
 from .industries import load_peer_history
 from .config import Rules
+from .krx_sessions import require_previous_close
 
 KST = ZoneInfo('Asia/Seoul')
-MAX_SUBSCRIPTIONS = 40
 
 
 def stamp(value):
@@ -30,63 +30,92 @@ def finite(value, positive=False):
     return number
 
 
-def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
-                 config_path, output, paper_state=None, volume_profile=None):
-    """Freeze prior-close setup/RS filters; include every eligible industry peer."""
-    config = json.loads(Path(config_path).read_text(encoding='utf-8-sig'))
-    rules = Rules(**config.get('rules', {})); rules.validate()
-    if rules.entry_method != 'setup':
-        raise ValueError('장중 준비는 셋업 설정을 사용하세요.')
-    # Market units and live RS are separate future extensions, never silently ignored.
-    if rules.market_units_enabled:
-        raise ValueError('장중 시장 유닛 적용은 아직 지원하지 않습니다. 비활성 비교 설정을 사용하세요.')
+def watch_scope(signals_path, universe_path, symbols, paper_state=None, scope='industry'):
+    if scope not in ('industry', 'symbols'):
+        raise ValueError('감시 범위를 선택하세요.')
     signals = pd.read_csv(signals_path, dtype={'symbol': str, 'benchmark': str})
     universe = pd.read_csv(universe_path, dtype={'symbol': str, 'benchmark': str}, keep_default_na=False)
     if signals.empty or signals.symbol.duplicated().any() or signals.date.nunique() != 1:
         raise ValueError('한 거래일의 중복 없는 전체 신호 파일이 필요합니다.')
     as_of = str(signals.date.iloc[0])
-    day = datetime.strptime(session, '%Y-%m-%d').date()
-    if day <= datetime.strptime(as_of, '%Y-%m-%d').date() or day.weekday() >= 5:
-        raise ValueError('감시일은 기준일 이후 평일이어야 합니다. 실제 휴장 여부는 별도 확인하세요.')
-    peers = load_peer_history(universe)
-    peers = peers[peers.date == pd.Timestamp(as_of)].copy()
-    if peers.empty:
-        raise ValueError('기준일의 산업 구성 자료가 없습니다.')
-    # A membership row remains in the expected coverage denominator even if its
-    # prior-day quote was ineligible. Today may trade; missing ticks remain unknown.
-    if not {'benchmark','market'}.issubset(peers):
-        raise ValueError('산업 동료 자료에 시장·벤치마크 정보가 필요합니다.')
-    peers['benchmark'] = peers.benchmark.astype(str).str.zfill(6)
-    prices = pd.read_csv(prices_path, dtype={'symbol': str})
-    prices['date'] = pd.to_datetime(prices.date)
-    prices = prices[prices.date <= pd.Timestamp(as_of)]
+    if scope == 'industry':
+        peers = load_peer_history(universe)
+        peers = peers[peers.date == pd.Timestamp(as_of)].copy()
+        if peers.empty:
+            raise ValueError('기준일의 산업 구성 자료가 없습니다.')
+        # Keep prior-day quote-ineligible members in the coverage denominator.
+        if not {'benchmark','market'}.issubset(peers):
+            raise ValueError('산업 동료 자료에 시장·벤치마크 정보가 필요합니다.')
+        peers['benchmark'] = peers.benchmark.astype(str).str.zfill(6)
     positions = {}
     if paper_state:
         state = json.loads(Path(paper_state).read_text(encoding='utf-8'))
         if state['last_date'] != as_of:
             raise ValueError('보유 계좌와 신호 파일의 기준일이 다릅니다.')
         positions = state['positions']
-    chosen = set(symbols) | set(positions)
+    chosen = set(symbols)
+    if scope == 'industry':
+        chosen.update(positions)
     if not chosen or not chosen.issubset(set(signals.symbol)):
         raise ValueError('감시 종목은 신호 파일에 포함된 종목이어야 합니다.')
-    targets, subscriptions, members = {}, set(), {}
+    subscriptions, members, industries, peer_symbols = set(), {}, {}, {}
+    signals = signals.set_index('symbol')
+    if scope == 'symbols':
+        return dict(as_of=as_of, universe=universe, chosen=signals.loc[sorted(chosen)],
+                    positions=positions, subscriptions=chosen, members=members,
+                    industries=industries, peer_symbols=peer_symbols)
     for symbol in sorted(chosen):
-        row = signals.set_index('symbol').loc[symbol]
-        if row.rs_method != rules.rs_method or row.entry_method != rules.entry_method:
-            raise ValueError('신호 파일과 선택 설정의 방식이 다릅니다.')
+        row = signals.loc[symbol]
         item = universe[universe.symbol == symbol]
         if len(item) != 1 or item.sector.iloc[0] != row.sector:
             raise ValueError('신호 파일과 산업 유니버스가 다릅니다.')
         sector = str(row.sector)
         if sector.startswith('UNCLASSIFIED:'):
             raise ValueError('산업 미분류 종목은 장중 산업 감시를 구성할 수 없습니다.')
-        group = peers[peers.sector == sector]
-        if group.empty:
-            raise ValueError('감시 산업의 구성원이 없습니다.')
-        for peer in group.to_dict('records'):
-            members[peer['symbol']] = {'sector': sector, 'benchmark': str(peer['benchmark'])}
-            subscriptions.update([peer['symbol'], str(peer['benchmark'])])
+        if sector not in industries:
+            group = peers[peers.sector == sector]
+            if group.empty:
+                raise ValueError('감시 산업의 구성원이 없습니다.')
+            industry_name = item.iloc[0].get('industry_name') or sector
+            peer_symbols[sector] = set(group.symbol)
+            industries[sector] = dict(name=industry_name, members=len(peer_symbols[sector]),
+                                      selected=[], holdings=[])
+            for peer in group.to_dict('records'):
+                members[peer['symbol']] = {'sector': sector, 'benchmark': str(peer['benchmark'])}
+                subscriptions.update([peer['symbol'], str(peer['benchmark'])])
+        if symbol in symbols:
+            industries[sector]['selected'].append(symbol)
+        if symbol in positions:
+            industries[sector]['holdings'].append(symbol)
         subscriptions.update([symbol, str(row.benchmark)])
+    return dict(as_of=as_of, universe=universe, chosen=signals.loc[sorted(chosen)],
+                positions=positions, subscriptions=subscriptions, members=members,
+                industries=industries, peer_symbols=peer_symbols)
+
+
+def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
+                 config_path, output, paper_state=None, volume_profile=None, watch_mode='industry',
+                 *, ui_workspace_id=None):
+    """Freeze prior-close setup/RS filters and the selected subscription scope."""
+    config = json.loads(Path(config_path).read_text(encoding='utf-8-sig'))
+    rules = Rules(**config.get('rules', {})); rules.validate()
+    if rules.entry_method != 'setup':
+        raise ValueError('장중 준비는 셋업 설정을 사용하세요.')
+    if rules.market_units_enabled:
+        raise ValueError('장중 시장 유닛 적용은 아직 지원하지 않습니다. 비활성 비교 설정을 사용하세요.')
+    scope = watch_scope(signals_path, universe_path, symbols, paper_state, watch_mode)
+    as_of = scope['as_of']
+    subscriptions = scope['subscriptions']
+    positions = scope['positions']
+    require_previous_close(session, as_of)
+    prices = pd.read_csv(prices_path, dtype={'symbol': str})
+    prices['date'] = pd.to_datetime(prices.date)
+    prices = prices[prices.date <= pd.Timestamp(as_of)]
+    targets = {}
+    for symbol, row in scope['chosen'].iterrows():
+        if row.rs_method != rules.rs_method or row.entry_method != rules.entry_method:
+            raise ValueError('신호 파일과 선택 설정의 방식이 다릅니다.')
+        sector = str(row.sector)
         f = prices[prices.symbol == symbol].sort_values('date')
         if f.empty or str(f.date.iloc[-1].date()) != as_of:
             raise ValueError('감시 종목의 기준일 가격이 없습니다.')
@@ -125,19 +154,18 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
             'previous_close': finite(f.close.iloc[-1], True), 'resistance': resistance,
             'healthy_floor': floor, 'holding_stop': finite(positions[symbol]['stop_price'],True) if symbol in positions else None,
             'prior_filters_pass': not reasons, 'prior_filter_reasons': reasons,
-            'peer_symbols': sorted(set(group.symbol)-{symbol})}
-    if len(subscriptions) > MAX_SUBSCRIPTIONS:
-        raise ValueError(f'전체 산업 동료 포함 구독 {len(subscriptions)}개가 KIS 한도 40개를 넘습니다. 더 작은 산업을 선택하거나 수집 방식을 변경하세요.')
-    input_paths = [signals_path,prices_path,universe_path,config_path,
-                   next(iter(set(universe.industry_peer_history.astype(str))-{''}))]
+            'peer_symbols': sorted(scope['peer_symbols'].get(sector, set()) - {symbol})}
+    input_paths = [signals_path,prices_path,universe_path,config_path]
+    if watch_mode == 'industry':
+        input_paths.append(next(iter(set(scope['universe'].industry_peer_history.astype(str))-{''})))
     if paper_state: input_paths.append(paper_state)
     plan = {'version': 1, 'as_of': as_of, 'session': session, 'exchange': 'KRX',
-        'mode': 'observation_only', 'config': str(config_path),
+        'mode': 'observation_only', 'watch_mode': watch_mode, 'config': str(config_path),
         'rs_method': rules.rs_method, 'rs_timing': 'prior_completed_close_frozen',
         'volume_confirmation': 'unavailable_same_time_history',
         'sector_min_peers': rules.sector_min_peers, 'sector_min_breadth': rules.sector_min_breadth,
         'sector_require_action': rules.sector_require_action, 'min_peer_coverage': 1.0,
-        'max_quote_age_seconds': 60, 'targets': targets, 'members': members,
+        'max_quote_age_seconds': 60, 'targets': targets, 'members': scope['members'],
         'subscriptions': sorted(subscriptions),
         'source_hashes': {str(path): hashlib.sha256(Path(path).read_bytes()).hexdigest()
                           for path in input_paths}}
@@ -149,10 +177,13 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
         plan['volume_reference']=profile
         plan['volume_confirmation']='same_time_history'
         plan['source_hashes'][str(volume_profile)]=hashlib.sha256(Path(volume_profile).read_bytes()).hexdigest()
+    if ui_workspace_id is not None:
+        plan['ui_workspace_id'] = ui_workspace_id
     validate_plan(plan)
     output = Path(output); output.parent.mkdir(parents=True,exist_ok=True)
     if output.exists(): raise ValueError('기존 감시 계획은 덮어쓰지 않습니다. 새 출력 경로를 사용하세요.')
-    output.write_text(json.dumps(plan,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+    from .workflow import save_json
+    save_json(output, plan)
     return plan
 
 
@@ -166,8 +197,11 @@ def validate_plan(plan):
     if day <= datetime.strptime(plan['as_of'],'%Y-%m-%d').date():
         raise ValueError('감시일은 기준일 이후여야 합니다.')
     subscriptions = plan['subscriptions']
-    if not 0 < len(subscriptions) <= MAX_SUBSCRIPTIONS or len(set(subscriptions)) != len(subscriptions):
-        raise ValueError('구독 개수·중복을 확인하세요. KIS 한도는 40개입니다.')
+    if not subscriptions or len(set(subscriptions)) != len(subscriptions):
+        raise ValueError('구독 종목이 비어 있거나 중복되었습니다.')
+    watch_mode = plan.get('watch_mode', 'industry')
+    if watch_mode not in ('industry', 'symbols'):
+        raise ValueError('감시 범위를 선택하세요.')
     if any(not re.fullmatch(r'[0-9A-Z]{6}',s) for s in subscriptions):
         raise ValueError('감시 구독은 KRX 종목코드 6자리여야 합니다.')
     if not plan['targets'] or not 0 < plan['min_peer_coverage'] <= 1 or plan['max_quote_age_seconds'] <= 0:
@@ -175,8 +209,13 @@ def validate_plan(plan):
     if plan['sector_min_peers'] < 1 or not 0 < plan['sector_min_breadth'] <= 1:
         raise ValueError('산업 동반 상승 조건이 유효하지 않습니다.')
     required = set(plan['targets'])
+    if watch_mode == 'symbols' and (required != set(subscriptions) or plan['members']):
+        raise ValueError('입력 종목만 구독하는 계획에는 산업 구독을 포함할 수 없습니다.')
     for symbol,target in plan['targets'].items():
-        required.add(target['benchmark'])
+        if watch_mode == 'industry':
+            required.add(target['benchmark'])
+        elif target['peer_symbols']:
+            raise ValueError('입력 종목만 구독하는 계획에는 산업 동료를 포함할 수 없습니다.')
         finite(target['previous_close'],True)
         for field in ['resistance','healthy_floor','holding_stop']:
             if target[field] is not None: finite(target[field],True)
@@ -193,6 +232,7 @@ class IntradayMonitor:
         validate_plan(plan)
         self.plan, self.quotes, self.last, self.invalidated = plan, {}, {}, set()
         self.basis_mismatch = set()
+        self.latest_target_quotes = {}
         self.last_stops = {}
         self.volume_samples = {}
 
@@ -210,7 +250,11 @@ class IntradayMonitor:
         age = (now-event).total_seconds()
         if age < -2 or age > self.plan['max_quote_age_seconds']:
             return self.evaluate(now) if evaluate else self.evaluate_stops(now,symbol)
-        if not time(9) <= event.time().replace(tzinfo=None) <= time(15,30):
+        local_time = event.time().replace(tzinfo=None)
+        if not (time(9) <= local_time <= time(15,30) or
+                time(15,40) <= local_time < time(20)):
+            return []
+        if local_time >= time(15,40) and tick.get('market') != 'nxt_after':
             return []
         normalized = dict(tick)
         for key in ['price','previous_close','day_low']:
@@ -225,6 +269,11 @@ class IntradayMonitor:
         if old:
             normalized['day_low'] = min(normalized['day_low'],old['day_low'])
         target = self.plan['targets'].get(symbol)
+        if target:
+            latest = self.latest_target_quotes.get(symbol)
+            if not latest or latest.get('market') != normalized.get('market') or (event >= stamp(latest['timestamp']) and
+                              normalized['cumulative_volume'] >= latest['cumulative_volume']):
+                self.latest_target_quotes[symbol] = normalized
         if target and abs(normalized['previous_close']/target['previous_close']-1) > .001:
             # Adjusted daily setup levels must agree with the live raw-price basis.
             self.quotes.pop(symbol,None)
@@ -252,7 +301,8 @@ class IntradayMonitor:
             if target_symbol not in self.last_stops or self.last_stops[target_symbol] != breached:
                 events.append({'kind':'holding_stop_state','timestamp':now.isoformat(),'symbol':target_symbol,
                     'holding_stop_breached':breached,'holding_stop':target['holding_stop'],
-                    'day_low':quote['day_low'] if fresh else None,'mode':'observation_only'})
+                    'day_low':quote['day_low'] if fresh else None,
+                    'market':quote.get('market') if fresh else None,'mode':'observation_only'})
                 self.last_stops[target_symbol] = breached
         return events
 
@@ -284,11 +334,12 @@ class IntradayMonitor:
             breakout = bool(quote['price'] > target['resistance']) if valid and target['resistance'] is not None else None
             stop = (bool(quote['day_low'] <= target['holding_stop'])
                     if quote and target['holding_stop'] is not None and symbol not in self.basis_mismatch else None)
+            symbols_only = self.plan.get('watch_mode') == 'symbols'
             watch = (bool(breakout and target['prior_filters_pass'] and (action or not self.plan['sector_require_action']))
-                     if valid and (available or not self.plan['sector_require_action']) else None)
+                     if not symbols_only and valid and (available or not self.plan['sector_require_action']) else None)
             from .intraday_volume import volume_check
             volume=volume_check(self,symbol,now,quote)
-            confirmed=bool(watch is True and volume['volume_pass'] is True)
+            confirmed=None if symbols_only else bool(watch is True and volume['volume_pass'] is True)
             state = {'breakout_present': breakout, 'holding_stop_breached': stop,
                 'industry_action': action, 'entry_watch': watch, 'setup_invalidated': symbol in self.invalidated,
                 'price_basis_mismatch':symbol in self.basis_mismatch,
@@ -299,6 +350,7 @@ class IntradayMonitor:
                     **state,'peer_count':count,'expected_peer_count':expected,'peer_coverage':coverage,
                     'peer_up_fraction':breadth,'peer_excess_return':mean_excess,
                     'price':quote['price'] if quote else None,
+                    'market':quote.get('market') if quote else None,
                     'volume_vs_previous_same_time':quote.get('volume_vs_previous_same_time') if quote else None,
                     **volume,'volume_confirmation':self.plan['volume_confirmation'],
                     'rs_timing':self.plan['rs_timing'],'mode':'observation_only'})

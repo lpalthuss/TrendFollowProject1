@@ -87,6 +87,40 @@ def wait_job(ops,job):
     pytest.fail('UI job timed out')
 
 
+def test_watch_job_collects_missing_close_and_saves_plan_without_account_processing(ops, monkeypatch):
+    import trendfollow.market as market
+
+    monkeypatch.setattr(ops, 'clock', lambda: datetime.fromisoformat('2026-11-09T13:00:00+09:00'))
+    w = create(ops, rules=asdict(Rules(entry_method='setup', rs_method='mansfield')))
+    original = ops.path(w['data_dir']) / 'prices.csv'
+    daily = pd.read_csv(original, dtype={'symbol': str})
+    original.write_bytes(daily[daily.date.lt('2026-11-06')].to_csv(index=False).encode())
+    universe = ops.path(w['universe'])
+    universe.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ops.root/'data/market/universe.csv', universe)
+    symbol = pd.read_csv(universe, dtype=str).symbol.iloc[0]
+
+    def collect(universe, out, start, end, **kwargs):
+        members = pd.read_csv(universe, dtype=str)
+        assert members.symbol.tolist() == [symbol]
+        assert end == kwargs['required_session'] == '2026-11-06'
+        out.mkdir()
+        daily[daily.symbol.isin({symbol, *members.benchmark})].to_csv(out/'prices.csv', index=False)
+        return {'published': True}
+
+    monkeypatch.setattr(market, 'acquire_research', collect)
+    payload = dict(workspace=w['id'], action='prepare_intraday', as_of='2026-11-06',
+                   session='2026-11-09', symbols=[symbol])
+    blocked = wait_job(ops, ops.submit(dict(payload, watch_mode='industry')))
+    assert blocked['status'] == 'failed' and '산업 구성 자료' in blocked['error']
+    result = wait_job(ops, ops.submit(dict(payload, watch_mode='symbols')))
+    assert result['status'] == 'completed', result
+    plan, = ops.plans()
+    assert plan['workspace'] == w['id'] and plan['as_of'] == '2026-11-06'
+    assert plan['targets'] == [symbol] and plan['subscriptions'] == 1
+    assert not ops.path(w['state']).exists()
+
+
 def test_create_new_configuration_never_overwrites_templates_or_initializes_account(ops,project):
     template=(project/'examples/config.json').read_bytes()
     w=create(ops)
@@ -159,6 +193,23 @@ def test_old_closed_intraday_signals_are_never_current_and_accounts_are_isolated
     result=ops.intraday(w['id'])
     assert result['runs'][0]['events'][0]['ui_current'] is False
     assert ops.intraday('different-account')['runs']==[]
+
+
+@pytest.mark.parametrize(('when', 'open_session'), [
+    ('2026-11-13T08:59:00+09:00', False),
+    ('2026-11-13T09:00:00+09:00', True),
+    ('2026-11-13T15:30:00+09:00', True),
+    ('2026-11-13T15:31:00+09:00', False),
+    ('2026-11-13T15:40:00+09:00', True),
+    ('2026-11-13T19:59:00+09:00', True),
+    ('2026-11-13T20:00:00+09:00', False),
+    ('2026-11-14T11:00:00+09:00', False),
+])
+def test_intraday_status_exposes_server_session_clock(ops, monkeypatch, when, open_session):
+    monkeypatch.setattr(ops, 'clock', lambda: datetime.fromisoformat(when))
+    status = ops.intraday()
+    assert status['today'] == when[:10]
+    assert status['regular_session'] is open_session
 
 
 def test_historical_analysis_chart_does_not_show_future_prices(ops):

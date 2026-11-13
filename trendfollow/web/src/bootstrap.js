@@ -9,13 +9,17 @@ async function bootstrap(selected) {
   }
   const preferred =
     selected || workspace || localStorage.getItem("trendfollow-workspace");
+  const previous = workspace;
   workspace = boot.workspaces.some((w) => w.id === preferred)
     ? preferred
     : (
-        boot.workspaces.filter((w) => !w.builtin).at(-1) ||
+        boot.workspaces
+          .filter((w) => !w.builtin && w.mode !== "recalculation")
+          .at(-1) ||
         boot.workspaces.find((w) => w.id === "setup-rs") ||
         boot.workspaces[0]
       ).id;
+  if (workspace !== previous) watchData = null;
   localStorage.setItem("trendfollow-workspace", workspace);
   select.value = workspace;
   const presets = $("preset");

@@ -36,7 +36,7 @@ function renderJobs(jobs) {
   $("revision-open-replay").hidden = !replayWorkspace;
   const busy =
     loading || jobs.some((j) => ["queued", "running"].includes(j.status));
-  document.querySelectorAll("[data-action],#prepare-watch").forEach((b) => {
+  document.querySelectorAll("[data-action]").forEach((b) => {
     b.disabled = busy;
     b.setAttribute("aria-busy", String(busy));
   });

@@ -3,6 +3,17 @@ import json
 import pandas as pd
 import pytest
 
+from trendfollow.krx_sessions import previous_close_date, require_previous_close
+
+
+def test_watch_basis_uses_krx_sessions_and_rejects_stale_candidates():
+    assert previous_close_date('2026-11-13') == '2026-11-12'
+    assert previous_close_date('2026-10-12') == '2026-10-08'
+    with pytest.raises(ValueError, match='개장'):
+        previous_close_date('2026-10-09')
+    with pytest.raises(ValueError, match='2026-11-12'):
+        require_previous_close('2026-11-13', '2026-11-10')
+
 from trendfollow.intraday import IntradayMonitor, prepare_plan, replay_ticks, validate_plan
 from trendfollow.kis_stream import parse_trades, subscription, watch
 
@@ -90,6 +101,10 @@ def test_corporate_action_price_basis_mismatch_blocks_signals():
     event=m.update(t,t['timestamp'])[-1]
     assert event['price_basis_mismatch'] is True
     assert event['breakout_present'] is None and event['holding_stop_breached'] is None
+    assert m.latest_target_quotes[t['symbol']]['price'] == t['price']
+    assert m.latest_target_quotes[t['symbol']]['cumulative_volume'] == t['cumulative_volume']
+    m.reset_connection()
+    assert t['symbol'] not in m.quotes and t['symbol'] in m.latest_target_quotes
 
 
 def test_connection_reset_requires_new_peer_quotes():
@@ -120,6 +135,23 @@ def test_kis_batched_fields_dates_signed_changes_and_volume():
     assert subscription('APPROVAL','000001')['body']['input']['tr_id']=='H0STCNT0'
 
 
+def test_after_market_uses_integrated_trades_and_rejects_other_market_codes():
+    fields = packet(price='106', change='6').split('^')
+    fields[1] = '160001'
+    fields[46] = '3'
+    parsed = parse_trades('0|H0UNCNT0|001|'+'^'.join(fields))
+    assert parsed[0]['market'] == 'nxt_after'
+    assert parsed[0]['timestamp'] == '2026-11-09T16:00:01+09:00'
+    assert subscription('APPROVAL','000001','nxt_after')['body']['input']['tr_id'] == 'H0UNCNT0'
+    fields[46] = '2'
+    assert parse_trades('0|H0UNCNT0|001|'+'^'.join(fields)) == []
+    monitor = IntradayMonitor(plan())
+    trade = parsed[0]
+    events = monitor.update(trade, trade['timestamp'])
+    assert events and monitor.latest_target_quotes['000001']['market'] == 'nxt_after'
+    assert monitor.update(dict(trade, market='krx'),trade['timestamp']) == []
+
+
 def test_replay_records_staleness_and_disconnects_deterministically(tmp_path):
     config=tmp_path/'plan.json';config.write_text(json.dumps(plan()))
     t=tick()
@@ -135,11 +167,11 @@ def test_replay_records_staleness_and_disconnects_deterministically(tmp_path):
     with pytest.raises(FileExistsError):replay_ticks(config,source,a)
 
 
-def test_plan_rejects_missing_peer_subscriptions_and_limits():
+def test_plan_requires_peer_subscriptions_and_accepts_more_than_40():
     p=plan();p['subscriptions'].remove('000003')
     with pytest.raises(ValueError,match='누락'):validate_plan(p)
-    p=plan();p['subscriptions']=[str(i).zfill(6) for i in range(41)]
-    with pytest.raises(ValueError,match='40'):validate_plan(p)
+    p=plan();p['subscriptions'].extend(str(i).zfill(6) for i in range(100,141))
+    validate_plan(p)
 
 
 def test_prepare_recomputes_base_including_last_completed_day(tmp_path):
@@ -167,6 +199,17 @@ def test_prepare_recomputes_base_including_last_completed_day(tmp_path):
     assert p['targets']['000001']['prior_filters_pass'] is True
     assert len(p['subscriptions'])==5
     assert p['members']['000002']['benchmark']=='069500'
+    peerfile.unlink()
+    p=prepare_plan(tmp_path/'signals.csv',tmp_path/'prices.csv',tmp_path/'universe.csv',
+        '2026-11-09',['000001'],tmp_path/'config.json',tmp_path/'single.json',watch_mode='symbols')
+    assert p['subscriptions']==['000001'] and not p['members']
+    p['sector_require_action']=False
+    monitor=IntradayMonitor(p)
+    at='2026-11-09T09:00:01+09:00'
+    events=monitor.update(dict(symbol='000001', timestamp=at, price=112, previous_close=100,
+                               day_low=99, cumulative_volume=100),at)
+    assert events[0]['breakout_present'] is True
+    assert all(events[0][key] is None for key in ('industry_action','entry_watch','entry_confirmed'))
 
 
 def test_probe_only_logs_sanitized_acks_and_never_quotes_or_orders(tmp_path,monkeypatch):

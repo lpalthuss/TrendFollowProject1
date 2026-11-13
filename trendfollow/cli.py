@@ -236,6 +236,7 @@ def main(argv=None):
         intraday.add_argument(f'--{key}',required=True)
     intraday.add_argument('--symbols',nargs='+',required=True)
     intraday.add_argument('--paper-state')
+    intraday.add_argument('--watch-mode',choices=['industry','symbols'],default='industry')
     intraday.add_argument('--volume-profile',help='과거 동시간 누적 거래량 기준 JSON')
     volume_import=subs.add_parser('intraday-volume-import',help='종료된 관측 기록에서 분별 누적 거래량 이력 수집')
     volume_import.add_argument('--run-dirs',nargs='+',required=True)
@@ -304,7 +305,7 @@ def main(argv=None):
                 args.run_dir,observation),ensure_ascii=False))
         elif args.command == 'intraday-prepare':
             from .intraday import prepare_plan
-            plan=prepare_plan(args.signals,args.prices,args.universe,args.session,args.symbols,args.config,args.out,args.paper_state,args.volume_profile)
+            plan=prepare_plan(args.signals,args.prices,args.universe,args.session,args.symbols,args.config,args.out,args.paper_state,args.volume_profile,watch_mode=args.watch_mode)
             print(json.dumps({'mode':plan['mode'],'targets':list(plan['targets']),
                 'subscriptions':len(plan['subscriptions']),'session':plan['session'],'plan':args.out},ensure_ascii=False))
         elif args.command == 'intraday-replay':
