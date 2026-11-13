@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import pytest
 
-from trendfollow.industries import IndustrySource, apply_overrides, decision_universe_records, load_peer_history
+from trendfollow.industries import IndustrySource, apply_overrides, decision_universe_records, load_peer_history, reconstruct_peer_sessions
 from trendfollow.setup import sector_features
 from trendfollow.strategy import Rules
 from trendfollow.workflow import paper_input_digest
@@ -21,6 +21,59 @@ class Session:
     def get(self,url,**kwargs):
         self.calls.append((url,kwargs))
         return Response(next(self.responses))
+
+
+def test_reconstruct_missing_peer_dates_uses_earlier_snapshot(tmp_path,monkeypatch):
+    root=tmp_path/'industries';snapshot=root/'snapshots/2026-11-10';snapshot.mkdir(parents=True)
+    history=root/'peer-returns.csv'
+    prior=pd.DataFrame([dict(date='2026-11-10',symbol='005930',benchmark='069500',
+                             sector='NAVER:1',day_return=.01,benchmark_day_return=.02,
+                             quote_eligible=1,source='OBSERVED')])
+    prior.to_csv(history,index=False)
+    prior.to_csv(snapshot/'peer-returns.csv',index=False)
+    universe=pd.DataFrame([dict(industry_peer_history=str(history))])
+    class Source:
+        def __init__(self,cache):pass
+        def daily(self,symbol,start,end):
+            close=[100,110,121] if symbol=='005930' else [200,220,242]
+            return pd.DataFrame({'date':['2026-11-10','2026-11-11','2026-11-12'],
+                                 'close':close,'volume':[100,100,100]})
+    monkeypatch.setattr('trendfollow.industries.NaverResearchSource',Source)
+    assert reconstruct_peer_sessions(universe,['2026-11-11','2026-11-12'],tmp_path/'cache')==['2026-11-11','2026-11-12']
+    result=load_peer_history(universe).sort_values('date')
+    assert len(result)==3
+    assert result.day_return.iloc[1]==pytest.approx(.1)
+    assert result.benchmark_day_return.iloc[2]==pytest.approx(.1)
+    assert result.source.iloc[1]=='HISTORICAL_BAR_RECONSTRUCTION'
+    audit=json.loads((root/'reconstruction-latest.json').read_text(encoding='utf-8'))
+    assert [row['membership_snapshot'] for row in audit['sessions']]==['2026-11-10']*2
+
+
+def test_reconstruct_peer_dates_with_krx_bulk(tmp_path, monkeypatch):
+    root = tmp_path / 'industries'
+    snapshot = root / 'snapshots/2026-11-10'
+    snapshot.mkdir(parents=True)
+    history = root / 'peer-returns.csv'
+    prior = pd.DataFrame([dict(date='2026-11-10', symbol='005930', benchmark='069500',
+                               sector='NAVER:1', day_return=.01, benchmark_day_return=.02,
+                               quote_eligible=1, source='OBSERVED')])
+    prior.to_csv(history, index=False)
+    prior.to_csv(snapshot / 'peer-returns.csv', index=False)
+    universe = pd.DataFrame([dict(industry_peer_history=str(history))])
+    values = {'2026-11-10': (100, 200), '2026-11-11': (110, 220),
+              '2026-11-12': (121, 242)}
+    calls = []
+    def fetch(day, symbols):
+        calls.append(day)
+        return {symbol: dict(date=day, symbol=symbol, close=price, volume=100)
+                for symbol, price in zip(('005930', '069500'), values[day])}
+    monkeypatch.setattr('trendfollow.krx_bulk.fetch_session', fetch)
+    result = reconstruct_peer_sessions(universe, ['2026-11-11', '2026-11-12'],
+                                       tmp_path / 'cache', price_source='pykrx')
+    assert result == ['2026-11-11', '2026-11-12']
+    assert calls == ['2026-11-10', '2026-11-11', '2026-11-12']
+    audit = json.loads((root / 'reconstruction-latest.json').read_text(encoding='utf-8'))
+    assert 'KRX pykrx bulk' in audit['sessions'][0]['method']
 
 
 def member(symbol,market):

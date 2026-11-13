@@ -47,7 +47,24 @@
           </button>
         </div>
       </header>
+      <div class="price-source-bar">
+        <label for="price-source">일봉 수집 원천</label>
+        <select id="price-source" aria-describedby="price-source-help">
+          <option value="naver">네이버</option>
+          <option value="pykrx">pykrx</option>
+        </select>
+        <span id="price-source-help"></span>
+      </div>
       <div id="notice" class="notice" hidden></div>
+      <section id="job-progress" class="job-progress" role="status" aria-live="polite" hidden>
+        <div class="job-progress-head">
+          <strong id="job-progress-title"></strong>
+          <span id="job-progress-elapsed"></span>
+        </div>
+        <div id="job-progress-phase"></div>
+        <progress id="job-progress-bar" max="100"></progress>
+        <div id="job-progress-count"></div>
+      </section>
       <section class="summary">
         <div>
           <span>가용 현금</span><strong id="cash">—</strong
@@ -109,6 +126,21 @@
           ><button data-step="2">2 · 종가 처리</button
           ><button data-step="3">3 · 결과 확인</button
           ><button data-step="4">4 · 장중 관측</button>
+        </div>
+        <div
+          id="flow-next"
+          class="flow-next"
+          role="status"
+          aria-live="polite"
+          hidden
+        >
+          <div>
+            <strong id="flow-next-title"></strong>
+            <p id="flow-next-text"></p>
+          </div>
+          <button id="flow-next-button" type="button" class="primary" hidden>
+            해당 위치로 이동 →
+          </button>
         </div>
         <div id="flow-1" class="flow-panel">
           <h2>1. 사용할 계좌와 전략을 확인하세요</h2>
@@ -194,9 +226,10 @@
             <div>
               <strong>② 가격 수집·대조·모의 처리</strong>
               <p id="flow-daily-status"></p>
+              <p class="muted">일봉 수집 원천은 화면 상단에서 선택합니다. 두 방식 모두 저장된 가격은 유지하고 새 거래일만 추가합니다. pykrx는 프로젝트 .env 또는 환경변수의 KRX_ID, KRX_PW를 사용합니다. 원천 간 가격·거래량 차이는 수집 기록에 남습니다.</p>
             </div>
             <button id="flow-daily" data-action="daily" class="primary">
-              가격 갱신 + 종가 모의 처리
+              누락 거래일 포함 가격 갱신 + 종가 모의 처리
             </button>
           </div>
           <p class="execution-hint">
@@ -274,7 +307,7 @@
                 >
                 <div class="action-strip">
                   <button id="revision-continue" class="primary">
-                    수정 데이터 반영 후 계속</button
+                    정정 반영 후 선택 날짜까지 처리</button
                   ><button id="revision-replay">
                     수정 데이터 기준 재계산 계좌 만들기</button
                   ><button id="revision-open-replay" hidden>
@@ -318,7 +351,7 @@
         </div>
         <div id="flow-3" class="flow-panel" hidden>
           <h2>3. 진입·청산 결과를 확인하세요</h2>
-          <p id="flow-result-status"></p>
+          <p id="flow-result-status" class="result-status"></p>
           <div id="flow-results" class="facts"></div>
           <h2>다음 거래일 진입·추가매수 대기</h2>
           <div id="flow-pending" class="table-wrap"></div>
@@ -327,8 +360,8 @@
             ><button id="flow-open-signals">보유·청산·체결 상세 보기</button>
           </div>
           <div class="flow-footer">
-            <button data-step="2">← 종가 처리</button
-            ><button data-step="4" class="primary">
+            <button id="flow-back-to-data" data-step="2">← 종가 처리</button
+            ><button id="flow-to-watch" data-step="4" class="primary">
               장중 관측 선택·준비 →
             </button>
           </div>
@@ -393,6 +426,12 @@
             <p id="watch-start-status" class="muted" aria-live="polite"></p>
             <div id="watch-info" class="notice"></div>
             <div id="watch-quotes" class="table-wrap"></div>
+            <div id="watch-hourly" hidden>
+              <h3>시간대별 KIS 잠정 관측</h3>
+              <p class="muted">각 시간대의 마지막 수신 체결입니다. 종료 시각 가까이에 새 체결이 없거나 연결이 끊겼으면 판단을 보류합니다. 확정 종가·모의계좌 자료가 아닙니다.</p>
+              <label>관측 시간대 <select id="watch-hour-filter"></select></label>
+              <div id="watch-hourly-table" class="table-wrap"></div>
+            </div>
             <p id="watch-decision-status" class="muted" aria-live="polite"></p>
             <div id="watch-decision-history">
               <h3>평가 가능한 판단 이력</h3>

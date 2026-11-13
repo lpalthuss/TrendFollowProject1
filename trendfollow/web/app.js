@@ -85,7 +85,8 @@ if (typeof document !== "undefined") {
   let guidance = null,
     currentJobs = [],
     flowStep = 1,
-    firstJobs = true;
+    firstJobs = true,
+    submittingAction = null;
   let recoveryInfo = null,
     recoveryRows = null,
     recoveryKey = "",
@@ -156,11 +157,40 @@ if (typeof document !== "undefined") {
   }
 
   // dom.js
+  let toastTimer;
   function toast(message, error = false) {
-    $("toast").textContent = message;
-    $("toast").className = error ? "error" : "";
-    $("toast").hidden = false;
-    setTimeout(() => ($("toast").hidden = true), 6500);
+    const root = $("toast");
+    clearTimeout(toastTimer);
+    root.replaceChildren(
+      el("strong", error ? "실행 실패" : "실행 결과"),
+      el("span", message),
+    );
+    root.className = error ? "error" : "success";
+    root.hidden = false;
+    toastTimer = setTimeout(() => (root.hidden = true), 10000);
+  }
+
+  function showNextAction(title, detail, targetId = null) {
+    const panel = $("flow-next");
+    const target = targetId ? $(targetId) : null;
+    document
+      .querySelectorAll(".next-action-target")
+      .forEach((node) => node.classList.remove("next-action-target"));
+    panel.hidden = !title;
+    if (!title) return;
+    if ($("flow-next-title").textContent !== title)
+      $("flow-next-title").textContent = title;
+    if ($("flow-next-text").textContent !== detail)
+      $("flow-next-text").textContent = detail;
+    const go = $("flow-next-button");
+    go.hidden = !target || target.disabled;
+    if (!go.hidden) {
+      target.classList.add("next-action-target");
+      go.onclick = () => {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.focus();
+      };
+    }
   }
   function table(id, columns, rows, empty = "해당 기록이 없습니다.") {
     const root = $(id);
@@ -799,24 +829,75 @@ if (typeof document !== "undefined") {
 
   // jobs.js
   async function job(action, extra = {}) {
+    if (submittingAction) return;
+    submittingAction = action;
+    renderJobProgress();
     try {
-      await api("/api/jobs", {
+      const queued = await api("/api/jobs", {
         workspace,
         action,
         as_of: $("asof").value,
+        ...(action === "daily" ? { price_source: $("price-source").value } : {}),
         ...extra,
       });
+      if (!currentJobs.some((item) => item.id === queued.id))
+        currentJobs = [...currentJobs, queued];
+      renderJobProgress();
       toast(
         "작업을 접수했습니다. 브라우저를 닫아도 UI 서버가 실행 중이면 처리됩니다.",
       );
       await poll();
     } catch (e) {
       toast(e.message, true);
+    } finally {
+      submittingAction = null;
+      renderJobProgress();
     }
   }
   document
     .querySelectorAll("[data-action]")
     .forEach((b) => (b.onclick = () => job(b.dataset.action)));
+  const jobButtonIds = {
+    prepare_intraday: ["prepare-watch"],
+    revision_continue: ["revision-continue"],
+    revision_replay: ["revision-replay"],
+    intraday_close: ["close-compare"],
+    volume_import: ["volume-import"],
+  };
+  function renderJobProgress() {
+    const active = currentJobs.findLast(
+      (j) => j.workspace === workspace && ["queued", "running"].includes(j.status),
+    );
+    const action = active?.action || submittingAction;
+    const panel = $("job-progress");
+    panel.hidden = !action;
+    document.querySelectorAll(".job-active-button").forEach((button) => {
+      button.classList.remove("job-active-button");
+      button.removeAttribute("data-progress-label");
+    });
+    if (!action) return;
+    const buttons = [
+      ...document.querySelectorAll(`[data-action="${action}"]`),
+      ...(jobButtonIds[action] || []).map((id) => $(id)).filter(Boolean),
+    ];
+    for (const button of buttons) {
+      button.classList.add("job-active-button");
+      button.dataset.progressLabel = "진행 중";
+    }
+    $("job-progress-title").textContent = `${labels[action] || action} · ${active?.status === "running" ? "진행 중" : "접수 중"}`;
+    $("job-progress-phase").textContent = active?.progress || "작업 접수 중";
+    const elapsed = active ? Math.max(0, Math.floor((Date.now() - Date.parse(active.created_at)) / 1000)) : 0;
+    $("job-progress-elapsed").textContent = `경과 ${Math.floor(elapsed / 60)}분 ${elapsed % 60}초`;
+    const current = active?.progress_current;
+    const total = active?.progress_total;
+    const counted = Number.isInteger(current) && Number.isInteger(total) && total > 0;
+    const bar = $("job-progress-bar");
+    if (counted) bar.value = Math.min(100, Math.round(current / total * 100));
+    else bar.removeAttribute("value");
+    $("job-progress-count").textContent = counted
+      ? `${number(current)} / ${number(total)} · ${Math.round(current / total * 100)}%`
+      : "현재 단계를 처리 중입니다. 완료 건수를 알 수 없는 작업은 진행률 대신 단계를 표시합니다.";
+  }
   function renderJobs(jobs) {
     if (firstJobs) {
       for (const j of jobs)
@@ -824,6 +905,7 @@ if (typeof document !== "undefined") {
       firstJobs = false;
     }
     currentJobs = jobs;
+    renderJobProgress();
     const replay = jobs
       .filter(
         (j) =>
@@ -835,7 +917,8 @@ if (typeof document !== "undefined") {
     replayWorkspace = replay?.result?.workspace_id || null;
     $("revision-open-replay").hidden = !replayWorkspace;
     const busy =
-      loading || jobs.some((j) => ["queued", "running"].includes(j.status));
+      loading || !!submittingAction || jobs.some((j) => ["queued", "running"].includes(j.status));
+    $("price-source").disabled = busy;
     document.querySelectorAll("[data-action]").forEach((b) => {
       b.disabled = busy;
       b.setAttribute("aria-busy", String(busy));
@@ -854,8 +937,20 @@ if (typeof document !== "undefined") {
     for (const j of jobs) {
       if (["completed", "failed"].includes(j.status) && !finished.has(j.id)) {
         finished.add(j.id);
+        const processed = j.action === "daily" && j.result?.processed_dates;
         toast(
-          (labels[j.action] || j.action) + " · " + (j.error || "완료"),
+          (labels[j.action] || j.action) +
+            " · " +
+            (j.error ||
+              (processed
+                ? `${processed.length}개 거래일 처리 완료` +
+                  (j.result.reconstructed_industry_dates?.length
+                    ? ` · 산업 자료 ${j.result.reconstructed_industry_dates.length}일 재구성`
+                    : "") +
+                  (j.result.source_comparison?.difference_count
+                    ? ` · 원천 가격·거래량 차이 ${j.result.source_comparison.difference_count}건 기록`
+                    : "")
+                : "완료")),
           j.status === "failed",
         );
       }
@@ -1040,6 +1135,47 @@ if (typeof document !== "undefined") {
     const hasRuns = !!watchData?.runs.length;
     $("volume-import").disabled = loading || busy || !hasRuns;
     $("close-compare").disabled = loading || busy || !hasRuns;
+    if (
+      typeof flowStep !== "undefined" &&
+      flowStep === 4 &&
+      typeof showNextAction === "function"
+    ) {
+      if (watchData?.control.active_or_unconfirmed.length)
+        showNextAction(
+          "관측 진행 중",
+          "시세 수신과 구독 상태가 아래 결과에 표시됩니다. 관측은 20:00에 자동 종료됩니다.",
+        );
+      else if (busy)
+        showNextAction("자료 준비 중", "작업 결과가 표시될 때까지 기다리세요.");
+      else if (!startBlocker)
+        showNextAction(
+          "감시 계획 준비 완료 · 다음: 관측 ON",
+          "선택한 계획으로 실시간 체결 관측을 시작하세요.",
+          "start-watch",
+        );
+      else if (!symbols.length)
+        showNextAction(
+          "다음: 종목 코드 입력",
+          "관측할 6자리 종목 코드를 입력하세요.",
+          "watch-symbols",
+        );
+      else if (
+        watchMode === "industry" &&
+        basis?.result?.industry_ready === false
+      )
+        showNextAction(
+          "다음: 감시 범위 선택",
+          "산업 자료가 없으면 '입력 종목만'을 선택하세요.",
+          "watch-mode",
+        );
+      else if (!prepareBlocker)
+        showNextAction(
+          "다음: 자료 준비 및 계획 생성",
+          "직전 거래일 후보를 준비하고 감시 계획을 저장하세요.",
+          "prepare-watch",
+        );
+      else showNextAction("관측 준비 조건 확인", prepareBlocker || startBlocker);
+    }
   }
 
   async function renderWatch() {
@@ -1105,12 +1241,24 @@ if (typeof document !== "undefined") {
       summary?.status === "failed"
         ? ` / ${reasons[summary.failure_reason] || "관측 실패"}${summary.kis_error_code ? ` (${summary.kis_error_code})` : ""}${summary.rejected_symbol ? ` · 거절 종목 ${summary.rejected_symbol}` : ""}`
         : "";
+    $("watch-info").className =
+      "notice " +
+      (summary?.status === "failed"
+        ? "result-error"
+        : summary?.connection_state === "active"
+          ? "result-working"
+          : summary?.status === "completed"
+            ? "result-success"
+            : "");
     $("watch-info").textContent = summary
       ? `최근 관측: ${summary.status}${run.as_of ? ` / 후보 기준일 ${run.as_of}` : ""} / 구독 승인 ${summary.subscription_acks ?? "미확인"} / 요청 ${summary.subscriptions_requested ?? "미확인"} / 체결 수신 ${summary.quote_ticks ?? "미확인"} / 연결 ${summary.connection_state ?? "미확인"}${failure}${summary.watch_mode === "symbols" ? " / 입력 종목만 관측 · 산업 및 진입 조건 미평가" : ""}`
       : "UI에서 수집한 장중 기록이 없습니다. OFF·미관측을 신호 0건으로 판단하지 않습니다. 감시 계획은 기준일 후보 자료로 생성합니다.";
     const events = run?.events || [];
     const quotes = Object.values(summary?.latest_target_quotes || {});
     const mismatches = quotes.filter((quote) => quote.price_basis_mismatch);
+    $("watch-decision-status").className = mismatches.length
+      ? "decision-alert"
+      : "muted";
     $("watch-decision-status").textContent = mismatches.length
       ? `판단 보류: ${mismatches
           .map(
@@ -1139,6 +1287,36 @@ if (typeof document !== "undefined") {
           ],
         ],
         quotes,
+      );
+    }
+    const hourly = summary?.hourly_quotes || [];
+    $("watch-hourly").hidden = !hourly.length;
+    if (hourly.length) {
+      const hourSelect = $("watch-hour-filter");
+      const previousHour = hourSelect.value;
+      const hours = [...new Set(hourly.map((r) => `${r.hour}|${r.market}`))].sort().reverse();
+      hourSelect.replaceChildren();
+      for (const hour of hours) {
+        const option = el("option", `${watchTimestamp(hour.split("|")[0]).slice(0, 16)} · ${hour.endsWith("nxt_after") ? "NXT 애프터" : "KRX 정규"}`);
+        option.value = hour;
+        hourSelect.append(option);
+      }
+      hourSelect.value = hours.includes(previousHour) ? previousHour : hours[0];
+      table(
+        "watch-hourly-table",
+        [
+          ["시간대 (한국시간)", (r) => watchTimestamp(r.hour).slice(0, 16)],
+          ["종목", (r) => r.symbol],
+          ["시장", (r) => r.market === "nxt_after" ? "NXT 애프터" : "KRX 정규"],
+          ["마지막 체결", (r) => watchTimestamp(r.timestamp)],
+          ["잠정 가격", (r) => number(r.price)],
+          ["잠정 누적 거래량", (r) => number(r.cumulative_volume)],
+          ["상태", (r) => r.price_basis_mismatch ? "가격 기준 불일치 · 판단 보류" : r.sample_status],
+          ["돌파", (r) => r.valid && !r.price_basis_mismatch ? flag(r.breakout_present) : "판단 보류"],
+          ["거래량 조건", (r) => r.valid && !r.price_basis_mismatch ? flag(r.volume_pass) : "판단 보류"],
+          ["진입 조건", (r) => r.valid && !r.price_basis_mismatch ? flag(r.entry_confirmed) : "판단 보류"],
+        ],
+        hourly.filter((r) => `${r.hour}|${r.market}` === hourSelect.value),
       );
     }
     const decisionEvents = watchDecisionEvents(events);
@@ -1191,6 +1369,7 @@ if (typeof document !== "undefined") {
   $("watch-symbols").oninput = renderWatchControls;
   $("watch-session").oninput = renderWatchControls;
   $("watch-mode").onchange = renderWatchControls;
+  $("watch-hour-filter").onchange = () => renderWatch().catch((e) => toast(e.message, true));
   $("prepare-watch").onclick = () =>
     job("prepare_intraday", {
       as_of: watchBasis.result.as_of,
@@ -1249,7 +1428,11 @@ if (typeof document !== "undefined") {
   function renderFlow() {
     renderRecoveryControls();
     renderWatchControls();
-    if (!snapshot || !guidance) return;
+    if (!snapshot || !guidance || snapshot.workspace.id !== workspace) {
+      if (flowStep !== 4)
+        showNextAction("자료 확인 중", "계좌와 작업 상태를 불러오고 있습니다.");
+      return;
+    }
     const s = snapshot,
       r = s.rules,
       g = guidance;
@@ -1285,7 +1468,7 @@ if (typeof document !== "undefined") {
       : g.industry_ready
         ? g.as_of +
           " 자료 준비됨 · 다시 갱신하지 않고 다음 작업을 진행할 수 있습니다."
-        : "선택 날짜 산업 자료가 없습니다. 오늘 자료는 갱신할 수 있지만 과거 날짜의 구성을 새로 재현할 수는 없습니다.";
+        : "선택 날짜 산업 자료가 없습니다. 아래 종가 처리 버튼을 누르면 오늘 자료를 수집하거나 과거 자료를 이전 스냅샷으로 재구성합니다.";
     $("flow-industry").disabled =
       busy || !g.requires_industry || g.as_of !== g.today || !!g.blocked;
     $("flow-industry").textContent = g.industry_ready
@@ -1294,18 +1477,16 @@ if (typeof document !== "undefined") {
     const mismatch = s.status === "configuration_mismatch";
     $("flow-daily-status").textContent = g.processed
       ? "이 날짜는 이미 처리됐습니다. 재실행 없이 결과 확인으로 넘어가세요."
-      : "가격을 수집하고 키움 시세와 대조한 뒤 로컬 모의계좌를 처리합니다. 소요 시간 동안 아래에 진행 상태를 표시합니다.";
+      : "누락된 거래일의 가격과 산업 자료를 준비한 뒤 날짜순으로 로컬 모의계좌를 처리합니다. 과거 산업 자료를 재구성한 날짜는 결과에 표시합니다.";
     $("flow-daily").disabled =
       busy ||
       !!g.blocked ||
-      !g.industry_ready ||
       mismatch ||
       g.processed ||
       s.workspace.mode === "recalculation";
     const blocker = mismatch
       ? "계좌 설정이 기존 기록과 다릅니다. 기존 계좌를 보존하고 1단계에서 새 비교 계좌를 만드세요."
-      : g.blocked ||
-        (!g.industry_ready ? "먼저 선택 날짜의 산업 자료를 준비하세요." : null);
+      : g.blocked;
     $("flow-blocker").hidden = !blocker;
     $("flow-blocker").textContent = blocker || "";
     $("flow-to-results").disabled = busy || !g.processed || mismatch;
@@ -1315,7 +1496,13 @@ if (typeof document !== "undefined") {
       .filter((j) => j.workspace === workspace && j.as_of === g.as_of)
       .slice(-4)
       .reverse();
-    for (const j of jobs) {
+    const oldDateFailures = jobs.filter(
+      (j) =>
+        j.action === "daily" &&
+        j.status === "failed" &&
+        /미처리 거래일이 여러 개입니다.*--as-of/.test(j.error || ""),
+    );
+    for (const j of jobs.filter((x) => !oldDateFailures.includes(x))) {
       const resolved =
         j.status === "failed" &&
         ["daily", "paper", "revision_continue"].includes(j.action) &&
@@ -1353,7 +1540,24 @@ if (typeof document !== "undefined") {
           );
       } else if (["queued", "running"].includes(j.status))
         n.append(
-          el("div", "처리 중입니다. 중복 실행하지 말고 완료를 기다리세요."),
+          el(
+            "div",
+            j.progress || "처리 중입니다. 중복 실행하지 말고 완료를 기다리세요.",
+          ),
+        );
+      else if (j.result?.processed_dates)
+        n.append(
+          el(
+            "div",
+            `${j.result.processed_dates.length}개 거래일 처리 완료` +
+              (j.result.reconstructed_industry_dates?.length
+                ? ` · 산업 자료 ${j.result.reconstructed_industry_dates.length}일 재구성`
+                : "") +
+              (j.result.price_source === "pykrx" ? " · KRX(pykrx) 누락 일봉" : "") +
+              (j.result.source_comparison?.difference_count
+                ? ` · 기존 원천과 가격·거래량 차이 ${j.result.source_comparison.difference_count}건 (수집 기록 확인)`
+                : ""),
+          ),
         );
       else if (j.result?.status?.startsWith("skipped"))
         n.append(
@@ -1364,10 +1568,25 @@ if (typeof document !== "undefined") {
         );
       $("flow-job-status").append(n);
     }
+    if (oldDateFailures.length) {
+      const history = el("details", undefined, "flow-job resolved");
+      history.append(
+        el(
+          "summary",
+          `이전 서버의 날짜 제한 실패 ${oldDateFailures.length}건 · 새 버튼으로 재실행 가능`,
+        ),
+      );
+      for (const j of oldDateFailures)
+        history.append(
+          el("div", `${j.finished_at || j.created_at} · ${j.error}`),
+        );
+      $("flow-job-status").append(history);
+    }
     $("flow-result-status").textContent = g.processed
       ? g.as_of +
         " 종가 처리 완료. 신호가 0건이어도 정상일 수 있습니다. 아래 대기는 다음 거래일 계획이며 증권사 주문이 아닙니다."
       : "선택 날짜의 종가 처리가 아직 완료되지 않았습니다. 아래는 마지막 저장 결과입니다. 2단계에서 먼저 처리하세요.";
+    $("flow-result-status").classList.toggle("pending", !g.processed);
     facts("flow-results", [
       ["저장된 결과 기준일", s.as_of || "없음"],
       [
@@ -1398,6 +1617,77 @@ if (typeof document !== "undefined") {
       s.pending,
       "현재 저장된 진입·추가매수 대기가 없습니다.",
     );
+    if (flowStep === 1) {
+      showNextAction(
+        "다음: 종가 처리 준비",
+        "선택 계좌와 설정을 확인했다면 2단계로 이동하세요.",
+        "flow-to-data",
+      );
+    } else if (flowStep === 2) {
+      const latest = jobs.find((j) =>
+        ["industry", "daily", "paper"].includes(j.action),
+      );
+      if (busy) {
+        const active = currentJobs.findLast((j) =>
+          ["queued", "running"].includes(j.status),
+        );
+        showNextAction(
+          active ? `${labels[active.action] || active.action} 진행 중` : "작업 접수 중",
+          active?.progress || "작업을 접수하고 있습니다. 위 진행 상태를 확인하세요.",
+        );
+      }
+      else if (g.processed)
+        showNextAction(
+          "종가 처리 완료 · 다음: 결과 확인",
+          `${g.as_of} 처리 결과와 다음 거래일 계획을 확인하세요.`,
+          "flow-to-results",
+        );
+      else if (
+        latest?.status === "failed" &&
+        /미처리 거래일/.test(latest.error || "")
+      )
+        showNextAction(
+          "다음: 누락 거래일 자동 처리",
+          "이제 한 번의 실행으로 누락된 거래일을 날짜순으로 처리합니다.",
+          "flow-daily",
+        );
+      else if (
+        latest?.status === "failed" &&
+        /이미 처리한 과거 일봉이 수정/.test(latest.error || "") &&
+        recoveryInfo?.report &&
+        !recoveryInfo.report.applied
+      )
+        showNextAction(
+          "정정 내역 확인 필요",
+          `${recoveryInfo.report.account_as_of}까지의 입력이 바뀌어 계좌가 보존됐습니다. 아래 변경 내역 ${recoveryInfo.report.row_changes}건을 검토한 뒤 선택 날짜까지 계속 처리하세요.`,
+          "recovery-history-summary",
+        );
+      else if (latest?.status === "failed")
+        showNextAction(
+          "작업 실패 · 다시 확인 필요",
+          latest.error || "실패 사유를 확인하고 필요한 자료를 다시 준비하세요.",
+          !$("flow-daily").disabled ? "flow-daily" : null,
+        );
+      else if (!$("flow-daily").disabled)
+        showNextAction(
+          "다음: 누락 거래일 포함 종가 처리",
+          "선택 날짜까지 누락된 거래일을 날짜순으로 처리하세요.",
+          "flow-daily",
+        );
+      else
+        showNextAction(
+          "진행 조건 확인",
+          blocker || "버튼 위의 안내를 확인하세요.",
+        );
+    } else if (flowStep === 3) {
+      showNextAction(
+        g.processed ? "다음: 장중 관측 준비" : "다음: 종가 처리",
+        g.processed
+          ? "결과와 다음 거래일 계획을 확인한 뒤 관측 설정으로 이동하세요."
+          : "종가 처리 단계로 돌아가 자료 준비 상태를 확인하세요.",
+        g.processed ? "flow-to-watch" : "flow-back-to-data",
+      );
+    }
   }
   document
     .querySelectorAll("[data-step]")
@@ -1524,9 +1814,11 @@ if (typeof document !== "undefined") {
       $("recovery-explanation").textContent =
         r.explanation +
         (!r.applied && guidance?.as_of !== r.as_of
-          ? " 계속하려면 오른쪽 위 종가 기준일을 보고서 처리일 " +
+          ? " 정정 검토 후 계속하면 " +
             r.as_of +
-            "에 맞추거나 새 날짜로 다시 대조하세요."
+            "부터 선택한 기준일 " +
+            guidance?.as_of +
+            "까지 순서대로 처리합니다."
           : "");
       $("recovery-blocker").hidden = r.can_continue;
       $("recovery-blocker").textContent = r.block_reason || "";
@@ -1535,7 +1827,7 @@ if (typeof document !== "undefined") {
     $("revision-continue").disabled =
       busy ||
       !r ||
-      guidance?.as_of !== r.as_of ||
+      guidance?.as_of < r.as_of ||
       r.applied ||
       r.stale ||
       !r.can_continue ||
@@ -1564,6 +1856,8 @@ if (typeof document !== "undefined") {
   };
   $("revision-continue").onclick = () =>
     job("revision_continue", {
+      as_of: recoveryInfo.report.as_of,
+      catch_up_to: $("asof").value,
       report_id: recoveryInfo.report.id,
       reviewed: $("revision-reviewed").checked,
       price_reviewed: $("price-reviewed").checked,
@@ -1722,8 +2016,18 @@ if (typeof document !== "undefined") {
   }
 
   // bootstrap.js
+  function renderPriceSourceHelp() {
+    $("price-source-help").textContent =
+      $("price-source").value === "pykrx"
+        ? "모든 가격 갱신·일별 처리에 적용 · 저장된 날짜는 유지하고 새 거래일만 KRX에서 추가 · KRX 로그인 필요"
+        : "모든 가격 갱신·일별 처리에 적용 · 저장된 날짜는 유지하고 새 거래일만 네이버에서 추가";
+  }
   async function bootstrap(selected) {
     boot = await api("/api/bootstrap");
+    const rememberedSource = localStorage.getItem("trendfollow-price-source");
+    if (["naver", "pykrx"].includes(rememberedSource))
+      $("price-source").value = rememberedSource;
+    renderPriceSourceHelp();
     const select = $("workspace");
     select.replaceChildren();
     for (const w of boot.workspaces) {
@@ -1775,7 +2079,15 @@ if (typeof document !== "undefined") {
     await renderWatch();
   };
   $("reload").onclick = () => load().then(renderWatch);
+  $("price-source").onchange = () => {
+    localStorage.setItem("trendfollow-price-source", $("price-source").value);
+    renderPriceSourceHelp();
+  };
   flow(1);
   bootstrap().catch((e) => toast(e.message, true));
-  setInterval(poll, 5000);
+  setInterval(() => {
+    if (currentJobs.some((j) => ["queued", "running"].includes(j.status)))
+      renderJobProgress();
+  }, 1000);
+  setInterval(poll, 2000);
 }

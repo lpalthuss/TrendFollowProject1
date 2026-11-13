@@ -312,6 +312,34 @@ def test_revision_replay_is_a_separate_frozen_account_and_continue_preserves_sou
     assert (ops.path(w['state']).parent/'2026-11-05/signals.csv').read_bytes()==old_signals
     assert ops.revision_view(w['id'])['report']['applied']
 
+
+def test_reviewed_revision_continues_to_selected_date_without_recollecting(project,monkeypatch):
+    from types import SimpleNamespace
+    from trendfollow import revisions,workflow
+    from trendfollow.operations import actions
+    from trendfollow.strategy import Rules
+
+    calls=[]
+    context=SimpleNamespace(
+        root=project,
+        path=lambda value:project/value,
+        configuration=lambda workspace:(Rules(),None),
+        job_manager=SimpleNamespace(report_progress=lambda key,message,current=None,total=None:calls.append(('progress',message))),
+    )
+    workspace=dict(data_dir='data/market/history',universe='data/market/universe.csv',
+                   config='examples/config.json',state='outputs/ui/accounts/test/state.json',capital=10000000)
+    monkeypatch.setattr(revisions,'approve_revision',lambda *a,**kw:calls.append(('approve',a[2])))
+    monkeypatch.setattr(workflow,'continue_revised_checkpoint',lambda *a,**kw:{'status':'processed','as_of':'2026-11-11'})
+    def catchup(*args,**kwargs):
+        calls.append(('catchup',args[3],kwargs['use_existing_prices'],kwargs['catch_up']))
+        return {'status':'processed','as_of':'2026-11-13','processed_dates':['2026-11-12','2026-11-13']}
+    monkeypatch.setattr(actions,'daily_run',catchup)
+    result=actions.ActionRunner(context).run('job',workspace,
+        {'action':'revision_continue','report_id':'r','price_reviewed':True,'catch_up_to':'2026-11-13'},
+        '2026-11-11')
+    assert ('catchup','2026-11-13',True,True) in calls
+    assert result['revision_id']=='r' and result['as_of']=='2026-11-13'
+
 @pytest.mark.parametrize('phase',['headers','body'])
 @pytest.mark.parametrize('error',[ConnectionAbortedError,ConnectionResetError,BrokenPipeError,TimeoutError])
 def test_client_disconnect_does_not_send_another_error_response(project,phase,error):

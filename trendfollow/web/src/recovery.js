@@ -101,9 +101,11 @@ function renderRecoveryControls() {
     $("recovery-explanation").textContent =
       r.explanation +
       (!r.applied && guidance?.as_of !== r.as_of
-        ? " 계속하려면 오른쪽 위 종가 기준일을 보고서 처리일 " +
+        ? " 정정 검토 후 계속하면 " +
           r.as_of +
-          "에 맞추거나 새 날짜로 다시 대조하세요."
+          "부터 선택한 기준일 " +
+          guidance?.as_of +
+          "까지 순서대로 처리합니다."
         : "");
     $("recovery-blocker").hidden = r.can_continue;
     $("recovery-blocker").textContent = r.block_reason || "";
@@ -112,7 +114,7 @@ function renderRecoveryControls() {
   $("revision-continue").disabled =
     busy ||
     !r ||
-    guidance?.as_of !== r.as_of ||
+    guidance?.as_of < r.as_of ||
     r.applied ||
     r.stale ||
     !r.can_continue ||
@@ -141,6 +143,8 @@ $("revision-next").onclick = () => {
 };
 $("revision-continue").onclick = () =>
   job("revision_continue", {
+    as_of: recoveryInfo.report.as_of,
+    catch_up_to: $("asof").value,
     report_id: recoveryInfo.report.id,
     reviewed: $("revision-reviewed").checked,
     price_reviewed: $("price-reviewed").checked,

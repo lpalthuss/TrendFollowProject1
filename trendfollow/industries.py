@@ -209,6 +209,109 @@ def require_peer_sessions(prices,universe,start,end):
                          '현재 산업 스냅샷을 과거 자료로 대체하지 않습니다.')
 
 
+def reconstruct_peer_sessions(universe, sessions, price_cache, progress=None, price_source='naver'):
+    """Fill absent peer dates from an earlier observed membership and historical bars.
+
+    This is an explicitly approximate research reconstruction: past tradability and
+    membership changes between observations cannot be recovered from daily bars.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    missing = sorted(set(sessions) - set(load_peer_history(universe).date.dt.strftime('%Y-%m-%d')))
+    if not missing:
+        return []
+    paths = set(universe.industry_peer_history.dropna().astype(str)) - {''}
+    history_path = Path(next(iter(paths)))
+    snapshot_root = history_path.parent / 'snapshots'
+    snapshots = sorted((p.name, p / 'peer-returns.csv') for p in snapshot_root.iterdir()
+                       if p.is_dir() and (p / 'peer-returns.csv').exists()) if snapshot_root.exists() else []
+    chosen = {}
+    for session in missing:
+        earlier = [(stamp,path) for stamp,path in snapshots if stamp < session]
+        if not earlier:
+            raise ValueError(f'{session} 이전에 저장된 산업 구성 자료가 없어 재구성할 수 없습니다.')
+        chosen[session] = earlier[-1]
+    bases = {}
+    for stamp,path in set(chosen.values()):
+        frame = pd.read_csv(path,dtype={'symbol':str,'benchmark':str,'sector':str},keep_default_na=False)
+        if not {'symbol','benchmark','sector','date'}.issubset(frame):
+            raise ValueError(f'{stamp} 산업 구성 기록의 필드가 부족합니다.')
+        if frame.symbol.duplicated().any():
+            raise ValueError(f'{stamp} 산업 구성 기록에 중복 종목이 있습니다.')
+        bases[stamp] = frame
+    symbols = sorted(set().union(*(set(frame.symbol)|set(frame.benchmark) for frame in bases.values())))
+    first = min(frame.date.iloc[0] for frame in bases.values())
+    last = max(sessions)
+    bars = {}
+    if price_source == 'pykrx':
+        from exchange_calendars import get_calendar
+        from .krx_bulk import fetch_session
+        days = [day.date().isoformat() for day in get_calendar('XKRX',start=first,end=last).sessions_in_range(first,last)]
+        records = []
+        if progress:progress('과거 산업 KRX 일괄 시세 수집 중',0,len(days))
+        for number,day in enumerate(days,1):
+            try:
+                day_rows = fetch_session(day,set(symbols))
+            except Exception as exc:
+                raise ValueError(f'{day} 과거 산업 KRX 일괄 조회 실패: {exc}') from exc
+            records.extend(day_rows.values())
+            if progress:progress(f'과거 산업 KRX 일괄 시세 수집 중 · {day}',number,len(days))
+        prices = pd.DataFrame(records,columns=['date','symbol','open','high','low','close','volume'])
+        for symbol,frame in prices.groupby('symbol'):
+            bars[symbol] = frame.sort_values('date')
+    else:
+        source = NaverResearchSource(Path(price_cache))
+        if progress:progress('과거 산업 시세 수집 중',0,len(symbols))
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {pool.submit(source.daily,symbol,first,last):symbol for symbol in symbols}
+            for number,future in enumerate(as_completed(futures),1):
+                symbol = futures[future]
+                try:
+                    bars[symbol] = future.result().sort_values('date')
+                except (ValueError,requests.RequestException) as exc:
+                    for pending in futures:
+                        pending.cancel()
+                    raise ValueError(f'과거 산업 종목 {symbol}의 시세 수집 실패: {exc}') from exc
+                if number % 100 == 0 or number == len(symbols):
+                    print(f'과거 산업 시세 {number}/{len(symbols)}',flush=True)
+                    if progress:progress('과거 산업 시세 수집 중',number,len(symbols))
+    returns = {}
+    for symbol,frame in bars.items():
+        close = frame.set_index('date')['close']
+        volume = frame.set_index('date')['volume']
+        for session in missing:
+            prior = close.loc[close.index <= session].tail(2)
+            if len(prior)==2 and prior.index[-1]==session and prior.iloc[-2]>0:
+                returns[symbol,session] = (float(prior.iloc[-1]/prior.iloc[-2]-1),float(volume.loc[session]))
+    rows = []
+    audit = []
+    for session in missing:
+        stamp,_ = chosen[session]
+        frame = bases[stamp].copy()
+        benchmark_returns = {symbol:returns.get((symbol,session)) for symbol in set(frame.benchmark)}
+        if any(value is None for value in benchmark_returns.values()):
+            raise ValueError(f'{session} 벤치마크의 과거 종가가 부족해 산업 자료를 재구성할 수 없습니다.')
+        frame['date'] = session
+        frame['source'] = 'HISTORICAL_BAR_RECONSTRUCTION'
+        frame['snapshot_observed_at'] = stamp
+        frame['day_return'] = frame.symbol.map(lambda symbol:returns.get((symbol,session),(np.nan,0))[0])
+        frame['quote_eligible'] = frame.symbol.map(lambda symbol:int((value:=returns.get((symbol,session))) is not None and value[1]>0))
+        frame['quote_volume'] = frame.symbol.map(lambda symbol:returns.get((symbol,session),(np.nan,0))[1])
+        frame['benchmark_day_return'] = frame.benchmark.map(lambda symbol:benchmark_returns[symbol][0])
+        rows.append(frame)
+        audit.append({'date':session,'membership_snapshot':stamp,'members':len(frame),
+                      'valid_bars':int(frame.quote_eligible.sum()),'method':f'prior observed membership + historical {"KRX pykrx bulk" if price_source == "pykrx" else "NAVER"} daily close/volume',
+                      'limitation':'past tradability and membership changes between observations are unknown'})
+    original = pd.read_csv(history_path,dtype={'symbol':str,'benchmark':str,'sector':str},keep_default_na=False)
+    combined = pd.concat([original,*rows],ignore_index=True).sort_values(['date','symbol'])
+    temporary = history_path.with_suffix('.csv.tmp')
+    combined.to_csv(temporary,index=False,encoding='utf-8-sig')
+    temporary.replace(history_path)
+    report = snapshot_root.parent / 'reconstruction-latest.json'
+    report.write_text(json.dumps({'sessions':audit},ensure_ascii=False,indent=2),encoding='utf-8')
+    return missing
+
+
 def industry_action_features(prices,universe,rules):
     history=load_peer_history(universe)
     valid=(history.quote_eligible==1)&np.isfinite(history.day_return)&np.isfinite(history.benchmark_day_return)

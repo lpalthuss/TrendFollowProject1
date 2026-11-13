@@ -167,6 +167,43 @@ def test_daily_weekend_skips_before_network(tmp_path,monkeypatch):
     assert result['status']=='skipped_weekend'
 
 
+def test_daily_catchup_processes_missing_sessions_in_order_with_one_collection(tmp_path,monkeypatch):
+    import json
+    from trendfollow import market,workflow
+    from trendfollow.strategy import Rules
+    universe=tmp_path/'universe.csv'
+    pd.DataFrame([{'symbol':'000001','benchmark':'069500'}]).to_csv(universe,index=False)
+    state=tmp_path/'state.json'
+    state.write_text(json.dumps({'last_date':'2026-11-10'}),encoding='utf-8')
+    class Source:
+        def __init__(self,cache):pass
+        def daily(self,symbol,start,end):
+            dates=['2026-11-10','2026-11-11','2026-11-12','2026-11-13']
+            return pd.DataFrame({'date':[d for d in dates if start<=d<=end]})
+    monkeypatch.setattr(market,'NaverResearchSource',Source)
+    collected=[];processed=[]
+    monkeypatch.setattr(market,'acquire_research',lambda *a,**kw:(collected.append(kw['required_session']) or {'errors':[]}))
+    monkeypatch.setattr(workflow,'read_inputs',lambda *a:(pd.DataFrame(),pd.DataFrame(),Rules(),None))
+    monkeypatch.setattr(workflow,'features',lambda *a:(pd.DataFrame({'date':[pd.Timestamp('2026-11-13')],'signal':[False]}),None))
+    monkeypatch.setattr(workflow,'verify_paper_candidates',lambda *a:[])
+    def checkpoint(prices,universe,date,state_path,*args):
+        processed.append(date)
+        state.write_text(json.dumps({'last_date':date}),encoding='utf-8')
+        return {'status':'processed','as_of':date}
+    monkeypatch.setattr(workflow,'paper_checkpoint',checkpoint)
+    with pytest.raises(ValueError,match='미처리 거래일이 여러 개'):
+        workflow.daily_run(universe,tmp_path/'data',state,'2026-11-13')
+    result=workflow.daily_run(universe,tmp_path/'data',state,'2026-11-13',catch_up=True)
+    assert collected==['2026-11-13']
+    assert processed==['2026-11-11','2026-11-12','2026-11-13']
+    assert result['processed_dates']==processed
+    state.write_text(json.dumps({'last_date':'2026-11-10'}),encoding='utf-8')
+    collected.clear();processed.clear()
+    result=workflow.daily_run(universe,tmp_path/'data',state,'2026-11-13',catch_up=True,use_existing_prices=True)
+    assert not collected
+    assert result['processed_dates']==['2026-11-11','2026-11-12','2026-11-13']
+
+
 def test_paper_refuses_to_advance_when_processed_history_is_revised(tmp_path):
     generate(tmp_path)
     state=tmp_path/'paper/state.json'

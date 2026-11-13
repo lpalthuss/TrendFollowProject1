@@ -18,7 +18,8 @@ let boot,
 let guidance = null,
   currentJobs = [],
   flowStep = 1,
-  firstJobs = true;
+  firstJobs = true,
+  submittingAction = null;
 let recoveryInfo = null,
   recoveryRows = null,
   recoveryKey = "",

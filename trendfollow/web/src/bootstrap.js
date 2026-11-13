@@ -1,5 +1,15 @@
+function renderPriceSourceHelp() {
+  $("price-source-help").textContent =
+    $("price-source").value === "pykrx"
+      ? "모든 가격 갱신·일별 처리에 적용 · 저장된 날짜는 유지하고 새 거래일만 KRX에서 추가 · KRX 로그인 필요"
+      : "모든 가격 갱신·일별 처리에 적용 · 저장된 날짜는 유지하고 새 거래일만 네이버에서 추가";
+}
 async function bootstrap(selected) {
   boot = await api("/api/bootstrap");
+  const rememberedSource = localStorage.getItem("trendfollow-price-source");
+  if (["naver", "pykrx"].includes(rememberedSource))
+    $("price-source").value = rememberedSource;
+  renderPriceSourceHelp();
   const select = $("workspace");
   select.replaceChildren();
   for (const w of boot.workspaces) {
@@ -51,6 +61,14 @@ $("workspace").onchange = async () => {
   await renderWatch();
 };
 $("reload").onclick = () => load().then(renderWatch);
+$("price-source").onchange = () => {
+  localStorage.setItem("trendfollow-price-source", $("price-source").value);
+  renderPriceSourceHelp();
+};
 flow(1);
 bootstrap().catch((e) => toast(e.message, true));
-setInterval(poll, 5000);
+setInterval(() => {
+  if (currentJobs.some((j) => ["queued", "running"].includes(j.status)))
+    renderJobProgress();
+}, 1000);
+setInterval(poll, 2000);

@@ -15,7 +15,11 @@ function flow(step) {
 function renderFlow() {
   renderRecoveryControls();
   renderWatchControls();
-  if (!snapshot || !guidance) return;
+  if (!snapshot || !guidance || snapshot.workspace.id !== workspace) {
+    if (flowStep !== 4)
+      showNextAction("자료 확인 중", "계좌와 작업 상태를 불러오고 있습니다.");
+    return;
+  }
   const s = snapshot,
     r = s.rules,
     g = guidance;
@@ -51,7 +55,7 @@ function renderFlow() {
     : g.industry_ready
       ? g.as_of +
         " 자료 준비됨 · 다시 갱신하지 않고 다음 작업을 진행할 수 있습니다."
-      : "선택 날짜 산업 자료가 없습니다. 오늘 자료는 갱신할 수 있지만 과거 날짜의 구성을 새로 재현할 수는 없습니다.";
+      : "선택 날짜 산업 자료가 없습니다. 아래 종가 처리 버튼을 누르면 오늘 자료를 수집하거나 과거 자료를 이전 스냅샷으로 재구성합니다.";
   $("flow-industry").disabled =
     busy || !g.requires_industry || g.as_of !== g.today || !!g.blocked;
   $("flow-industry").textContent = g.industry_ready
@@ -60,18 +64,16 @@ function renderFlow() {
   const mismatch = s.status === "configuration_mismatch";
   $("flow-daily-status").textContent = g.processed
     ? "이 날짜는 이미 처리됐습니다. 재실행 없이 결과 확인으로 넘어가세요."
-    : "가격을 수집하고 키움 시세와 대조한 뒤 로컬 모의계좌를 처리합니다. 소요 시간 동안 아래에 진행 상태를 표시합니다.";
+    : "누락된 거래일의 가격과 산업 자료를 준비한 뒤 날짜순으로 로컬 모의계좌를 처리합니다. 과거 산업 자료를 재구성한 날짜는 결과에 표시합니다.";
   $("flow-daily").disabled =
     busy ||
     !!g.blocked ||
-    !g.industry_ready ||
     mismatch ||
     g.processed ||
     s.workspace.mode === "recalculation";
   const blocker = mismatch
     ? "계좌 설정이 기존 기록과 다릅니다. 기존 계좌를 보존하고 1단계에서 새 비교 계좌를 만드세요."
-    : g.blocked ||
-      (!g.industry_ready ? "먼저 선택 날짜의 산업 자료를 준비하세요." : null);
+    : g.blocked;
   $("flow-blocker").hidden = !blocker;
   $("flow-blocker").textContent = blocker || "";
   $("flow-to-results").disabled = busy || !g.processed || mismatch;
@@ -81,7 +83,13 @@ function renderFlow() {
     .filter((j) => j.workspace === workspace && j.as_of === g.as_of)
     .slice(-4)
     .reverse();
-  for (const j of jobs) {
+  const oldDateFailures = jobs.filter(
+    (j) =>
+      j.action === "daily" &&
+      j.status === "failed" &&
+      /미처리 거래일이 여러 개입니다.*--as-of/.test(j.error || ""),
+  );
+  for (const j of jobs.filter((x) => !oldDateFailures.includes(x))) {
     const resolved =
       j.status === "failed" &&
       ["daily", "paper", "revision_continue"].includes(j.action) &&
@@ -119,7 +127,24 @@ function renderFlow() {
         );
     } else if (["queued", "running"].includes(j.status))
       n.append(
-        el("div", "처리 중입니다. 중복 실행하지 말고 완료를 기다리세요."),
+        el(
+          "div",
+          j.progress || "처리 중입니다. 중복 실행하지 말고 완료를 기다리세요.",
+        ),
+      );
+    else if (j.result?.processed_dates)
+      n.append(
+        el(
+          "div",
+          `${j.result.processed_dates.length}개 거래일 처리 완료` +
+            (j.result.reconstructed_industry_dates?.length
+              ? ` · 산업 자료 ${j.result.reconstructed_industry_dates.length}일 재구성`
+              : "") +
+            (j.result.price_source === "pykrx" ? " · KRX(pykrx) 누락 일봉" : "") +
+            (j.result.source_comparison?.difference_count
+              ? ` · 기존 원천과 가격·거래량 차이 ${j.result.source_comparison.difference_count}건 (수집 기록 확인)`
+              : ""),
+        ),
       );
     else if (j.result?.status?.startsWith("skipped"))
       n.append(
@@ -130,10 +155,25 @@ function renderFlow() {
       );
     $("flow-job-status").append(n);
   }
+  if (oldDateFailures.length) {
+    const history = el("details", undefined, "flow-job resolved");
+    history.append(
+      el(
+        "summary",
+        `이전 서버의 날짜 제한 실패 ${oldDateFailures.length}건 · 새 버튼으로 재실행 가능`,
+      ),
+    );
+    for (const j of oldDateFailures)
+      history.append(
+        el("div", `${j.finished_at || j.created_at} · ${j.error}`),
+      );
+    $("flow-job-status").append(history);
+  }
   $("flow-result-status").textContent = g.processed
     ? g.as_of +
       " 종가 처리 완료. 신호가 0건이어도 정상일 수 있습니다. 아래 대기는 다음 거래일 계획이며 증권사 주문이 아닙니다."
     : "선택 날짜의 종가 처리가 아직 완료되지 않았습니다. 아래는 마지막 저장 결과입니다. 2단계에서 먼저 처리하세요.";
+  $("flow-result-status").classList.toggle("pending", !g.processed);
   facts("flow-results", [
     ["저장된 결과 기준일", s.as_of || "없음"],
     [
@@ -164,6 +204,77 @@ function renderFlow() {
     s.pending,
     "현재 저장된 진입·추가매수 대기가 없습니다.",
   );
+  if (flowStep === 1) {
+    showNextAction(
+      "다음: 종가 처리 준비",
+      "선택 계좌와 설정을 확인했다면 2단계로 이동하세요.",
+      "flow-to-data",
+    );
+  } else if (flowStep === 2) {
+    const latest = jobs.find((j) =>
+      ["industry", "daily", "paper"].includes(j.action),
+    );
+    if (busy) {
+      const active = currentJobs.findLast((j) =>
+        ["queued", "running"].includes(j.status),
+      );
+      showNextAction(
+        active ? `${labels[active.action] || active.action} 진행 중` : "작업 접수 중",
+        active?.progress || "작업을 접수하고 있습니다. 위 진행 상태를 확인하세요.",
+      );
+    }
+    else if (g.processed)
+      showNextAction(
+        "종가 처리 완료 · 다음: 결과 확인",
+        `${g.as_of} 처리 결과와 다음 거래일 계획을 확인하세요.`,
+        "flow-to-results",
+      );
+    else if (
+      latest?.status === "failed" &&
+      /미처리 거래일/.test(latest.error || "")
+    )
+      showNextAction(
+        "다음: 누락 거래일 자동 처리",
+        "이제 한 번의 실행으로 누락된 거래일을 날짜순으로 처리합니다.",
+        "flow-daily",
+      );
+    else if (
+      latest?.status === "failed" &&
+      /이미 처리한 과거 일봉이 수정/.test(latest.error || "") &&
+      recoveryInfo?.report &&
+      !recoveryInfo.report.applied
+    )
+      showNextAction(
+        "정정 내역 확인 필요",
+        `${recoveryInfo.report.account_as_of}까지의 입력이 바뀌어 계좌가 보존됐습니다. 아래 변경 내역 ${recoveryInfo.report.row_changes}건을 검토한 뒤 선택 날짜까지 계속 처리하세요.`,
+        "recovery-history-summary",
+      );
+    else if (latest?.status === "failed")
+      showNextAction(
+        "작업 실패 · 다시 확인 필요",
+        latest.error || "실패 사유를 확인하고 필요한 자료를 다시 준비하세요.",
+        !$("flow-daily").disabled ? "flow-daily" : null,
+      );
+    else if (!$("flow-daily").disabled)
+      showNextAction(
+        "다음: 누락 거래일 포함 종가 처리",
+        "선택 날짜까지 누락된 거래일을 날짜순으로 처리하세요.",
+        "flow-daily",
+      );
+    else
+      showNextAction(
+        "진행 조건 확인",
+        blocker || "버튼 위의 안내를 확인하세요.",
+      );
+  } else if (flowStep === 3) {
+    showNextAction(
+      g.processed ? "다음: 장중 관측 준비" : "다음: 종가 처리",
+      g.processed
+        ? "결과와 다음 거래일 계획을 확인한 뒤 관측 설정으로 이동하세요."
+        : "종가 처리 단계로 돌아가 자료 준비 상태를 확인하세요.",
+      g.processed ? "flow-to-watch" : "flow-back-to-data",
+    );
+  }
 }
 document
   .querySelectorAll("[data-step]")

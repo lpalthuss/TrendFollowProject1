@@ -134,6 +134,10 @@ class ActionRunner:
 
     def run(self, key, w, payload, as_of):
         action = payload["action"]
+        progress = lambda message, current=None, total=None: self.context.job_manager.report_progress(
+            key, message, current, total
+        )
+        progress("입력 자료 확인 중")
         prices = self.context.path(w["data_dir"]) / "prices.csv"
         universe = self.context.path(w["universe"])
         config = self.context.path(w["config"])
@@ -144,6 +148,7 @@ class ActionRunner:
             from ..research_store import require_published_research
 
             require_published_research(prices)
+            progress("후보 조건 계산 중")
             p, u, r, l = read_inputs(prices, universe, as_of, config)
             f, bad = features(p, u, r)
             today = f[f.date == pd.Timestamp(as_of)].copy()
@@ -181,6 +186,7 @@ class ActionRunner:
             )
             out = self.context.home / "analyses" / w["id"] / key
             out.mkdir(parents=True)
+            progress("후보 결과 저장 중")
             result.to_csv(out / "signals.csv", index=False, encoding="utf-8-sig")
             info = dict(
                 as_of=as_of,
@@ -197,6 +203,7 @@ class ActionRunner:
             from ..revisions import report_revision
             from ..observation_control import control_lock
 
+            progress("과거 입력 변경 내역 대조 중")
             with control_lock(state_path):
                 result = report_revision(prices, universe, config, state_path, as_of)
         elif action == "revision_continue":
@@ -204,6 +211,7 @@ class ActionRunner:
             from ..workflow import continue_revised_checkpoint
             from ..observation_control import control_lock
 
+            progress("정정 내역 승인·계좌 이어 처리 중")
             with control_lock(state_path):
                 approve_revision(
                     state_path,
@@ -224,13 +232,46 @@ class ActionRunner:
                 payload["report_id"],
                 self.context.root / ".env",
             )
+            catch_up_to = payload.get("catch_up_to")
+            if catch_up_to and catch_up_to > as_of:
+                progress(f"정정 반영 완료 · {catch_up_to}까지 남은 거래일 처리 중")
+                result = daily_run(
+                    universe,
+                    self.context.path(w["data_dir"]),
+                    state_path,
+                    catch_up_to,
+                    w["capital"],
+                    config,
+                    self.context.root / ".env",
+                    "kiwoom",
+                    catch_up=True,
+                    progress=progress,
+                    use_existing_prices=True,
+                )
+                result["revision_id"] = payload["report_id"]
         elif action == "revision_replay":
+            progress("정정 자료로 비교 계좌 재계산 중")
             result = self.context.replay_revision(w, payload["report_id"], as_of)
         elif action == "paper":
+            progress("저장 가격으로 모의계좌 처리 중")
             result = paper_checkpoint(
                 prices, universe, as_of, state_path, w["capital"], config
             )
         elif action == "daily":
+            progress("누락 거래일 확인 중")
+            if rules.entry_method == "setup":
+                from .intraday import industry_ready
+                if as_of == str(self.context.now().date()) and not industry_ready(
+                    pd.read_csv(universe,dtype={"symbol":str,"benchmark":str}),as_of
+                ):
+                    from ..industries import industry_sync
+                    progress("오늘 산업 자료 수집 중")
+                    industry_sync(
+                        self.context.root / "data/market/universe.csv",
+                        self.context.root / "data/market/master",
+                        self.context.root / "data/industries",
+                        refresh=True,
+                    )
             result = daily_run(
                 universe,
                 self.context.path(w["data_dir"]),
@@ -240,10 +281,15 @@ class ActionRunner:
                 config,
                 self.context.root / ".env",
                 "kiwoom",
+                catch_up=True,
+                reconstruct_missing_peers=True,
+                progress=progress,
+                price_source=payload.get("price_source", "naver"),
             )
         elif action == "industry":
             from ..industries import industry_sync
 
+            progress("산업 자료 수집·저장 중")
             result = industry_sync(
                 self.context.root / "data/market/universe.csv",
                 self.context.root / "data/market/master",
@@ -255,6 +301,7 @@ class ActionRunner:
             from ..research_store import require_published_research
             from .intraday import industry_ready
 
+            progress("감시 종목·기준 종가 확인 중")
             symbols = payload.get("symbols", [])
             if (
                 not isinstance(symbols, list)
@@ -287,6 +334,7 @@ class ActionRunner:
             plan = out / "plan.json"
             if (signal is None or frame.empty
                     or not set(targets).issubset(set(frame.loc[frame.date.eq(as_of), "symbol"]))):
+                progress("감시 후보·가격 자료 준비 중")
                 signal, prices = self.prepare_watch_candidates(
                     out, prices, frame, universe, members, targets, as_of, rules, watch_mode
                 )
@@ -296,6 +344,7 @@ class ActionRunner:
                 if data["as_of"] <= as_of and not data.get("synthetic"):
                     references.append((data["as_of"], ref.stat().st_mtime_ns, ref))
             reference = max(references)[2] if references else None
+            progress("감시 계획 생성 중")
             result = prepare_plan(
                 signal,
                 prices,
@@ -318,6 +367,7 @@ class ActionRunner:
         elif action == "volume_import":
             from ..intraday_volume import import_runs
 
+            progress("관측 기록의 거래량 집계 중")
             result = import_runs(
                 [self.context.run_path(payload["run_id"])],
                 self.context.home / "volume/samples.csv",
@@ -325,6 +375,7 @@ class ActionRunner:
         elif action == "volume_profile":
             from ..intraday_volume import build_reference
 
+            progress("동시간 거래량 기준 계산 중")
             result = build_reference(
                 self.context.home / "volume/samples.csv",
                 as_of,
@@ -333,6 +384,7 @@ class ActionRunner:
         else:
             from ..intraday_close import close_comparison
 
+            progress("장중 관측과 종가 대조 중")
             run = self.context.run_path(payload["run_id"])
             out = self.context.home / "close-comparisons" / key
             plan = json.loads((run / "plan.json").read_text(encoding="utf-8"))

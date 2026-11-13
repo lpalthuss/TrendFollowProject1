@@ -107,6 +107,43 @@ def test_success_replaces_both_files_and_links_prices_checksum(files):
     assert not (root/JOURNAL).exists() and not list(root.glob('.research-stage-*'))
 
 
+def test_daily_naver_append_preserves_existing_bars(files, monkeypatch):
+    universe, root, *_ = files
+    old = pd.DataFrame([dict(date='2026-11-06', symbol=symbol, open=90., high=91.,
+                             low=89., close=90., volume=900.) for symbol in ['000001', '069500']])
+    old.to_csv(root/'prices.csv', index=False)
+    def updated(self, symbol, start, end, refresh=False):
+        changed = bars(symbol)
+        new = changed.copy()
+        new['date'] = '2026-11-09'
+        new['close'] = 105.
+        return pd.concat([changed, new], ignore_index=True)
+    monkeypatch.setattr(NaverResearchSource, 'daily', updated)
+    result = acquire_research(universe, root, '2026-11-06', '2026-11-09',
+                              required_session='2026-11-09', append_sessions=['2026-11-09'])
+    saved = pd.read_csv(root/'prices.csv', dtype={'symbol':str})
+    assert result['published'] and len(saved) == 4
+    assert saved.loc[saved.date.eq('2026-11-06'), 'close'].eq(90).all()
+    assert saved.loc[saved.date.eq('2026-11-09'), 'close'].eq(105).all()
+    assert result['source_comparison']['difference_count'] == 2
+    assert result['price_sources'][-1]['sessions'] == ['2026-11-09']
+
+
+def test_daily_naver_append_rejects_missing_intermediate_benchmark(files, monkeypatch):
+    universe, root, old_prices, old_manifest = files
+    def source(self, symbol, start, end, refresh=False):
+        frame = bars(symbol)
+        frame['date'] = '2026-11-11'
+        return frame
+    monkeypatch.setattr(NaverResearchSource, 'daily', source)
+    result = acquire_research(universe, root, '2026-11-06', '2026-11-11',
+                              required_session='2026-11-11',
+                              append_sessions=['2026-11-10', '2026-11-11'])
+    assert not result['published'] and result['errors'][0]['symbol'] == 'benchmarks'
+    assert (root/'prices.csv').read_bytes() == old_prices
+    assert (root/'manifest.json').read_bytes() == old_manifest
+
+
 def test_nonempty_but_truncated_history_does_not_replace_existing_data(files):
     _,root,previous,old_manifest=files
     f=bars('000001');older=f.copy();older['date']='2026-11-05'

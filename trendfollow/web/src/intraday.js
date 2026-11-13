@@ -175,6 +175,47 @@ function renderWatchControls() {
   const hasRuns = !!watchData?.runs.length;
   $("volume-import").disabled = loading || busy || !hasRuns;
   $("close-compare").disabled = loading || busy || !hasRuns;
+  if (
+    typeof flowStep !== "undefined" &&
+    flowStep === 4 &&
+    typeof showNextAction === "function"
+  ) {
+    if (watchData?.control.active_or_unconfirmed.length)
+      showNextAction(
+        "관측 진행 중",
+        "시세 수신과 구독 상태가 아래 결과에 표시됩니다. 관측은 20:00에 자동 종료됩니다.",
+      );
+    else if (busy)
+      showNextAction("자료 준비 중", "작업 결과가 표시될 때까지 기다리세요.");
+    else if (!startBlocker)
+      showNextAction(
+        "감시 계획 준비 완료 · 다음: 관측 ON",
+        "선택한 계획으로 실시간 체결 관측을 시작하세요.",
+        "start-watch",
+      );
+    else if (!symbols.length)
+      showNextAction(
+        "다음: 종목 코드 입력",
+        "관측할 6자리 종목 코드를 입력하세요.",
+        "watch-symbols",
+      );
+    else if (
+      watchMode === "industry" &&
+      basis?.result?.industry_ready === false
+    )
+      showNextAction(
+        "다음: 감시 범위 선택",
+        "산업 자료가 없으면 '입력 종목만'을 선택하세요.",
+        "watch-mode",
+      );
+    else if (!prepareBlocker)
+      showNextAction(
+        "다음: 자료 준비 및 계획 생성",
+        "직전 거래일 후보를 준비하고 감시 계획을 저장하세요.",
+        "prepare-watch",
+      );
+    else showNextAction("관측 준비 조건 확인", prepareBlocker || startBlocker);
+  }
 }
 
 async function renderWatch() {
@@ -240,12 +281,24 @@ async function renderWatch() {
     summary?.status === "failed"
       ? ` / ${reasons[summary.failure_reason] || "관측 실패"}${summary.kis_error_code ? ` (${summary.kis_error_code})` : ""}${summary.rejected_symbol ? ` · 거절 종목 ${summary.rejected_symbol}` : ""}`
       : "";
+  $("watch-info").className =
+    "notice " +
+    (summary?.status === "failed"
+      ? "result-error"
+      : summary?.connection_state === "active"
+        ? "result-working"
+        : summary?.status === "completed"
+          ? "result-success"
+          : "");
   $("watch-info").textContent = summary
     ? `최근 관측: ${summary.status}${run.as_of ? ` / 후보 기준일 ${run.as_of}` : ""} / 구독 승인 ${summary.subscription_acks ?? "미확인"} / 요청 ${summary.subscriptions_requested ?? "미확인"} / 체결 수신 ${summary.quote_ticks ?? "미확인"} / 연결 ${summary.connection_state ?? "미확인"}${failure}${summary.watch_mode === "symbols" ? " / 입력 종목만 관측 · 산업 및 진입 조건 미평가" : ""}`
     : "UI에서 수집한 장중 기록이 없습니다. OFF·미관측을 신호 0건으로 판단하지 않습니다. 감시 계획은 기준일 후보 자료로 생성합니다.";
   const events = run?.events || [];
   const quotes = Object.values(summary?.latest_target_quotes || {});
   const mismatches = quotes.filter((quote) => quote.price_basis_mismatch);
+  $("watch-decision-status").className = mismatches.length
+    ? "decision-alert"
+    : "muted";
   $("watch-decision-status").textContent = mismatches.length
     ? `판단 보류: ${mismatches
         .map(
@@ -274,6 +327,36 @@ async function renderWatch() {
         ],
       ],
       quotes,
+    );
+  }
+  const hourly = summary?.hourly_quotes || [];
+  $("watch-hourly").hidden = !hourly.length;
+  if (hourly.length) {
+    const hourSelect = $("watch-hour-filter");
+    const previousHour = hourSelect.value;
+    const hours = [...new Set(hourly.map((r) => `${r.hour}|${r.market}`))].sort().reverse();
+    hourSelect.replaceChildren();
+    for (const hour of hours) {
+      const option = el("option", `${watchTimestamp(hour.split("|")[0]).slice(0, 16)} · ${hour.endsWith("nxt_after") ? "NXT 애프터" : "KRX 정규"}`);
+      option.value = hour;
+      hourSelect.append(option);
+    }
+    hourSelect.value = hours.includes(previousHour) ? previousHour : hours[0];
+    table(
+      "watch-hourly-table",
+      [
+        ["시간대 (한국시간)", (r) => watchTimestamp(r.hour).slice(0, 16)],
+        ["종목", (r) => r.symbol],
+        ["시장", (r) => r.market === "nxt_after" ? "NXT 애프터" : "KRX 정규"],
+        ["마지막 체결", (r) => watchTimestamp(r.timestamp)],
+        ["잠정 가격", (r) => number(r.price)],
+        ["잠정 누적 거래량", (r) => number(r.cumulative_volume)],
+        ["상태", (r) => r.price_basis_mismatch ? "가격 기준 불일치 · 판단 보류" : r.sample_status],
+        ["돌파", (r) => r.valid && !r.price_basis_mismatch ? flag(r.breakout_present) : "판단 보류"],
+        ["거래량 조건", (r) => r.valid && !r.price_basis_mismatch ? flag(r.volume_pass) : "판단 보류"],
+        ["진입 조건", (r) => r.valid && !r.price_basis_mismatch ? flag(r.entry_confirmed) : "판단 보류"],
+      ],
+      hourly.filter((r) => `${r.hour}|${r.market}` === hourSelect.value),
     );
   }
   const decisionEvents = watchDecisionEvents(events);
@@ -326,6 +409,7 @@ $("watch-plan").onchange = renderWatchControls;
 $("watch-symbols").oninput = renderWatchControls;
 $("watch-session").oninput = renderWatchControls;
 $("watch-mode").onchange = renderWatchControls;
+$("watch-hour-filter").onchange = () => renderWatch().catch((e) => toast(e.message, true));
 $("prepare-watch").onclick = () =>
   job("prepare_intraday", {
     as_of: watchBasis.result.as_of,

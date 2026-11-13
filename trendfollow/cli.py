@@ -231,6 +231,7 @@ def main(argv=None):
     daily.add_argument('--config')
     daily.add_argument('--env-file', default='.env')
     daily.add_argument('--verify-provider', choices=['kis','kiwoom'], default='kiwoom')
+    daily.add_argument('--price-source', choices=['naver','pykrx'], default='naver')
     intraday = subs.add_parser('intraday-prepare',help='장중 관측용 전일 셋업·산업 감시 계획 생성')
     for key in ['signals','prices','universe','session','config','out']:
         intraday.add_argument(f'--{key}',required=True)
@@ -405,7 +406,7 @@ def main(argv=None):
             print(json.dumps(report,ensure_ascii=False))
         elif args.command == 'daily':
             report=daily_run(args.universe,args.data_dir,args.state,args.as_of,args.capital,
-                             args.config,args.env_file,args.verify_provider)
+                             args.config,args.env_file,args.verify_provider,price_source=args.price_source)
             print(json.dumps(report,ensure_ascii=False))
     except (ValueError, TypeError, KeyError, OSError, BrokerError,RequestException) as exc:
         if isinstance(exc,RequestException):

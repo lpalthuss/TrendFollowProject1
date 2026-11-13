@@ -151,6 +151,8 @@ def test_live_runner_flushes_last_interval_on_interrupt_and_replays(tmp_path,mon
     root=tmp_path/'live'
     result=stream.watch(config,root,seconds=10,tick_storage=storage,control_file=tmp_path/'control.json')
     assert result['status']=='interrupted' and result['quote_ticks']==1 and result['orders_sent']==0
+    assert result['hourly_quotes'][0]['symbol']=='000001'
+    assert result['hourly_quotes'][0]['market']=='krx'
     assert result['decision_evaluations']==2  # connection gap and partial final interval
     events=[json.loads(line) for line in (root/'events.jsonl').read_text().splitlines()]
     immediate=[e for e in events if e['kind']=='holding_stop_state' and e['holding_stop_breached'] is True]

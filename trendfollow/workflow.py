@@ -233,11 +233,16 @@ def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_
 
 
 def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_000,
-              config_path=None, env_file='.env', verify_provider='kiwoom'):
-    """One manual/scheduled local run. A skipped checkpoint is not silently backfilled."""
-    from .brokers import Credentials, QuoteClient
+              config_path=None, env_file='.env', verify_provider='kiwoom', catch_up=False,
+              reconstruct_missing_peers=False, progress=None, use_existing_prices=False,
+              price_source='naver'):
+    """Process one close, or every missing close when the UI requests catch-up."""
     from .market import NaverResearchSource, acquire_research
-    from .quality import compare_sources
+    if price_source not in {'naver','pykrx'}:
+        raise ValueError('가격 자료 원천은 네이버 또는 pykrx여야 합니다.')
+    if price_source == 'pykrx':
+        from .krx_bulk import configure_krx_credentials
+        configure_krx_credentials(env_file)
     now=datetime.now(ZoneInfo('Asia/Seoul'))
     as_of=as_of or str(now.date())
     day=pd.Timestamp(as_of)
@@ -252,43 +257,89 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
     active_rules=Rules(**config.get('rules',{}));active_rules.validate()
     include_indices=(active_rules.mansfield_benchmark=='market_index' or
                      active_rules.market_units_enabled and active_rules.market_units_benchmark=='market_index')
-    source=NaverResearchSource(Path(data_dir)/'raw')
-    benchmark_symbols=sorted(set(universe.benchmark))
-    probe_symbols=set(benchmark_symbols)
-    if active_rules.mansfield_benchmark=='market_index':
-        probe_symbols|={mansfield_benchmark_symbol(item,active_rules) for item in universe.to_dict('records')}
-    if active_rules.market_units_enabled:
-        from .market_units import market_symbol
-        probe_symbols|={market_symbol(item,active_rules) for item in universe.to_dict('records')}
-    probes=[source.daily(symbol,as_of,as_of) for symbol in sorted(probe_symbols)]
-    if any(f.empty for f in probes):
-        return {'status':'skipped_no_confirmed_session','as_of':as_of}
-    if active_rules.entry_method=='setup' and 'industry_peer_history' in universe:
-        from .industries import load_peer_history
-        peers=load_peer_history(universe)
-        if not peers.date.eq(day).any():
-            raise ValueError('해당 거래일의 산업 동료 수익률 스냅샷이 없습니다. 산업 데이터를 갱신한 후 실행하세요.')
+    if price_source == 'pykrx':
+        from .krx_sessions import calendar
+        if not calendar(day.year).is_session(day.date()):
+            return {'status':'skipped_no_confirmed_session','as_of':as_of}
+    else:
+        source=NaverResearchSource(Path(data_dir)/'raw')
+        benchmark_symbols=sorted(set(universe.benchmark))
+        probe_symbols=set(benchmark_symbols)
+        if active_rules.mansfield_benchmark=='market_index':
+            probe_symbols|={mansfield_benchmark_symbol(item,active_rules) for item in universe.to_dict('records')}
+        if active_rules.market_units_enabled:
+            from .market_units import market_symbol
+            probe_symbols|={market_symbol(item,active_rules) for item in universe.to_dict('records')}
+        probes=[source.daily(symbol,as_of,as_of) for symbol in sorted(probe_symbols)]
+        if any(f.empty for f in probes):
+            return {'status':'skipped_no_confirmed_session','as_of':as_of}
     # Fast idempotent path: an already processed date must not issue fresh broker tokens.
     state_file=Path(state_path)
+    state=None
+    sessions=[as_of]
     if state_file.exists():
         state=json.loads(state_file.read_text(encoding='utf-8'))
         if state['last_date']==as_of:
             return paper_checkpoint(Path(data_dir)/'prices.csv',universe_path,as_of,state_path,capital,config_path)
         if state['last_date']>as_of:
             raise ValueError('처리 완료일보다 과거의 daily 실행은 허용하지 않습니다.')
-        calendar=source.daily(benchmark_symbols[0],state['last_date'],as_of)
-        if int((calendar.date>state['last_date']).sum())>1:
+        if price_source == 'pykrx':
+            from exchange_calendars import get_calendar
+            sessions=[d.date().isoformat() for d in get_calendar('XKRX',start=state['last_date'],end=as_of).sessions_in_range(state['last_date'],as_of)
+                      if d.date().isoformat()>state['last_date']]
+        else:
+            previous_days=source.daily(benchmark_symbols[0],state['last_date'],as_of)
+            sessions=sorted(d for d in previous_days.date if d>state['last_date'])
+        if len(sessions)>1 and not catch_up:
             raise ValueError('미처리 거래일이 여러 개입니다. --as-of로 각 거래일을 순서대로 실행하세요.')
-    manifest=acquire_research(universe_path,data_dir,'2020-01-01',as_of,include_market_indices=include_indices,required_session=as_of)
-    if manifest['errors']:
-        raise ValueError('일부 연구 데이터 수집에 실패했습니다. 모의 계좌는 변경하지 않습니다.')
+        if not sessions or sessions[-1]!=as_of:
+            return {'status':'skipped_no_confirmed_session','as_of':as_of}
+    reconstructed=[]
+    manifest=None
+    if active_rules.entry_method=='setup' and 'industry_peer_history' in universe:
+        from .industries import load_peer_history
+        peers=load_peer_history(universe)
+        missing=sorted(set(sessions)-set(peers.date.dt.strftime('%Y-%m-%d')))
+        if missing:
+            if reconstruct_missing_peers and catch_up:
+                from .industries import reconstruct_peer_sessions
+                reconstructed=reconstruct_peer_sessions(universe,sessions,Path(data_dir)/'raw',progress,price_source)
+            else:
+                raise ValueError('산업 동료 수익률 기록이 없는 거래일: '+', '.join(missing)+'. 과거 산업 자료를 현재 스냅샷으로 대체하지 않습니다.')
+    if not use_existing_prices:
+        if progress:progress('선택 날짜까지 가격 자료 수집 중')
+        if price_source == 'pykrx':
+            from .krx_bulk import acquire_missing_sessions
+            manifest=acquire_missing_sessions(universe_path,data_dir,sessions,include_market_indices=include_indices,progress=progress)
+        else:
+            start=state['last_date'] if state else '2020-01-01'
+            manifest=acquire_research(universe_path,data_dir,start,as_of,include_market_indices=include_indices,required_session=as_of,progress=progress,append_sessions=sessions)
+        if manifest['errors']:
+            raise ValueError('일부 연구 데이터 수집에 실패했습니다. 모의 계좌는 변경하지 않습니다.')
     prices_path=Path(data_dir)/'prices.csv'
-    prices,u,rules,limits=read_inputs(prices_path,universe_path,as_of,config_path)
-    prepared,_=features(prices,u,rules)
-    candidates=prepared[(prepared.date==day)&prepared.signal]
-    approved=verify_paper_candidates(candidates,prices,active_rules,as_of,state_path,env_file,verify_provider,include_indices)
-    report=paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved)
-    report['approved_signals']=len(approved)
+    completed=[]
+    for session in sessions:
+        print(f'종가 처리 {session} ({len(completed)+1}/{len(sessions)})',flush=True)
+        if progress:progress(f'{session} 종가 처리 중',len(completed)+1,len(sessions))
+        try:
+            prices,u,rules,limits=read_inputs(prices_path,universe_path,session,config_path)
+            prepared,_=features(prices,u,rules)
+            candidates=prepared[(prepared.date==pd.Timestamp(session))&prepared.signal]
+            approved=verify_paper_candidates(candidates,prices,active_rules,session,state_path,env_file,verify_provider,include_indices)
+            report=paper_checkpoint(prices_path,universe_path,session,state_path,capital,config_path,approved)
+            report['approved_signals']=len(approved)
+        except (ValueError,FileNotFoundError) as exc:
+            if len(sessions)>1:
+                error=ValueError(f'{session} 처리 실패 (완료: {len(completed)}/{len(sessions)}거래일): {exc}')
+                if hasattr(exc,'report'):error.report=exc.report
+                raise error from exc
+            raise
+        completed.append(session)
+    report['processed_dates']=completed
+    report['reconstructed_industry_dates']=reconstructed
+    report['price_source']=price_source
+    if manifest and manifest.get('source_comparison'):
+        report['source_comparison']=manifest['source_comparison']
     return report
 
 

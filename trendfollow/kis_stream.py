@@ -10,6 +10,7 @@ import time
 from .brokers import BrokerError, Credentials, QuoteClient
 from .intraday import IntradayMonitor, KST, finite, stamp
 from .intraday_sampling import ObservationSession, validate_sampling
+from .intraday_hourly import HourlyQuotes
 from .connection_health import ConnectionHealth, ReceiveIdleTimeout
 from .krx_sessions import observation_market, require_previous_close
 from .observation_control import (DEFAULT_CONTROL, ControlledObservation, ObservationStopped,
@@ -109,6 +110,7 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
     import hashlib
     summary['plan_sha256'] = hashlib.sha256(plan_bytes).hexdigest()
     sampler = None
+    hourly = HourlyQuotes(plan['session'], plan['targets']) if not probe else None
     def save():
         summary.update(health.snapshot(time.monotonic()))
         if sampler:
@@ -117,6 +119,8 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
                          'price_basis_mismatch':symbol in monitor.basis_mismatch}
                 for symbol,quote in monitor.latest_target_quotes.items()
             }
+        if hourly:
+            summary['hourly_quotes'] = hourly.snapshot(datetime.now(KST), summary['connection_state'] == 'active')
         (root/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
     save()
     ws = None
@@ -143,6 +147,7 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
                 sink.write(json.dumps(value,ensure_ascii=False,allow_nan=False)+'\n');sink.flush()
             def emit(values):
                 for value in values:
+                    if hourly: hourly.decision(value)
                     record(events,value)
                     print(json.dumps(value,ensure_ascii=False,allow_nan=False),flush=True)
             def connection_event(kind, reason=None):
@@ -265,7 +270,10 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
                             summary['quote_ticks'] += 1
                             # Probe mode never feeds another trading day's data into a plan.
                             if not probe:
+                                hourly.tick(tick,received,
+                                            tick['symbol'] in monitor.basis_mismatch)
                                 sampler.tick(tick,received)
+                                hourly.basis(tick,tick['symbol'] in monitor.basis_mismatch)
                     if awaiting is not None and (probe or observation_market(datetime.now(KST)) == current_market):
                         summary['failure_reason'] = 'subscription_incomplete'
                         raise BrokerError('KIS 실시간 구독 승인이 완료되지 않았습니다.')

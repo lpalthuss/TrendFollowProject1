@@ -1,8 +1,37 @@
+let toastTimer;
 function toast(message, error = false) {
-  $("toast").textContent = message;
-  $("toast").className = error ? "error" : "";
-  $("toast").hidden = false;
-  setTimeout(() => ($("toast").hidden = true), 6500);
+  const root = $("toast");
+  clearTimeout(toastTimer);
+  root.replaceChildren(
+    el("strong", error ? "실행 실패" : "실행 결과"),
+    el("span", message),
+  );
+  root.className = error ? "error" : "success";
+  root.hidden = false;
+  toastTimer = setTimeout(() => (root.hidden = true), 10000);
+}
+
+function showNextAction(title, detail, targetId = null) {
+  const panel = $("flow-next");
+  const target = targetId ? $(targetId) : null;
+  document
+    .querySelectorAll(".next-action-target")
+    .forEach((node) => node.classList.remove("next-action-target"));
+  panel.hidden = !title;
+  if (!title) return;
+  if ($("flow-next-title").textContent !== title)
+    $("flow-next-title").textContent = title;
+  if ($("flow-next-text").textContent !== detail)
+    $("flow-next-text").textContent = detail;
+  const go = $("flow-next-button");
+  go.hidden = !target || target.disabled;
+  if (!go.hidden) {
+    target.classList.add("next-action-target");
+    go.onclick = () => {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.focus();
+    };
+  }
 }
 function table(id, columns, rows, empty = "해당 기록이 없습니다.") {
   const root = $(id);

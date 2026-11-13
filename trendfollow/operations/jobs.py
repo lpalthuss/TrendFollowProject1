@@ -30,6 +30,14 @@ class JobManager:
         for lease in leases:
             lease.release()
 
+    def report_progress(self, key, message, current=None, total=None):
+        with self.context.lock:
+            job = dict(self.jobs[key], progress=message)
+            job["progress_current"] = current
+            job["progress_total"] = total
+            save_job(self.context.home / "jobs" / f"{key}.json", job)
+            self.jobs[key] = job
+
     def close(self):
         # Explicitly started quote workers have their own bounded lifetime and OFF control.
         self.context.pool.shutdown(wait=False, cancel_futures=True)
@@ -102,6 +110,7 @@ class JobManager:
                 action=action,
                 as_of=as_of,
                 status="queued",
+                progress="실행 대기 중",
                 created_at=self.context.now().isoformat(),
                 owner_id=self.context.instance_id,
                 owner_pid=os.getpid(),
@@ -122,6 +131,7 @@ class JobManager:
     def execute(self, key, w, payload):
         job = dict(self.context.jobs[key])
         job["status"] = "running"
+        job["progress"] = "작업 시작 중"
         save_job(self.context.home / "jobs" / f"{key}.json", job)
         with self.context.lock:
             self.context.jobs[key] = dict(job)
@@ -139,6 +149,10 @@ class JobManager:
             )
         finally:
             job["finished_at"] = self.context.now().isoformat()
+            with self.context.lock:
+                job["progress"] = self.context.jobs[key].get("progress", job["progress"])
+                job["progress_current"] = self.context.jobs[key].get("progress_current")
+                job["progress_total"] = self.context.jobs[key].get("progress_total")
             try:
                 save_job(self.context.home / "jobs" / f"{key}.json", job)
             finally:
