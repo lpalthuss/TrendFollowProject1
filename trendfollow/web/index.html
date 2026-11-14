@@ -56,7 +56,13 @@
         <span id="price-source-help"></span>
       </div>
       <div id="notice" class="notice" hidden></div>
-      <section id="job-progress" class="job-progress" role="status" aria-live="polite" hidden>
+      <section
+        id="job-progress"
+        class="job-progress"
+        role="status"
+        aria-live="polite"
+        hidden
+      >
         <div class="job-progress-head">
           <strong id="job-progress-title"></strong>
           <span id="job-progress-elapsed"></span>
@@ -226,7 +232,12 @@
             <div>
               <strong>② 가격 수집·대조·모의 처리</strong>
               <p id="flow-daily-status"></p>
-              <p class="muted">일봉 수집 원천은 화면 상단에서 선택합니다. 두 방식 모두 저장된 가격은 유지하고 새 거래일만 추가합니다. pykrx는 프로젝트 .env 또는 환경변수의 KRX_ID, KRX_PW를 사용합니다. 원천 간 가격·거래량 차이는 수집 기록에 남습니다.</p>
+              <p class="muted">
+                일봉 수집 원천은 화면 상단에서 선택합니다. 두 방식 모두 저장된
+                가격은 유지하고 새 거래일만 추가합니다. pykrx는 프로젝트 .env
+                또는 환경변수의 KRX_ID, KRX_PW를 사용합니다. 원천 간 가격·거래량
+                차이는 수집 기록에 남습니다.
+              </p>
             </div>
             <button id="flow-daily" data-action="daily" class="primary">
               누락 거래일 포함 가격 갱신 + 종가 모의 처리
@@ -428,8 +439,15 @@
             <div id="watch-quotes" class="table-wrap"></div>
             <div id="watch-hourly" hidden>
               <h3>시간대별 KIS 잠정 관측</h3>
-              <p class="muted">각 시간대의 마지막 수신 체결입니다. 종료 시각 가까이에 새 체결이 없거나 연결이 끊겼으면 판단을 보류합니다. 확정 종가·모의계좌 자료가 아닙니다.</p>
-              <label>관측 시간대 <select id="watch-hour-filter"></select></label>
+              <p class="muted">
+                각 시간대의 마지막 수신 체결입니다. 종료 시각 가까이에 새 체결이
+                없거나 연결이 끊겼으면 판단을 보류합니다. 확정 종가·모의계좌
+                자료가 아닙니다.
+              </p>
+              <label
+                >관측 시간대
+                <select id="watch-hour-filter"></select
+              ></label>
               <div id="watch-hourly-table" class="table-wrap"></div>
             </div>
             <p id="watch-decision-status" class="muted" aria-live="polite"></p>
@@ -484,17 +502,28 @@
               <option value="unapplied">미적용</option>
             </select></label
           ><label
-            >셋업 상태<select id="filter-setup" aria-label="셋업 상태">
+            >파동 단계<select id="filter-setup-phase" aria-label="파동 단계">
               <option value="all">전체</option>
-              <option value="ready">준비 조건 충족</option>
-              <option value="not_ready">준비 조건 미충족</option>
               <option value="seeking">상승 파동 탐색</option>
               <option value="rising">상승 파동 진행</option>
               <option value="base">조정·베이스</option>
-              <option value="trigger">돌파 트리거 발생</option>
+              <option value="untradable">거래량 0 · 셋업 계산 불가</option>
+            </select></label
+          ><label
+            >셋업 조건<select id="filter-setup" aria-label="셋업 조건">
+              <option value="all">전체</option>
+              <option value="ready">준비 조건 충족</option>
+              <option value="not_ready">준비 조건 미충족</option>
+              <option value="trigger">셋업 돌파</option>
               <option value="invalidated">셋업 무효화</option>
-              <option value="untradable">가격 이상·매매 불가</option>
               <option value="unknown">미적용·자료 없음</option>
+            </select></label
+          ><label
+            >52주 신고가<select id="filter-high52" aria-label="52주 신고가">
+              <option value="all">전체</option>
+              <option value="pass">돌파</option>
+              <option value="fail">미돌파</option>
+              <option value="unknown">자료 부족</option>
             </select></label
           ><label
             >최종 신호<select id="filter-signal" aria-label="최종 신호">
@@ -517,9 +546,133 @@
               aria-label="종목 검색" /></label
           ><button id="reset-filters" class="quiet">필터 초기화</button>
         </div>
-        <p id="filter-note" class="muted" aria-live="polite">
+        <p id="filter-note" class="filter-note" aria-live="polite">
           선택한 모든 조건을 동시에 적용합니다. 필터는 표시 목록만 변경합니다.
         </p>
+        <p
+          id="filter-combination-note"
+          class="filter-combination-note"
+          aria-live="polite"
+          hidden
+        ></p>
+        <details id="filter-disabled-help" class="filter-disabled-help" hidden>
+          <summary id="filter-disabled-summary">
+            비활성화된 선택지와 이유
+          </summary>
+          <ul id="filter-disabled-list"></ul>
+        </details>
+        <div class="explanation-card" role="note">
+          <strong>조건 설명</strong>
+          <p id="filter-setup-help" aria-live="polite"></p>
+        </div>
+        <div
+          id="filter-high52-card"
+          class="explanation-card"
+          role="note"
+          hidden
+        >
+          <strong>52주 신고가 기준</strong>
+          <p id="filter-high52-help" aria-live="polite"></p>
+        </div>
+        <figure id="phase-example" class="phase-example" data-phase="all">
+          <svg
+            viewBox="0 0 740 250"
+            role="group"
+            aria-labelledby="phase-example-title phase-example-desc"
+          >
+            <title id="phase-example-title">파동 셋업 단계 예제</title>
+            <desc id="phase-example-desc">
+              왼쪽부터 저점 탐색, 상승 파동, 고점 이후 조정과 베이스, 저항선
+              돌파 순서로 진행하는 가상의 가격 흐름입니다. 그림의 셋업 돌파는
+              셋업 조건 필터에 연결되며 52주 신고가 필터와는 별개입니다. 실제
+              종목 가격이 아닙니다.
+            </desc>
+            <g
+              class="wave-stage wave-seeking"
+              data-phase-choice="seeking"
+              role="button"
+              tabindex="0"
+              aria-label="상승 파동 탐색 선택"
+            >
+              <rect x="12" y="21" width="155" height="165" rx="6" />
+              <text x="23" y="42">① 상승 파동 탐색</text>
+              <path d="M 30 151 L 75 140 L 110 154 L 155 133" />
+            </g>
+            <g
+              class="wave-stage wave-rising"
+              data-phase-choice="rising"
+              role="button"
+              tabindex="0"
+              aria-label="상승 파동 진행 선택"
+            >
+              <rect x="173" y="21" width="169" height="165" rx="6" />
+              <text x="184" y="42">② 상승 파동 진행</text>
+              <path d="M 155 133 L 195 119 L 229 99 L 264 79 L 314 58" />
+            </g>
+            <g
+              class="wave-stage wave-base"
+              data-phase-choice="base"
+              role="button"
+              tabindex="0"
+              aria-label="조정·베이스 선택"
+            >
+              <rect x="348" y="21" width="209" height="165" rx="6" />
+              <text x="359" y="42">③ 조정·베이스</text>
+              <path
+                d="M 314 58 L 352 88 L 385 101 L 420 91 L 453 99 L 487 88 L 527 91"
+              />
+            </g>
+            <g
+              class="wave-stage wave-trigger"
+              data-condition-choice="trigger"
+              role="button"
+              tabindex="0"
+              aria-label="셋업 조건에서 셋업 돌파 선택"
+            >
+              <rect x="563" y="21" width="164" height="165" rx="6" />
+              <text x="574" y="42">④ 셋업 돌파</text>
+              <path d="M 527 91 L 565 70 L 603 50 L 650 45 L 705 32" />
+            </g>
+            <line class="wave-resistance" x1="314" y1="58" x2="716" y2="58" />
+            <text class="wave-resistance-label" x="622" y="76">
+              셋업 저항선
+            </text>
+            <g class="wave-untradable">
+              <rect x="170" y="85" width="400" height="56" rx="7" />
+              <text x="192" y="119">
+                거래량 0 → 계산 중단 · 파동 탐색 재시작
+              </text>
+            </g>
+            <g
+              class="wave-choice wave-zero-choice"
+              data-phase-choice="untradable"
+              role="button"
+              tabindex="0"
+              aria-label="거래량 0, 셋업 계산 불가 선택"
+            >
+              <rect x="15" y="195" width="195" height="28" rx="5" />
+              <text x="28" y="214">거래량 0 · 계산 불가</text>
+            </g>
+            <g
+              class="wave-choice wave-all-choice"
+              data-phase-choice="all"
+              role="button"
+              tabindex="0"
+              aria-label="파동 단계와 셋업 조건 전체 보기"
+            >
+              <rect x="218" y="195" width="95" height="28" rx="5" />
+              <text x="232" y="214">파동 전체</text>
+            </g>
+            <text class="wave-axis-label" x="15" y="241">시간 →</text>
+            <text class="wave-axis-label" x="560" y="241">
+              가상 종가 흐름 · 실제 시세 아님
+            </text>
+          </svg>
+          <figcaption id="phase-example-caption">
+            그림의 구간을 클릭하면 필터가 바뀝니다. 다시 클릭하면 선택이
+            해제됩니다.
+          </figcaption>
+        </figure>
         <details class="volume-help">
           <summary>거래량 배수란?</summary>
           <p id="volume-help-text"></p>
@@ -541,6 +694,14 @@
           </div>
           <div id="detail-chart"></div>
           <div id="detail-facts" class="facts"></div>
+          <section id="detail-setup" class="setup-detail" hidden>
+            <h3>셋업 조건 확인</h3>
+            <p class="muted">
+              준비 판정은 오늘 이전의 베이스를 사용하고, 오늘 저가는 무효화
+              판정에 반영합니다. 준비 충족은 최종 진입 신호와 다릅니다.
+            </p>
+            <ul id="detail-setup-list"></ul>
+          </section>
         </div>
         <div class="section-head">
           <h2>산업 동반 상승</h2>
@@ -614,6 +775,6 @@
         ><span id="updated">—</span>
       </footer>
     </main>
-    <div id="toast" role="status" hidden></div>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
   </body>
 </html>

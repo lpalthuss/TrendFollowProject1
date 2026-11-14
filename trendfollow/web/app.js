@@ -12,8 +12,123 @@
     seeking: "상승 파동 탐색",
     rising: "상승 파동 진행",
     base: "조정·베이스",
-    untradable: "가격 이상·매매 불가",
+    untradable: "거래량 0 · 셋업 계산 불가",
   };
+  function figureSelection(currentPhase, currentCondition, type, choice) {
+    if (choice === "all") return { phase: "all", condition: "all" };
+    if (type === "condition")
+      return {
+        phase: "all",
+        condition:
+          currentCondition === choice && currentPhase === "all"
+            ? "all"
+            : choice,
+      };
+    return {
+      phase: currentPhase === choice ? "all" : choice,
+      condition: "all",
+    };
+  }
+  function setupFilterConflict(phase, condition) {
+    if (phase === "all" || condition === "all") return null;
+    if (condition === "unknown")
+      return "파동 단계를 선택하면서 셋업 자료 없음도 선택할 수 없습니다.";
+    if (phase === "base" && condition === "trigger")
+      return "셋업 돌파 당일에는 파동 단계가 조정·베이스에서 벗어나므로 두 조건을 함께 만족할 수 없습니다.";
+    if ((phase === "base" || phase === "rising") && condition === "invalidated")
+      return "셋업 무효화 당일에는 파동 단계가 상승 파동 탐색으로 돌아가므로 두 조건을 함께 만족할 수 없습니다.";
+    if (
+      phase === "untradable" &&
+      ["ready", "trigger", "invalidated"].includes(condition)
+    )
+      return "거래량이 0인 날에는 준비·돌파·무효화를 계산하지 않으므로 두 조건을 함께 만족할 수 없습니다.";
+    return null;
+  }
+  function candidateConflict(filters, rules) {
+    const pair = (message, first, second) => ({
+      message,
+      fields: [first, second],
+    });
+    const setupAccount = rules.entry_method === "setup";
+    if (!setupAccount) {
+      if (filters.setupPhase !== "all")
+        return {
+          message: "파동 단계는 셋업 계좌에서만 적용됩니다.",
+          fields: ["setupPhase"],
+        };
+      if (!["all", "unknown"].includes(filters.setup))
+        return {
+          message: "셋업 조건은 셋업 계좌에서만 적용됩니다.",
+          fields: ["setup"],
+        };
+      if (!["all", "unapplied"].includes(filters.action))
+        return {
+          message: "산업 액션은 셋업 계좌에서만 적용됩니다.",
+          fields: ["action"],
+        };
+    } else if (filters.action === "unapplied") {
+      return {
+        message: "셋업 계좌에는 산업 액션이 적용됩니다.",
+        fields: ["action"],
+      };
+    }
+    const setupConflict = setupFilterConflict(
+      filters.setupPhase,
+      filters.setup,
+    );
+    if (setupConflict) return pair(setupConflict, "setupPhase", "setup");
+    if (filters.signal === "pass") {
+      if (["fail", "unknown"].includes(filters.rs))
+        return pair("최종 신호 통과에는 RS 통과가 필요합니다.", "signal", "rs");
+      if (["fail", "unknown"].includes(filters.volume))
+        return pair(
+          "최종 신호 통과에는 거래량 조건 통과가 필요합니다.",
+          "signal",
+          "volume",
+        );
+      if (
+        setupAccount &&
+        rules.sector_require_action &&
+        ["fail", "unknown"].includes(filters.action)
+      )
+        return pair(
+          "현재 계좌의 최종 신호에는 산업 액션 통과가 필요합니다.",
+          "signal",
+          "action",
+        );
+      if (setupAccount && filters.setupPhase === "untradable")
+        return pair(
+          "거래량 0인 날에는 최종 진입 신호가 발생하지 않습니다.",
+          "signal",
+          "setupPhase",
+        );
+      if (setupAccount && !rules.setup_52w_enabled) {
+        if (["not_ready", "invalidated", "unknown"].includes(filters.setup))
+          return pair(
+            "현재 계좌의 최종 신호에는 유효한 셋업 준비가 필요합니다.",
+            "signal",
+            "setup",
+          );
+        if (["base", "seeking"].includes(filters.setupPhase))
+          return pair(
+            "현재 계좌의 셋업 신호는 돌파 당일 조정·베이스나 파동 탐색 단계에 머물지 않습니다.",
+            "signal",
+            "setupPhase",
+          );
+      }
+      if (
+        !setupAccount &&
+        rules.breakout_days === 252 &&
+        ["fail", "unknown"].includes(filters.high52)
+      )
+        return pair(
+          "252일 고가 돌파 계좌의 최종 신호에는 52주 신고가 돌파가 필요합니다.",
+          "signal",
+          "high52",
+        );
+    }
+    return null;
+  }
   function filterRows(rows, filters, rules) {
     const search = (filters.search || "").trim().toLocaleLowerCase();
     return rows.filter((row) => {
@@ -32,6 +147,9 @@
       )
         return false;
       const applied = rules.entry_method === "setup";
+      const phase = filters.setupPhase || "all";
+      if (phase !== "all" && (!applied || row.setup_phase !== phase))
+        return false;
       if (filters.action === "unapplied") {
         if (applied) return false;
       } else if (
@@ -55,10 +173,24 @@
         Number.isFinite(row.volume_ratio)
           ? row.volume_ratio >= rules.volume_multiple
           : null;
-      return matches(volume, filters.volume);
+      const high52 =
+        typeof row.prior_52w_high === "number" &&
+        Number.isFinite(row.prior_52w_high)
+          ? row.high52_breakout
+          : null;
+      return (
+        matches(volume, filters.volume) &&
+        matches(high52, filters.high52 || "all")
+      );
     });
   }
-  const api = { filterRows, phaseLabels };
+  const api = {
+    filterRows,
+    phaseLabels,
+    figureSelection,
+    setupFilterConflict,
+    candidateConflict,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof document !== "undefined") root.TrendFollowFilters = api;
 })(globalThis);
@@ -161,13 +293,20 @@ if (typeof document !== "undefined") {
   function toast(message, error = false) {
     const root = $("toast");
     clearTimeout(toastTimer);
+    const close = el("button", "닫기", "toast-close");
+    close.type = "button";
+    close.setAttribute("aria-label", "알림 닫기");
+    close.onclick = () => (root.hidden = true);
     root.replaceChildren(
-      el("strong", error ? "실행 실패" : "실행 결과"),
-      el("span", message),
+      el("strong", error ? "실행 실패" : "알림"),
+      el("span", message, "toast-message"),
+      close,
     );
     root.className = error ? "error" : "success";
+    root.setAttribute("role", error ? "alert" : "status");
+    root.setAttribute("aria-live", error ? "assertive" : "polite");
     root.hidden = false;
-    toastTimer = setTimeout(() => (root.hidden = true), 10000);
+    if (!error) toastTimer = setTimeout(() => (root.hidden = true), 10000);
   }
 
   function showNextAction(title, detail, targetId = null) {
@@ -290,11 +429,137 @@ if (typeof document !== "undefined") {
       industry: $("filter-industry").value,
       rs: $("filter-rs").value,
       action: $("filter-action").value,
+      setupPhase: $("filter-setup-phase").value,
       setup: $("filter-setup").value,
+      high52: $("filter-high52").value,
       signal: $("filter-signal").value,
       volume: $("filter-volume").value,
       search: $("search").value,
     };
+  }
+  const candidateFilterIds = {
+    rs: "filter-rs",
+    action: "filter-action",
+    setupPhase: "filter-setup-phase",
+    setup: "filter-setup",
+    high52: "filter-high52",
+    signal: "filter-signal",
+    volume: "filter-volume",
+  };
+  function normalizeCandidateFilters() {
+    let filters = candidateFilters();
+    for (let count = 0; count < 7; count++) {
+      const conflict = TrendFollowFilters.candidateConflict(
+        filters,
+        snapshot.rules,
+      );
+      if (!conflict) break;
+      $(candidateFilterIds[conflict.fields.at(-1)]).value = "all";
+      filters = candidateFilters();
+    }
+    return filters;
+  }
+  function updateCandidateOptions(filters) {
+    const disabled = [];
+    for (const [key, id] of Object.entries(candidateFilterIds)) {
+      const select = $(id);
+      for (const option of select.options) {
+        const conflict =
+          option.value === "all"
+            ? null
+            : TrendFollowFilters.candidateConflict(
+                { ...filters, [key]: option.value },
+                snapshot.rules,
+              );
+        option.disabled = Boolean(conflict);
+        if (
+          conflict &&
+          conflict.fields.some(
+            (other) => other !== key && filters[other] !== "all",
+          )
+        )
+          disabled.push(
+            `${select.getAttribute("aria-label")} → ${option.textContent}: ${conflict.message}`,
+          );
+      }
+    }
+    return [...new Set(disabled)];
+  }
+  function renderSetupHelp() {
+    const rules = snapshot.rules;
+    const high52Help = $("filter-high52-help");
+    const high52Card = $("filter-high52-card");
+    high52Card.hidden = $("filter-high52").value === "all";
+    if (!high52Card.hidden) {
+      const selected = $("filter-high52").selectedOptions[0].textContent;
+      const role =
+        rules.entry_method === "setup" && rules.setup_52w_enabled
+          ? "현재 계좌에서는 파동 셋업과 별도인 매수 후보 경로입니다."
+          : rules.entry_method === "breakout" && rules.breakout_days === 252
+            ? "현재 계좌의 252일 고가 돌파 조건과 같은 기준입니다."
+            : "현재 계좌의 매수 신호에는 반영되지 않습니다.";
+      high52Help.textContent = `52주 신고가 → ${selected}: 오늘 종가와 직전 252거래일 최고가를 비교합니다. ${role}`;
+    }
+    const phaseChoice = $("filter-setup-phase").value;
+    const conditionChoice = $("filter-setup").value;
+    $("phase-example").dataset.phase = phaseChoice;
+    $("phase-example").dataset.condition = conditionChoice;
+    document
+      .querySelectorAll(
+        "#phase-example [data-phase-choice], #phase-example [data-condition-choice]",
+      )
+      .forEach((choice) => {
+        const selected = choice.dataset.phaseChoice
+          ? choice.dataset.phaseChoice === phaseChoice &&
+            (phaseChoice !== "all" || conditionChoice === "all")
+          : choice.dataset.conditionChoice === conditionChoice;
+        choice.setAttribute("aria-pressed", String(selected));
+      });
+    if (rules.entry_method !== "setup") {
+      $("phase-example").hidden = true;
+      $("filter-setup-help").textContent =
+        "현재 계좌는 파동 셋업 전략을 사용하지 않습니다. 셋업 단계와 조건은 표시되지 않습니다.";
+      return;
+    }
+    $("phase-example").hidden = false;
+    $("phase-example-caption").textContent =
+      "그림의 구간을 클릭하면 필터가 바뀝니다. 다시 클릭하면 해제됩니다. " +
+      (phaseChoice === "untradable"
+        ? "거래량이 0인 날에는 셋업 계산을 중단하고 파동 탐색을 다시 시작합니다."
+        : conditionChoice === "trigger"
+          ? "적용 중: 셋업 조건 → 셋업 돌파. 선행 파동 고점을 넘는 조건이며 ‘52주 신고가 → 돌파’ 필터와는 별개입니다."
+          : "그림 ④는 ‘셋업 조건 → 셋업 돌파’에 연결됩니다. ‘52주 신고가 → 돌파’는 별도 필터입니다. 가상의 가격 흐름입니다.");
+    if ($("filter-high52").value !== "all")
+      $("phase-example-caption").textContent +=
+        ` 현재 ‘52주 신고가 → ${$("filter-high52").selectedOptions[0].textContent}’ 필터도 함께 적용 중입니다.`;
+    const phase = {
+      all: "파동 단계 전체",
+      seeking: `상승 파동 탐색: 저점에서 고점까지 ${number(rules.setup_min_rise_atr, 1)} ATR 이상 상승하면 진행 단계로 전환`,
+      rising: `상승 파동 진행: 고점에서 종가가 ${number(rules.setup_reversal_atr, 1)} ATR 이상 하락하면 조정 단계 확인`,
+      base: `조정·베이스: 파동 상승 폭 대비 반납이 ${percent(rules.setup_max_retracement)} 이하인 조정 구간`,
+      untradable: "거래량 0: 해당 날짜의 셋업 계산 불가",
+    }[$("filter-setup-phase").value];
+    const condition = {
+      all: "셋업 조건 전체",
+      ready: `준비 충족: 파동 상승 폭 대비 반납 ${percent(rules.setup_max_retracement)} 이하, 베이스 관측 4거래일 이상`,
+      not_ready: `준비 미충족: 베이스가 없거나 반납 ${percent(rules.setup_max_retracement)} 초과 또는 베이스 관측 4거래일 미만`,
+      trigger:
+        "셋업 돌파: 오늘 종가가 셋업 저항선을 넘고 전일 종가는 저항선 이하",
+      invalidated: `셋업 무효화: 오늘 저가를 포함한 반납이 ${percent(rules.setup_max_retracement)} 초과`,
+      unknown: "미적용·자료 없음: 셋업 전략이 아니거나 단계 자료가 없음",
+    }[$("filter-setup").value];
+    const conditionNote =
+      conditionChoice === "invalidated"
+        ? $("filter-high52").value === "pass"
+          ? "두 판정은 같은 기준일에 발생할 수 있습니다. 그날 저가는 셋업 반납 한도를 넘고, 종가는 직전 252거래일 고점을 넘은 경우입니다. 52주 돌파 때문에 셋업이 무효화된 것은 아니며, 돌파 후 며칠 동안 상승했다는 뜻도 아닙니다."
+          : "무효화는 선택 기준일의 저가로 판단합니다. 이전 신고가 돌파 이후 일정 기간의 상승 여부를 뜻하지 않습니다."
+        : conditionChoice === "ready"
+          ? `준비 충족은 최종 진입 신호가 아닙니다. 진입 판단에는 거래량 수축비 ${number(rules.setup_volume_contraction, 2)} 이하, 변동성 수축비 ${number(rules.setup_range_contraction, 2)} 이하 등 추가 조건이 적용됩니다.`
+          : conditionChoice === "trigger"
+            ? "셋업 돌파만으로 최종 진입 신호가 확정되지는 않습니다."
+            : "셋업 조건은 최종 진입 신호와 구분합니다.";
+    $("filter-setup-help").textContent =
+      `${phase} · ${condition}. ${conditionNote}`;
   }
   function updateIndustryFilter() {
     const select = $("filter-industry"),
@@ -319,7 +584,9 @@ if (typeof document !== "undefined") {
   }
   function renderStocks() {
     if (!snapshot) return;
-    const filters = candidateFilters();
+    const filters = normalizeCandidateFilters();
+    const disabled = updateCandidateOptions(filters);
+    renderSetupHelp();
     let rows = TrendFollowFilters.filterRows(
       snapshot.rows,
       filters,
@@ -330,6 +597,22 @@ if (typeof document !== "undefined") {
     ).length;
     $("filter-note").textContent =
       `선택한 조건 ${active}개를 모두 만족하는 ${rows.length}종목을 표시합니다 (AND). RS는 선택 계좌의 ${snapshot.rules.rs_method === "mansfield" ? "Mansfield RS" : "RS 수익률 순위"} 기준입니다. 표시 필터는 신호·계좌를 변경하지 않습니다.`;
+    $("filter-disabled-help").hidden = !disabled.length;
+    $("filter-disabled-summary").textContent =
+      `현재 선택 때문에 비활성화된 다른 항목 ${disabled.length}개 보기`;
+    $("filter-disabled-list").replaceChildren(
+      ...disabled.map((reason) => el("li", reason)),
+    );
+    const combinationNote = $("filter-combination-note");
+    const intersection =
+      filters.setup !== "all" && filters.high52 !== "all"
+        ? snapshot.rules.setup_52w_enabled &&
+          snapshot.rules.entry_method === "setup"
+          ? "유효한 조합입니다. 셋업 조건과 52주 신고가를 모두 만족한 종목만 표시합니다(AND). 계좌의 매수 후보는 두 경로 중 하나만 통과해도 될 수 있습니다(OR). 두 경로의 최종 후보를 함께 보려면 이 두 필터를 ‘전체’로 두고 ‘최종 신호 → 통과’를 선택하세요."
+          : "유효한 조합입니다. 셋업 조건과 52주 신고가를 모두 만족한 종목만 표시합니다(AND). 현재 계좌에서는 52주 신고가가 별도 매수 경로로 켜져 있지 않습니다."
+        : "";
+    combinationNote.hidden = !intersection;
+    combinationNote.textContent = intersection;
     rows.sort(
       (a, b) =>
         (b.allocation_score ??
@@ -359,6 +642,14 @@ if (typeof document !== "undefined") {
         ],
         ["산업", (r) => r.industry_name || r.sector],
         ["종가", (r) => number(r.reference_price)],
+        [
+          "52주 신고가",
+          (r) =>
+            flag(
+              r.prior_52w_high == null ? null : r.high52_breakout,
+              "자료 부족",
+            ),
+        ],
         ["RS 순위", (r) => number(r.rs_percentile, 1)],
         ["Mansfield", (r) => number(r.mansfield_rs, 2)],
         ["RS 조건", (r) => flag(r.rs_pass)],
@@ -389,7 +680,7 @@ if (typeof document !== "undefined") {
                       : r.setup_ready === false
                         ? "준비 미충족"
                         : "",
-                    r.setup_trigger === true ? "돌파 트리거" : "",
+                    r.setup_trigger === true ? "셋업 돌파" : "",
                     r.setup_invalidated === true ? "무효화" : "",
                   ]
                     .filter(Boolean)
@@ -408,6 +699,7 @@ if (typeof document !== "undefined") {
               : number(r.volume_ratio, 2) + "배",
         ],
         ["최종 신호", (r) => flag(r.signal)],
+        ["신호 경로", (r) => r.signal_entry_path || "—"],
         ["계획 수량", (r) => number(r.quantity)],
         [
           "감시",
@@ -426,7 +718,10 @@ if (typeof document !== "undefined") {
       ],
       rows,
       snapshot.rows.length
-        ? "현재 필터에 맞는 종목이 없습니다."
+        ? filters.setup === "trigger" &&
+          !snapshot.rows.some((row) => row.setup_trigger === true)
+          ? "이 기준일에 셋업 돌파가 발생한 종목이 없습니다. 다른 파동 구간을 선택하거나 파동 전체를 누르세요."
+          : "현재 선택한 조건을 모두 만족하는 종목이 없습니다. 다른 조건을 해제하거나 필터 초기화를 누르세요."
         : "아직 후보 분석 자료가 없습니다. 후보 재계산을 실행하세요.",
     );
     const groups = {};
@@ -459,6 +754,137 @@ if (typeof document !== "undefined") {
       Object.values(groups).sort((a, b) => b.pass - a.pass),
     );
   }
+  function renderSetupDetail(row) {
+    const section = $("detail-setup");
+    section.hidden = snapshot.rules.entry_method !== "setup";
+    if (section.hidden) return;
+    const rules = snapshot.rules;
+    const known = (value) => typeof value === "number" && Number.isFinite(value);
+    const checks = [
+      [
+        "파동 단계",
+        TrendFollowFilters.phaseLabels[row.setup_phase] || "자료 없음",
+        "",
+      ],
+      [
+        "준비 조건",
+        row.setup_ready === true
+          ? "충족"
+          : row.setup_ready === false
+            ? "미충족"
+            : "미확인",
+        row.setup_ready === true
+          ? "pass"
+          : row.setup_ready === false
+            ? "fail"
+            : "unknown",
+      ],
+      [
+        "준비 판정 반납 · 오늘 이전 베이스",
+        known(row.setup_retracement)
+          ? `${percent(row.setup_retracement)} / 기준 ${percent(rules.setup_max_retracement)} 이하`
+          : `미확인 / 기준 ${percent(rules.setup_max_retracement)} 이하`,
+        known(row.setup_retracement)
+          ? row.setup_retracement <= rules.setup_max_retracement
+            ? "pass"
+            : "fail"
+          : "unknown",
+      ],
+      [
+        "오늘 저가 포함 반납",
+        known(row.setup_retracement_today)
+          ? `${percent(row.setup_retracement_today)} / 기준 ${percent(rules.setup_max_retracement)} 이하`
+          : `미확인 / 기준 ${percent(rules.setup_max_retracement)} 이하`,
+        known(row.setup_retracement_today)
+          ? row.setup_retracement_today <= rules.setup_max_retracement
+            ? "pass"
+            : "fail"
+          : "unknown",
+      ],
+      [
+        "베이스 관측",
+        known(row.setup_base_bars) && row.setup_resistance != null
+          ? `${number(row.setup_base_bars)}거래일 / 기준 4거래일 이상`
+          : "미확인 / 기준 4거래일 이상",
+        known(row.setup_base_bars) && row.setup_resistance != null
+          ? row.setup_base_bars >= 4
+            ? "pass"
+            : "fail"
+          : "unknown",
+      ],
+      [
+        "거래량 수축비",
+        known(row.setup_volume_ratio)
+          ? `${number(row.setup_volume_ratio, 2)} / 기준 ${number(rules.setup_volume_contraction, 2)} 이하`
+          : `미확인 / 기준 ${number(rules.setup_volume_contraction, 2)} 이하`,
+        known(row.setup_volume_ratio)
+          ? row.setup_volume_ratio <= rules.setup_volume_contraction
+            ? "pass"
+            : "fail"
+          : "unknown",
+      ],
+      [
+        "변동성 수축비",
+        known(row.setup_range_ratio)
+          ? `${number(row.setup_range_ratio, 2)} / 기준 ${number(rules.setup_range_contraction, 2)} 이하`
+          : `미확인 / 기준 ${number(rules.setup_range_contraction, 2)} 이하`,
+        known(row.setup_range_ratio)
+          ? row.setup_range_ratio <= rules.setup_range_contraction
+            ? "pass"
+            : "fail"
+          : "unknown",
+      ],
+      [
+        "셋업 돌파",
+        row.setup_resistance != null
+          ? `${row.setup_trigger === true ? "발생" : "미발생"} · 종가 ${number(row.reference_price)}원 / 저항 ${number(row.setup_resistance)}원`
+          : "미확인 / 저항 자료 없음",
+        row.setup_resistance == null
+          ? "unknown"
+          : row.setup_trigger === true
+            ? "pass"
+            : "fail",
+      ],
+      [
+        "오늘 저가 포함 무효화",
+        row.setup_invalidated === true
+          ? "무효화 발생"
+          : row.setup_resistance != null
+            ? "무효화 없음"
+            : "미확인",
+        row.setup_resistance == null
+          ? "unknown"
+          : row.setup_invalidated === true
+            ? "fail"
+            : "pass",
+      ],
+      [
+        "셋업 진입 조건",
+        row.setup_entry === true
+          ? "충족"
+          : row.setup_entry === false && row.setup_resistance != null
+            ? "미충족"
+            : "미확인",
+        row.setup_resistance == null
+          ? "unknown"
+          : row.setup_entry === true
+            ? "pass"
+            : "fail",
+      ],
+      [
+        "최종 진입 신호",
+        row.signal === true ? "통과" : row.signal === false ? "미통과" : "미확인",
+        row.signal === true ? "pass" : row.signal === false ? "fail" : "unknown",
+      ],
+    ];
+    $("detail-setup-list").replaceChildren(
+      ...checks.map(([label, value, state]) => {
+        const item = el("li", "", `setup-check ${state}`);
+        item.append(el("span", label), el("strong", value));
+        return item;
+      }),
+    );
+  }
   async function detail(row) {
     $("stock-detail").hidden = false;
     $("detail-name").textContent = `${row.name || row.symbol} · ${row.symbol}`;
@@ -472,14 +898,26 @@ if (typeof document !== "undefined") {
       ["산업 동료 수", number(row.sector_peer_count)],
       ["자기 제외 동료 상승 비율", percent(row.sector_up_fraction)],
       ["동료 초과수익", percent(row.sector_excess_return)],
-      ["상승 파동 반납", percent(row.setup_retracement)],
+      ["준비 판정 반납 · 오늘 이전 베이스", percent(row.setup_retracement)],
+      ["오늘 저가 포함 반납", percent(row.setup_retracement_today)],
       ["거래량 수축비", number(row.setup_volume_ratio, 2)],
       ["변동성 수축비", number(row.setup_range_ratio, 2)],
       ["셋업 저항", number(row.setup_resistance)],
+      ["직전 252거래일 최고가", number(row.prior_52w_high)],
+      [
+        "52주 신고가 돌파",
+        row.prior_52w_high == null
+          ? "자료 부족"
+          : row.high52_breakout
+            ? "돌파"
+            : "미돌파",
+      ],
+      ["최종 신호 경로", row.signal_entry_path || "해당 없음"],
       ["손절 폭", percent(row.stop_fraction)],
       ["배분 사유", row.allocation_reason || "수량 계획 미계산"],
       ["산업 자료 범위", row.sector_action_scope || "미적용"],
     ]);
+    renderSetupDetail(row);
     try {
       const p = await api(
         `/api/prices?workspace=${workspace}&symbol=${row.symbol}`,
@@ -530,9 +968,40 @@ if (typeof document !== "undefined") {
     }
   }
   $("detail-close").onclick = () => ($("stock-detail").hidden = true);
+  document.querySelectorAll(".candidate-filters select").forEach((input) => {
+    input.onchange = () => {
+      if (
+        input.id === "filter-setup-phase" &&
+        $("filter-setup").value === "trigger"
+      )
+        $("filter-setup").value = "all";
+      renderStocks();
+    };
+  });
   document
-    .querySelectorAll(".candidate-filters select")
-    .forEach((input) => (input.onchange = renderStocks));
+    .querySelectorAll(
+      "#phase-example [data-phase-choice], #phase-example [data-condition-choice]",
+    )
+    .forEach((choice) => {
+      const selectFromFigure = () => {
+        const next = TrendFollowFilters.figureSelection(
+          $("filter-setup-phase").value,
+          $("filter-setup").value,
+          choice.dataset.phaseChoice ? "phase" : "condition",
+          choice.dataset.phaseChoice || choice.dataset.conditionChoice,
+        );
+        $("filter-setup-phase").value = next.phase;
+        $("filter-setup").value = next.condition;
+        renderStocks();
+      };
+      choice.onclick = selectFromFigure;
+      choice.onkeydown = (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectFromFigure();
+        }
+      };
+    });
   $("search").oninput = renderStocks;
   $("reset-filters").onclick = () => {
     document
@@ -707,6 +1176,7 @@ if (typeof document !== "undefined") {
       ["universe", "market_index"],
     ],
     ["rules", "entry_method", "진입 방식", ["setup", "breakout"]],
+    ["rules", "setup_52w_enabled", "파동 셋업에 52주 신고가 경로 추가"],
     [
       "rules",
       "initial_stop_method",
@@ -739,6 +1209,8 @@ if (typeof document !== "undefined") {
     const root = $("settings-fields");
     root.replaceChildren();
     fieldSpecs.forEach(([group, key, label, choices, scale]) => {
+      if (key === "setup_52w_enabled" && draft.rules.entry_method !== "setup")
+        return;
       const value = draft[group][key],
         l = el("label", label),
         input = el(choices ? "select" : "input");
@@ -786,6 +1258,7 @@ if (typeof document !== "undefined") {
           });
           renderSettings();
         }
+        if (key === "entry_method") renderSettings();
         $("settings-json").value = JSON.stringify(draft, null, 2);
       };
       l.append(input);
@@ -1489,6 +1962,7 @@ if (typeof document !== "undefined") {
       : g.blocked;
     $("flow-blocker").hidden = !blocker;
     $("flow-blocker").textContent = blocker || "";
+    $("flow-blocker").className = "notice notice-error";
     $("flow-to-results").disabled = busy || !g.processed || mismatch;
     $("flow-to-results").setAttribute("aria-busy", String(busy));
     $("flow-job-status").replaceChildren();
@@ -1553,7 +2027,9 @@ if (typeof document !== "undefined") {
               (j.result.reconstructed_industry_dates?.length
                 ? ` · 산업 자료 ${j.result.reconstructed_industry_dates.length}일 재구성`
                 : "") +
-              (j.result.price_source === "pykrx" ? " · KRX(pykrx) 누락 일봉" : "") +
+              (j.result.price_source === "pykrx"
+                ? " · KRX(pykrx) 누락 일봉"
+                : "") +
               (j.result.source_comparison?.difference_count
                 ? ` · 기존 원천과 가격·거래량 차이 ${j.result.source_comparison.difference_count}건 (수집 기록 확인)`
                 : ""),
@@ -1632,11 +2108,13 @@ if (typeof document !== "undefined") {
           ["queued", "running"].includes(j.status),
         );
         showNextAction(
-          active ? `${labels[active.action] || active.action} 진행 중` : "작업 접수 중",
-          active?.progress || "작업을 접수하고 있습니다. 위 진행 상태를 확인하세요.",
+          active
+            ? `${labels[active.action] || active.action} 진행 중`
+            : "작업 접수 중",
+          active?.progress ||
+            "작업을 접수하고 있습니다. 위 진행 상태를 확인하세요.",
         );
-      }
-      else if (g.processed)
+      } else if (g.processed)
         showNextAction(
           "종가 처리 완료 · 다음: 결과 확인",
           `${g.as_of} 처리 결과와 다음 거래일 계획을 확인하세요.`,
@@ -1945,6 +2423,9 @@ if (typeof document !== "undefined") {
         : s.status === "configuration_mismatch"
           ? "계좌의 설정 지문이 일치하지 않습니다. 기존 계좌에 새 설정을 덮어쓰지 말고 별도 계좌를 생성하세요."
           : "아직 시작하지 않은 계좌입니다. 운용 순서 2단계에서 자료를 준비하고 종가를 처리하세요.";
+    $("notice").className =
+      "notice " +
+      (s.status === "configuration_mismatch" ? "notice-error" : "notice-info");
     $("cash").textContent = number(s.cash) + "원";
     $("holding-count").textContent =
       s.positions.length + " / " + s.pending.length;

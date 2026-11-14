@@ -1,11 +1,18 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { filterRows } = require("../trendfollow/web/app.js");
+const {
+  filterRows,
+  figureSelection,
+  setupFilterConflict,
+  candidateConflict,
+} = require("../trendfollow/web/app.js");
 const defaults = {
   industry: "all",
   rs: "all",
   action: "all",
+  setupPhase: "all",
   setup: "all",
+  high52: "all",
   signal: "all",
   volume: "all",
   search: "",
@@ -21,6 +28,8 @@ const rows = [
     sector_action: true,
     setup_phase: "base",
     setup_ready: true,
+    prior_52w_high: 100,
+    high52_breakout: true,
     signal: false,
     volume_ratio: 1.5,
   },
@@ -33,6 +42,8 @@ const rows = [
     sector_action: false,
     setup_phase: "base",
     setup_ready: false,
+    prior_52w_high: 100,
+    high52_breakout: false,
     signal: false,
     volume_ratio: 1.49,
   },
@@ -46,6 +57,8 @@ const rows = [
     setup_phase: "rising",
     setup_ready: false,
     setup_trigger: true,
+    prior_52w_high: 100,
+    high52_breakout: false,
     signal: true,
     volume_ratio: 2,
   },
@@ -94,10 +107,86 @@ test("unknown is separate from failed and unapplied industry action", () => {
   );
 });
 test("setup phase is distinct from readiness and trigger flags", () => {
-  assert.deepEqual(select({ setup: "base" }), ["000001", "000002"]);
+  assert.deepEqual(select({ setupPhase: "base" }), ["000001", "000002"]);
   assert.deepEqual(select({ setup: "ready" }), ["000001"]);
   assert.deepEqual(select({ setup: "not_ready" }), ["000002", "000003"]);
   assert.deepEqual(select({ setup: "unknown" }), ["000004"]);
+  assert.deepEqual(select({ setupPhase: "base", setup: "ready" }), ["000001"]);
+  assert.deepEqual(select({ setupPhase: "rising", setup: "trigger" }), [
+    "000003",
+  ]);
+  assert.deepEqual(select({ setupPhase: "base", setup: "trigger" }), []);
+});
+test("the UI explains only structurally impossible setup filter pairs", () => {
+  assert.match(
+    setupFilterConflict("base", "trigger"),
+    /함께 만족할 수 없습니다/,
+  );
+  assert.match(
+    setupFilterConflict("base", "invalidated"),
+    /함께 만족할 수 없습니다/,
+  );
+  assert.match(
+    setupFilterConflict("untradable", "ready"),
+    /함께 만족할 수 없습니다/,
+  );
+  assert.equal(setupFilterConflict("rising", "trigger"), null);
+  assert.equal(setupFilterConflict("base", "ready"), null);
+});
+test("candidate choices disable only combinations that cannot produce a result", () => {
+  assert.match(
+    candidateConflict(
+      { ...defaults, setupPhase: "base", setup: "trigger" },
+      rules,
+    ).message,
+    /함께 만족할 수 없습니다/,
+  );
+  assert.match(
+    candidateConflict({ ...defaults, signal: "pass", volume: "fail" }, rules)
+      .message,
+    /거래량 조건 통과/,
+  );
+  assert.match(
+    candidateConflict({ ...defaults, signal: "pass", rs: "unknown" }, rules)
+      .message,
+    /RS 통과/,
+  );
+  assert.equal(
+    candidateConflict({ ...defaults, setup: "trigger", high52: "pass" }, rules),
+    null,
+  );
+  assert.equal(
+    candidateConflict(
+      { ...defaults, setupPhase: "base", high52: "pass" },
+      rules,
+    ),
+    null,
+  );
+  assert.equal(
+    candidateConflict(
+      { ...defaults, signal: "pass", setup: "not_ready" },
+      { ...rules, setup_52w_enabled: true },
+    ),
+    null,
+  );
+});
+test("selecting a new phase in the figure clears a previous trigger filter", () => {
+  assert.deepEqual(figureSelection("all", "all", "condition", "trigger"), {
+    phase: "all",
+    condition: "trigger",
+  });
+  assert.deepEqual(figureSelection("all", "trigger", "phase", "base"), {
+    phase: "base",
+    condition: "all",
+  });
+  assert.deepEqual(figureSelection("base", "all", "phase", "base"), {
+    phase: "all",
+    condition: "all",
+  });
+  assert.deepEqual(figureSelection("base", "ready", "phase", "all"), {
+    phase: "all",
+    condition: "all",
+  });
 });
 test("volume uses configured threshold inclusively and does not coerce null to zero", () => {
   assert.deepEqual(select({ volume: "pass" }), ["000001", "000003"]);
@@ -107,6 +196,11 @@ test("volume uses configured threshold inclusively and does not coerce null to z
     select({ volume: "pass" }, { ...rules, volume_multiple: 2 }),
     ["000003"],
   );
+});
+test("52-week breakout filter separates a breakout from missing history", () => {
+  assert.deepEqual(select({ high52: "pass" }), ["000001"]);
+  assert.deepEqual(select({ high52: "fail" }), ["000002", "000003"]);
+  assert.deepEqual(select({ high52: "unknown" }), ["000004"]);
 });
 test("all conditions cleared returns every row without mutating inputs", () => {
   const before = JSON.stringify(rows);

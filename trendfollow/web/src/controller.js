@@ -62,6 +62,9 @@ function render() {
       : s.status === "configuration_mismatch"
         ? "계좌의 설정 지문이 일치하지 않습니다. 기존 계좌에 새 설정을 덮어쓰지 말고 별도 계좌를 생성하세요."
         : "아직 시작하지 않은 계좌입니다. 운용 순서 2단계에서 자료를 준비하고 종가를 처리하세요.";
+  $("notice").className =
+    "notice " +
+    (s.status === "configuration_mismatch" ? "notice-error" : "notice-info");
   $("cash").textContent = number(s.cash) + "원";
   $("holding-count").textContent =
     s.positions.length + " / " + s.pending.length;

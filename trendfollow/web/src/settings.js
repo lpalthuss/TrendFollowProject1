@@ -9,6 +9,7 @@ const fieldSpecs = [
     ["universe", "market_index"],
   ],
   ["rules", "entry_method", "진입 방식", ["setup", "breakout"]],
+  ["rules", "setup_52w_enabled", "파동 셋업에 52주 신고가 경로 추가"],
   [
     "rules",
     "initial_stop_method",
@@ -41,6 +42,8 @@ function renderSettings() {
   const root = $("settings-fields");
   root.replaceChildren();
   fieldSpecs.forEach(([group, key, label, choices, scale]) => {
+    if (key === "setup_52w_enabled" && draft.rules.entry_method !== "setup")
+      return;
     const value = draft[group][key],
       l = el("label", label),
       input = el(choices ? "select" : "input");
@@ -88,6 +91,7 @@ function renderSettings() {
         });
         renderSettings();
       }
+      if (key === "entry_method") renderSettings();
       $("settings-json").value = JSON.stringify(draft, null, 2);
     };
     l.append(input);

@@ -2,13 +2,20 @@ let toastTimer;
 function toast(message, error = false) {
   const root = $("toast");
   clearTimeout(toastTimer);
+  const close = el("button", "닫기", "toast-close");
+  close.type = "button";
+  close.setAttribute("aria-label", "알림 닫기");
+  close.onclick = () => (root.hidden = true);
   root.replaceChildren(
-    el("strong", error ? "실행 실패" : "실행 결과"),
-    el("span", message),
+    el("strong", error ? "실행 실패" : "알림"),
+    el("span", message, "toast-message"),
+    close,
   );
   root.className = error ? "error" : "success";
+  root.setAttribute("role", error ? "alert" : "status");
+  root.setAttribute("aria-live", error ? "assertive" : "polite");
   root.hidden = false;
-  toastTimer = setTimeout(() => (root.hidden = true), 10000);
+  if (!error) toastTimer = setTimeout(() => (root.hidden = true), 10000);
 }
 
 function showNextAction(title, detail, targetId = null) {

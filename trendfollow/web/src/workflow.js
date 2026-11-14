@@ -76,6 +76,7 @@ function renderFlow() {
     : g.blocked;
   $("flow-blocker").hidden = !blocker;
   $("flow-blocker").textContent = blocker || "";
+  $("flow-blocker").className = "notice notice-error";
   $("flow-to-results").disabled = busy || !g.processed || mismatch;
   $("flow-to-results").setAttribute("aria-busy", String(busy));
   $("flow-job-status").replaceChildren();
@@ -140,7 +141,9 @@ function renderFlow() {
             (j.result.reconstructed_industry_dates?.length
               ? ` · 산업 자료 ${j.result.reconstructed_industry_dates.length}일 재구성`
               : "") +
-            (j.result.price_source === "pykrx" ? " · KRX(pykrx) 누락 일봉" : "") +
+            (j.result.price_source === "pykrx"
+              ? " · KRX(pykrx) 누락 일봉"
+              : "") +
             (j.result.source_comparison?.difference_count
               ? ` · 기존 원천과 가격·거래량 차이 ${j.result.source_comparison.difference_count}건 (수집 기록 확인)`
               : ""),
@@ -219,11 +222,13 @@ function renderFlow() {
         ["queued", "running"].includes(j.status),
       );
       showNextAction(
-        active ? `${labels[active.action] || active.action} 진행 중` : "작업 접수 중",
-        active?.progress || "작업을 접수하고 있습니다. 위 진행 상태를 확인하세요.",
+        active
+          ? `${labels[active.action] || active.action} 진행 중`
+          : "작업 접수 중",
+        active?.progress ||
+          "작업을 접수하고 있습니다. 위 진행 상태를 확인하세요.",
       );
-    }
-    else if (g.processed)
+    } else if (g.processed)
       showNextAction(
         "종가 처리 완료 · 다음: 결과 확인",
         `${g.as_of} 처리 결과와 다음 거래일 계획을 확인하세요.`,
