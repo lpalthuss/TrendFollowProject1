@@ -12,9 +12,61 @@ function flow(step) {
   });
   renderFlow();
 }
+function renderMarketActions() {
+  if (!snapshot) return;
+  const date = $("candidate-date").value;
+  const accountDate = snapshot.account_as_of;
+  const frozen = snapshot.workspace.mode === "recalculation";
+  const analysisBlocked = !!accountDate && date !== accountDate;
+  const busy =
+    loading ||
+    !!submittingAction ||
+    currentJobs.some((j) => ["queued", "running"].includes(j.status));
+  const savedMarket = candidateDates?.selection_dates.includes(date);
+  $("candidate-analysis").textContent = savedMarket
+    ? `${date}까지 저장된 시장 후보 계산`
+    : "먼저 시장 후보군을 저장하세요";
+  for (const button of document.querySelectorAll(
+    '#market [data-action="market_analyze"], #market .action-strip [data-action="analyze"], #market .action-strip [data-action="paper"], #market .action-strip [data-action="daily"]',
+  )) {
+    const action = button.dataset.action;
+    const blocked =
+      !date ||
+      (action === "market_analyze" && !savedMarket) ||
+      (action === "analyze" && analysisBlocked) ||
+      (!["analyze", "market_analyze"].includes(action) &&
+        (frozen || (!!accountDate && date < accountDate)));
+    button.disabled = busy || blocked;
+    button.title = blocked
+      ? action === "market_analyze"
+        ? `${date || "선택 날짜"}의 시장 후보군을 먼저 저장하세요.`
+        : action === "analyze" && analysisBlocked
+        ? frozen
+          ? `정정 비교 계좌는 ${accountDate}에 고정돼 있습니다. 원계좌에서 선택한 날짜를 확인하세요.`
+          : `계좌 처리일은 ${accountDate}입니다. ${date} 후보 분석은 해당 날짜의 계좌 처리 후 가능합니다.`
+        : frozen
+          ? `정정 계좌는 ${accountDate}까지만 저장돼 있습니다. 원계좌에서 계속하세요.`
+          : `계좌 처리일 ${accountDate || "미시작"}과 후보 기준일 ${date || "미선택"}을 확인하세요.`
+      : "";
+  }
+  const analysisNote = $("candidate-analysis-note");
+  analysisNote.hidden = !analysisBlocked && !savedMarket;
+  if (savedMarket)
+    analysisNote.textContent = `${date} 시장 후보군이 저장돼 있습니다. 위 '저장된 시장 후보 계산'은 해당 날짜까지 계산되지 않은 저장 날짜를 순서대로 분석합니다. 새 후보의 과거 일봉을 먼저 보충하며 계좌의 매매 기록은 바꾸지 않습니다.${analysisBlocked ? ` 아래 '계좌 후보 재계산'은 계좌 처리일 ${accountDate}에만 사용할 수 있습니다.` : ""}`;
+  else if (analysisBlocked)
+    analysisNote.textContent = frozen
+      ? `현재 계좌는 ${accountDate}에 고정된 정정 비교 계좌입니다. ${date} 계좌 후보 재계산은 원계좌에서 확인하세요.`
+      : `현재 계좌 처리일은 ${accountDate}입니다. ${date} 계좌 후보 재계산은 해당 날짜까지 일별 처리한 뒤 가능합니다.`;
+  $("market-action-note").textContent = frozen
+    ? `정정 비교 계좌 · 저장 종료일 ${accountDate}. 후보 재계산은 ${accountDate}에만 가능하며, 이후 날짜는 원계좌에서 확인하세요.`
+    : accountDate && date !== accountDate
+      ? `선택한 후보 기준일 ${date} · 계좌 처리일 ${accountDate}. 후보 재계산은 계좌 처리일에만 가능합니다.`
+      : `선택한 후보 기준일 ${date || "없음"}에 실행합니다. 후보 재계산은 계좌 기록을 바꾸지 않습니다.`;
+}
 function renderFlow() {
   renderRecoveryControls();
   renderWatchControls();
+  renderMarketActions();
   if (!snapshot || !guidance || snapshot.workspace.id !== workspace) {
     if (flowStep !== 4)
       showNextAction("자료 확인 중", "계좌와 작업 상태를 불러오고 있습니다.");

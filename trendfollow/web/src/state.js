@@ -25,6 +25,10 @@ let recoveryInfo = null,
   recoveryKey = "",
   revisionOffset = 0,
   replayWorkspace = null;
+let candidateView = null,
+  candidateDates = null,
+  candidateSelection = null,
+  candidateLoadSequence = 0;
 const primedRuns = new Set();
 const seen = new Set(),
   finished = new Set();
@@ -55,9 +59,12 @@ const labels = {
   signal_state: "장중 잠정 상태",
   holding_stop_state: "장중 손절 접촉",
   analyze: "후보 분석",
+  market_analyze: "날짜별 시장 후보 계산",
   paper: "일별 모의 처리",
   daily: "데이터 갱신·일별 처리",
   industry: "산업 갱신",
+  candidate_universe: "날짜별 후보군 선정",
+  candidate_policy: "기존 계좌에 날짜별 후보군 적용",
   prepare_intraday: "감시 계획",
   revision_check: "변경 내역 대조",
   revision_continue: "정정 반영·계속 운용",

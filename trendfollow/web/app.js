@@ -224,6 +224,10 @@ if (typeof document !== "undefined") {
     recoveryKey = "",
     revisionOffset = 0,
     replayWorkspace = null;
+  let candidateView = null,
+    candidateDates = null,
+    candidateSelection = null,
+    candidateLoadSequence = 0;
   const primedRuns = new Set();
   const seen = new Set(),
     finished = new Set();
@@ -254,9 +258,12 @@ if (typeof document !== "undefined") {
     signal_state: "장중 잠정 상태",
     holding_stop_state: "장중 손절 접촉",
     analyze: "후보 분석",
+    market_analyze: "날짜별 시장 후보 계산",
     paper: "일별 모의 처리",
     daily: "데이터 갱신·일별 처리",
     industry: "산업 갱신",
+    candidate_universe: "날짜별 후보군 선정",
+    candidate_policy: "기존 계좌에 날짜별 후보군 적용",
     prepare_intraday: "감시 계획",
     revision_check: "변경 내역 대조",
     revision_continue: "정정 반영·계속 운용",
@@ -283,6 +290,12 @@ if (typeof document !== "undefined") {
           }
         : {},
     );
+    if (r.status === 404) {
+      const route = path.split("?")[0];
+      throw new Error(
+        `현재 접속한 UI 서버에서 ${route} 요청을 처리하지 못했습니다. 실행 중인 서버 주소·포트를 확인하고, 해당 서버를 최신 코드로 다시 시작한 뒤 이 주소의 화면을 새로고침하세요.`,
+      );
+    }
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || "요청 실패");
     return j;
@@ -331,6 +344,27 @@ if (typeof document !== "undefined") {
       };
     }
   }
+  const tableCollator = new Intl.Collator("ko-KR", { numeric: true, sensitivity: "base" });
+
+  function tableSortValue(value) {
+    const text = String(value ?? "").replace(/\s+/g, " ").trim();
+    if (!text || ["—", "자료 부족", "자료 없음", "미확인", "금액 확인 불가"].includes(text))
+      return null;
+    const match = /^([+-]?\d[\d,]*(?:\.\d+)?)\s*(억원가량|억원|만원가량|만원|원가량|원|배|%)?$/.exec(text);
+    if (match) {
+      const amount = Number(match[1].replaceAll(",", ""));
+      const unit = match[2] || "";
+      const multiplier = unit.startsWith("억원") ? 100_000_000 : unit.startsWith("만원") ? 10_000 : 1;
+      return amount * multiplier;
+    }
+    return text;
+  }
+
+  function tableSortDirection(current, sameColumn) {
+    if (!sameColumn) return "ascending";
+    return current === "ascending" ? "descending" : current === "descending" ? "none" : "ascending";
+  }
+
   function table(id, columns, rows, empty = "해당 기록이 없습니다.") {
     const root = $(id);
     root.replaceChildren();
@@ -339,17 +373,46 @@ if (typeof document !== "undefined") {
       return;
     }
     const t = el("table"),
-      head = el("tr");
-    columns.forEach((c) => head.append(el("th", c[0])));
+      head = el("tr"),
+      headers = [];
+    columns.forEach((c, index) => {
+      if (c[2]?.sortable === false) {
+        const cell = el("th", c[0]);
+        head.append(cell);
+        headers.push({ cell, button: null });
+        return;
+      }
+      const cell = el("th"),
+        button = el("button", c[0], "table-sort-button"),
+        indicator = el("span", "↕", "table-sort-indicator");
+      button.type = "button";
+      indicator.setAttribute("aria-hidden", "true");
+      button.append(indicator);
+      cell.append(button);
+      head.append(cell);
+      headers.push({ cell, button, indicator, label: c[0] });
+      button.onclick = () => {
+        const sameColumn = root.dataset.sortColumn === String(index);
+        const direction = tableSortDirection(root.dataset.sortDirection, sameColumn);
+        root.dataset.sortColumn = direction === "none" ? "" : String(index);
+        root.dataset.sortDirection = direction;
+        applySort();
+      };
+    });
     const th = el("thead");
     th.append(head);
     t.append(th);
     const body = el("tbody");
-    rows.forEach((row) => {
+    rows.forEach((row, index) => {
       const tr = el("tr");
+      tr.dataset.originalIndex = String(index);
       columns.forEach((c) => {
         const td = el("td"),
           value = c[1](row);
+        if (c[2]?.sortValue) {
+          const sortValue = c[2].sortValue(row);
+          td.dataset.sortValue = sortValue == null ? "" : String(sortValue);
+        }
         if (value instanceof Node) td.append(value);
         else td.textContent = value ?? "—";
         tr.append(td);
@@ -358,6 +421,41 @@ if (typeof document !== "undefined") {
     });
     t.append(body);
     root.append(t);
+
+    function applySort() {
+      const column = root.dataset.sortColumn === "" || root.dataset.sortColumn === undefined
+        ? -1 : Number(root.dataset.sortColumn);
+      const direction = root.dataset.sortDirection || "none";
+      const active = column >= 0 && column < columns.length
+        && columns[column][2]?.sortable !== false && direction !== "none";
+      if (!active && direction !== "none") {
+        root.dataset.sortColumn = "";
+        root.dataset.sortDirection = "none";
+      }
+      const ordered = [...body.rows];
+      if (active) {
+        ordered.sort((left, right) => {
+          const a = tableSortValue(left.cells[column].dataset.sortValue ?? left.cells[column].textContent);
+          const b = tableSortValue(right.cells[column].dataset.sortValue ?? right.cells[column].textContent);
+          if (a === null || b === null)
+            return a === b ? Number(left.dataset.originalIndex) - Number(right.dataset.originalIndex) : a === null ? 1 : -1;
+          const comparison = typeof a === "number" && typeof b === "number"
+            ? a - b : tableCollator.compare(String(a), String(b));
+          return (direction === "ascending" ? comparison : -comparison)
+            || Number(left.dataset.originalIndex) - Number(right.dataset.originalIndex);
+        });
+      } else ordered.sort((a, b) => Number(a.dataset.originalIndex) - Number(b.dataset.originalIndex));
+      ordered.forEach((row) => body.append(row));
+      headers.forEach(({ cell, button, indicator, label }, index) => {
+        if (!button) return;
+        const state = active && column === index ? direction : "none";
+        cell.setAttribute("aria-sort", state);
+        indicator.textContent = state === "ascending" ? "▲" : state === "descending" ? "▼" : "↕";
+        button.setAttribute("aria-label", `${label} 열 정렬 · ${state === "ascending" ? "오름차순" : state === "descending" ? "내림차순" : "해제"}`);
+        button.title = state === "ascending" ? "다시 누르면 내림차순" : state === "descending" ? "다시 누르면 정렬 해제" : "누르면 오름차순";
+      });
+    }
+    applySort();
   }
   function facts(id, items) {
     $(id).replaceChildren(
@@ -421,6 +519,410 @@ if (typeof document !== "undefined") {
         ? "이 페이지가 열려 있는 동안 새 신호를 알립니다."
         : "알림을 허용하지 않았습니다.",
     );
+  };
+
+  // candidate.js
+  function marketRows() {
+    const rows = candidateView ? candidateView.rows : snapshot.rows;
+    if (
+      !candidateSelection ||
+      candidateSelection.summary.as_of !== candidateView?.as_of
+    )
+      return rows;
+    const analyzed = new Map(rows.map((row) => [row.symbol, row]));
+    return candidateSelection.members.map(
+      (member) =>
+        analyzed.get(member.symbol) || {
+          ...member,
+          candidate_unanalysed: true,
+          date: candidateView.as_of,
+        },
+    );
+  }
+
+  function approxTurnover(value) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return "금액 확인 불가";
+    if (amount >= 100_000_000) return `${number(amount / 100_000_000)}억원가량`;
+    if (amount >= 10_000) return `${number(amount / 10_000)}만원가량`;
+    return `${number(amount)}원가량`;
+  }
+
+  function candidateStage(row, rules) {
+    const close =
+      row.close == null && row.reference_price == null
+        ? NaN
+        : Number(row.close ?? row.reference_price);
+    const high = row.high == null ? NaN : Number(row.high);
+    const levels = [row.setup_resistance];
+    if (rules.setup_52w_enabled || rules.entry_method === "breakout")
+      levels.push(row.prior_52w_high);
+    const resistance = levels
+      .filter((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+      .map(Number)
+      .sort((a, b) => a - b)[0];
+    if (
+      Number.isFinite(resistance) &&
+      Number.isFinite(high) &&
+      high >= resistance &&
+      close <= resistance
+    )
+      return "faded";
+    if (
+      row.setup_trigger === true ||
+      ((rules.setup_52w_enabled ||
+        (rules.entry_method === "breakout" && rules.breakout_days === 252)) &&
+        row.high52_breakout === true)
+    )
+      return "breakout";
+    if (
+      Number.isFinite(resistance) &&
+      Number.isFinite(close) &&
+      close < resistance &&
+      Number.isFinite(Number(row.atr)) &&
+      resistance - close <= Number(row.atr)
+    )
+      return "near";
+    if (row.setup_ready === true) return "ready";
+    return "other";
+  }
+
+  function liveCandidateStage(row, run) {
+    if (!run?.targets?.includes(row.symbol)) return null;
+    const quote = run.summary?.latest_target_quotes?.[row.symbol];
+    const availability = quoteAvailability(run, row.symbol, quote);
+    if (availability !== "수신 정상")
+      return { stage: "unknown", reason: availability };
+    const levels = run.levels?.[row.symbol] || {};
+    const resistance = [
+      levels.setup_resistance,
+      levels.high52_resistance,
+      levels.resistance,
+    ]
+      .filter((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+      .map(Number)
+      .sort((a, b) => a - b)[0];
+    if (!Number.isFinite(resistance))
+      return { stage: "unknown", reason: "저항선 자료 없음" };
+    if (quote.price > resistance)
+      return { stage: "breakout", reason: "장중 잠정 돌파" };
+    if (run.summary?.touched_targets?.includes(row.symbol))
+      return { stage: "faded", reason: "관측 중 접촉 후 후퇴" };
+    if (resistance - quote.price <= Number(row.atr))
+      return { stage: "near", reason: "장중 저항선 접근" };
+    return {
+      stage: candidateStage(row, snapshot.rules),
+      reason: "전일 준비 기준",
+    };
+  }
+
+  function candidateLiveRun() {
+    return watchData?.runs?.find(
+      (item) =>
+        item.as_of === candidateView?.as_of &&
+        item.session === watchData.today &&
+        !["completed", "closed", "failed"].includes(item.summary?.status),
+    );
+  }
+
+  function high52Gap(row, run = candidateLiveRun()) {
+    const quote = run?.targets?.includes(row.symbol)
+      ? run.summary?.latest_target_quotes?.[row.symbol]
+      : null;
+    const liveResistance = run?.levels?.[row.symbol]?.high52_resistance;
+    const live = quote && quoteAvailability(run, row.symbol, quote) === "수신 정상"
+      && liveResistance != null && Number.isFinite(Number(liveResistance))
+      && Number(liveResistance) > 0;
+    const resistance = Number(live ? liveResistance : row.prior_52w_high);
+    if ((!live && row.prior_52w_high == null) || !Number.isFinite(resistance) || resistance <= 0)
+      return null;
+    const source = live ? "현재가 · 잠정" : "종가";
+    const rawPrice = live ? quote.price : row.close;
+    const price = Number(rawPrice);
+    if (rawPrice == null || !Number.isFinite(price) || price <= 0) return null;
+    return { percent: (price / resistance - 1) * 100, source };
+  }
+
+  function high52GapText(gap) {
+    const magnitude = Math.abs(gap.percent);
+    const distance = magnitude > 0 && magnitude < 0.05
+      ? "0.1% 미만" : `${number(magnitude, 1)}%`;
+    return `${distance} ${gap.percent > 0 ? "돌파" : "남음"}`;
+  }
+
+  function renderCandidateBoard() {
+    const rows = marketRows();
+    const run = candidateLiveRun();
+    const groups = {
+      ready: [],
+      near: [],
+      breakout: [],
+      faded: [],
+      unknown: [],
+      other: [],
+    };
+    for (const row of rows) {
+      const live = run ? liveCandidateStage(row, run) : null;
+      const stage = row.candidate_unanalysed
+        ? "unknown"
+        : live?.stage || candidateStage(row, snapshot.rules);
+      groups[stage].push({ ...row, candidate_reason: live?.reason });
+    }
+    const descriptions = [
+      [
+        "ready",
+        "준비 후보",
+        "종가 기준 셋업 준비 조건을 충족했습니다. 최종 진입 신호는 별도입니다.",
+      ],
+      ["near", "돌파선 접근", "종가가 저항선 아래이고 거리가 1 ATR 이내입니다."],
+      [
+        "breakout",
+        run ? "돌파 중 · 장중 잠정" : "돌파 확인 · 종가",
+        run
+          ? "최근 KIS 체결가가 저항선 위입니다. 확정 종가가 아닙니다."
+          : "저장된 종가 자료에서 셋업 또는 52주 돌파가 관측됐습니다.",
+      ],
+      [
+        "faded",
+        run ? "접촉 후 후퇴 · 장중 잠정" : "고가 접촉·종가 하회",
+        run
+          ? "관측 중 저항선 위 체결 후 최근 가격이 아래로 돌아왔습니다."
+          : "당일 고가가 저항선에 닿았지만 종가는 아래에서 끝났습니다.",
+      ],
+    ];
+    if (groups.unknown.length)
+      descriptions.push([
+        "unknown",
+        run ? "시세·분석 미확인" : "가격·분석 자료 없음",
+        "새 편입 종목의 일봉 준비 상태와 장중 연결·구독·체결 상태를 구분해 확인하세요.",
+      ]);
+    $("candidate-stage-board").replaceChildren(
+      ...descriptions.map(([key, title, note]) => {
+        const card = el("section", undefined, "candidate-stage-card");
+        const heading = el("div", undefined, "candidate-stage-heading");
+        heading.append(el("strong", title), el("b", number(groups[key].length)));
+        card.append(heading, el("p", note, "muted"));
+        const names = el("div", undefined, "candidate-stage-names");
+        for (const row of groups[key].slice(0, 5)) {
+          const button = el(
+            "button",
+            `${row.name || row.symbol}${row.candidate_reason ? ` · ${row.candidate_reason}` : ""}`,
+            "quiet",
+          );
+          button.type = "button";
+          button.onclick = () => detail(row);
+          names.append(button);
+        }
+        if (!groups[key].length)
+          names.append(el("span", "해당 종목 없음", "muted"));
+        if (groups[key].length > 5)
+          names.append(el("span", `외 ${groups[key].length - 5}종목`, "muted"));
+        card.append(names);
+        return card;
+      }),
+    );
+    $("candidate-selection-note").textContent = candidateSelection
+      ? `${candidateView?.as_of || snapshot.as_of} ${candidateSelection.summary.source === "KRX Open API" ? "KRX 날짜별 재구성" : candidateSelection.summary.source === "pykrx" ? "pykrx 날짜별 재구성" : "KIS 마스터 선정"} ${number(candidateSelection.summary.count)}종목 · 전회 대비 편입 ${number(candidateSelection.summary.added)} / 제외 ${number(candidateSelection.summary.removed)} · 그 외 분석 종목 ${number(groups.other.length)}종목. ${candidateView?.analysis?.mode === "market_candidate_research" ? "선정 종목 조건 계산 완료 · 계좌 반영 없음." : "저장된 시장 종목 전체의 조건 계산은 위 '저장된 시장 후보 계산'에서 실행합니다."} ${candidateSelection.summary.note || ""} ${candidateSelection.summary.comparison_available && candidateSelection.summary.comparison_same_source === false ? "비교 원천이 달라 편입·제외 수치에 기준 차이가 포함됩니다." : ""} ${run ? "감시 종목의 상태는 KIS 장중 잠정 시세입니다." : "위 상태는 저장된 종가 자료 기준입니다."}`
+      : `${candidateView?.as_of || snapshot.as_of || "선택한 날짜"}의 시장 후보군 선정 기록은 없습니다. 아래는 저장된 계좌 분석 결과이며 당시 시장 전체 목록의 편입·제외는 확인할 수 없습니다.${snapshot.workspace.source_workspace ? " 원계좌의 저장된 날짜를 보려면 위 원계좌 버튼을 누르세요." : ""}`;
+    const criteria = $("candidate-criteria-note");
+    const selectionSummary = candidateSelection?.summary;
+    const threshold = Number(selectionSummary?.min_daily_turnover ?? selectionSummary?.min_recent_turnover_proxy);
+    criteria.hidden = !selectionSummary || !Number.isFinite(threshold) || threshold <= 0;
+    if (!criteria.hidden) {
+      const basis = selectionSummary.source === "KIS market master"
+        ? "최근 거래대금 추정액"
+        : "당일 거래대금";
+      const amount = threshold >= 100_000_000
+        ? `${number(threshold / 100_000_000, 1)}억원`
+        : `${number(threshold / 10_000, 1)}만원`;
+      criteria.textContent = `이 날짜의 후보 선정 기준 · ${basis} ${amount} 이상 · 종목 유형과 거래 여부 등 추가 조건 적용`;
+    }
+    $("candidate-members").hidden = !candidateSelection;
+    if (candidateSelection) {
+      $("candidate-members-title").textContent =
+        `선정된 시장 종목 ${number(candidateSelection.summary.count)}개 보기`;
+      const observed = candidateSelection.summary.industry_classification_as_of;
+      $("candidate-members-note").textContent = observed
+        ? `산업 분류 ${number(candidateSelection.summary.industry_classified)} / ${number(candidateSelection.summary.count)}종목 · ${observed}에 저장된 산업 구성 사용${observed < candidateSelection.summary.as_of ? " · 기준일 사이의 산업 변경은 확인할 수 없습니다." : ""}`
+        : "이 날짜 이전에 저장된 산업 구성이 없어 산업을 표시할 수 없습니다.";
+      table(
+        "candidate-members-table",
+        [
+          ["종목", (r) => `${r.name} (${r.symbol})`],
+          ["시장", (r) => r.market],
+          [
+            "산업",
+            (r) =>
+              r.industry_name || (r.sector?.startsWith("UNCLASSIFIED:") ? "산업 확인 불가" : r.sector || "산업 확인 불가"),
+          ],
+          [candidateSelection.summary.source === "KIS market master" ? "최근 거래대금 추정" : "당일 거래대금", (r) => approxTurnover(r.recent_turnover_proxy)],
+        ],
+        candidateSelection.members,
+      );
+    }
+    const changes = $("candidate-changes");
+    changes.hidden = !candidateSelection?.summary.comparison_available;
+    if (!changes.hidden) {
+      $("candidate-changes-title").textContent =
+        `${candidateSelection.summary.previous_as_of} 대비 ${candidateSelection.summary.as_of} 편입 ${candidateSelection.summary.added} · 제외 ${candidateSelection.summary.removed}`;
+      $("candidate-changes-note").textContent =
+        "편입·제외는 직전 저장일과 비교한 결과입니다. 근거에는 선택한 날짜의 자료만 표시합니다.";
+      table(
+        "candidate-added",
+        [
+          ["새로 편입", (r) => `${r.name} (${r.symbol})`],
+          ["편입 근거", (r) => r.reason_display || r.reason],
+        ],
+        candidateSelection.added,
+      );
+      table(
+        "candidate-removed",
+        [
+          ["제외", (r) => `${r.name} (${r.symbol})`],
+          ["제외 근거", (r) => r.reason_display || r.reason],
+        ],
+        candidateSelection.removed,
+      );
+    }
+  }
+
+  function candidateCaptureEnabled() {
+    if (!candidateDates) return false;
+    if ($("candidate-source").value !== "kis") {
+      if (!candidateDates.candidate_sources?.includes($("candidate-source").value))
+        return false;
+      const from = $("candidate-krx-start").value;
+      return Boolean(from && from <= candidateDates.capture_as_of);
+    }
+    return Boolean(candidateDates.capture_available);
+  }
+
+  function renderCandidateCaptureControls() {
+    if (!candidateDates) return;
+    const source = $("candidate-source").value;
+    const historical = source !== "kis";
+    const label = source === "pykrx" ? "pykrx" : "KRX Open API";
+    const supported = candidateDates.candidate_sources?.includes(source);
+    $("candidate-krx-range").hidden = !historical;
+    const canCapture = candidateCaptureEnabled();
+    $("candidate-refresh").disabled = !canCapture;
+    $("candidate-refresh").textContent = historical
+      ? !supported
+        ? `${label} 기능 사용 전 UI 서버 재시작 필요`
+        : canCapture
+          ? `${$("candidate-krx-start").value}부터 ${label} 누락 후보군 채우기`
+          : "누락 후보군 시작일 확인 필요"
+      : canCapture
+        ? `${candidateDates.capture_as_of} KIS 후보군 저장`
+        : `${candidateDates.capture_as_of} KIS 후보군 저장 불가`;
+    $("candidate-refresh").title = historical
+      ? source === "pykrx"
+        ? "pykrx의 날짜별 종목 목록·거래정보로 누락 날짜를 순서대로 채웁니다. KRX_ID와 KRX_PW가 필요합니다."
+        : "KRX Open API의 날짜별 기본정보·매매정보로 누락 날짜를 순서대로 채웁니다. KIS 선정 기준과 다릅니다."
+      : canCapture
+        ? "오늘 장 마감 후 KIS 종목 마스터로 시장 전체 후보군을 저장합니다."
+        : "당시 KIS 종목 마스터가 없어 과거 날짜로 저장할 수 없습니다.";
+    $("candidate-capture-note").textContent = historical
+      ? !supported
+        ? "화면은 새 버전이지만 실행 중인 UI 서버가 이전 버전입니다. UI 서버를 종료하고 다시 실행한 뒤 페이지를 새로고침하세요."
+        : canCapture
+          ? `${$("candidate-krx-start").value}부터 ${candidateDates.capture_as_of}까지 누락된 거래일을 날짜순으로 채웁니다. ${source === "pykrx" ? "pykrx는 날짜별 종목 목록·당일 거래대금 기준이며, 종목명은 조회 시점의 이름일 수 있습니다." : "KRX Open API는 보통주·당일 거래대금 기준입니다."} KIS 마스터 선정 결과와 다를 수 있습니다. 이미 저장된 날짜는 바꾸지 않습니다.`
+          : "누락 시작일을 완료된 거래일로 지정하세요. 한 번에 최대 120거래일입니다."
+      : canCapture
+        ? "KIS 현재 마스터는 오늘 장 마감 날짜로만 저장합니다. 위의 후보 기준일 선택과 별개입니다."
+        : "KIS 현재 마스터로 과거 날짜의 후보군을 저장할 수 없습니다. 과거 누락 날짜는 KRX Open API 또는 pykrx를 선택해 채울 수 있습니다.";
+  }
+
+  async function loadCandidateDate(date) {
+    const selected = workspace;
+    const ticket = ++candidateLoadSequence;
+    const known = candidateDates?.signal_dates.includes(date);
+    const view = known
+      ? await api(
+          `/api/candidate/day?workspace=${encodeURIComponent(workspace)}&as_of=${date}`,
+        )
+      : { as_of: date, rows: [] };
+    const selection = candidateDates?.selection_dates.includes(date)
+      ? await api(`/api/candidate/selection?as_of=${date}`)
+      : null;
+    if (selected !== workspace || ticket !== candidateLoadSequence) return;
+    candidateView = view;
+    candidateSelection = selection;
+    updateIndustryFilter();
+    renderStocks();
+    renderCandidateBoard();
+    renderMarketActions();
+  }
+
+  async function loadCandidateDates() {
+    const selected = workspace;
+    const datesResult = await api(
+      `/api/candidate/dates?workspace=${encodeURIComponent(selected)}`,
+    );
+    if (selected !== workspace) return;
+    candidateDates = datesResult;
+    if (!$("candidate-krx-start").value)
+      $("candidate-krx-start").value = candidateDates.reference_dates.at(-1);
+    renderCandidateCaptureControls();
+    const source = snapshot.workspace.source_workspace;
+    $("candidate-source-account").hidden = !source;
+    if (source)
+      $("candidate-source-account").textContent =
+        `원계좌로 이동 · ${boot.workspaces.find((w) => w.id === source)?.name || "원계좌"}`;
+    const select = $("candidate-date");
+    const prior = select.value;
+    const dates = [
+      ...new Set([
+        ...candidateDates.signal_dates,
+        ...candidateDates.selection_dates,
+        ...candidateDates.reference_dates,
+      ]),
+    ]
+      .sort()
+      .reverse();
+    select.replaceChildren(
+      ...dates.map((date) => {
+        const hasSelection = candidateDates.selection_dates.includes(date);
+        const hasMarketAnalysis = candidateDates.market_analysis_dates?.includes(date);
+        const hasAnalysis = candidateDates.signal_dates.includes(date);
+        const label = hasMarketAnalysis
+          ? "시장 후보 계산 완료"
+          : hasSelection
+          ? "시장 후보군 있음"
+          : hasAnalysis
+            ? "이 계좌 분석 있음"
+            : "계좌 분석·시장 기록 없음";
+        const option = el("option", `${date} · ${label}`);
+        option.value = date;
+        return option;
+      }),
+    );
+    if (!dates.length) {
+      candidateView = null;
+      candidateSelection = null;
+      renderCandidateBoard();
+      renderMarketActions();
+      return;
+    }
+    select.value = dates.includes(prior)
+      ? prior
+      : dates.includes(candidateDates.capture_as_of)
+        ? candidateDates.capture_as_of
+        : dates[0];
+    await loadCandidateDate(select.value);
+  }
+
+  $("candidate-date").onchange = () =>
+    loadCandidateDate($("candidate-date").value).catch((e) =>
+      toast(e.message, true),
+    );
+  $("candidate-source").onchange = () => renderCandidateCaptureControls();
+  $("candidate-krx-start").onchange = () => renderCandidateCaptureControls();
+  $("candidate-source-account").onclick = () => {
+    const source = snapshot.workspace.source_workspace;
+    if (!source) return;
+    $("workspace").value = source;
+    $("workspace").dispatchEvent(new Event("change"));
   };
 
   // market.js
@@ -569,7 +1071,7 @@ if (typeof document !== "undefined") {
     all.value = "all";
     select.append(all);
     const groups = new Map();
-    for (const row of snapshot.rows)
+    for (const row of marketRows())
       if (row.sector) groups.set(row.sector, row.industry_name || row.sector);
     for (const [id, name] of [...groups].sort((a, b) =>
       a[1].localeCompare(b[1], "ko"),
@@ -582,13 +1084,47 @@ if (typeof document !== "undefined") {
     $("volume-help-text").textContent =
       `거래량 배수 = 기준일 하루 거래량 ÷ 기준일을 제외한 직전 20거래일 평균 거래량입니다. 현재 계좌는 ${number(snapshot.rules.volume_multiple, 2)}배 이상을 거래량 조건 통과로 판단합니다. 1배는 평소 수준, 2배는 평균의 두 배를 뜻합니다.`;
   }
+  function high52GapCell(row, gap = high52Gap(row)) {
+    if (!gap) return el("span", "자료 부족", "pill warn");
+    const cell = el("div", undefined, "high52-gap");
+    cell.append(
+      el(
+        "strong",
+        high52GapText(gap),
+        gap.percent > 0 ? "high52-gap-over" : "high52-gap-under",
+      ),
+      el("small", gap.source, "muted"),
+    );
+    return cell;
+  }
+
+  function refreshHigh52Gaps() {
+    const root = $("stock-table");
+    const body = root.querySelector("tbody");
+    if (!body) return;
+    if (root.dataset.sortColumn === "4" && root.dataset.sortDirection !== "none") {
+      renderStocks();
+      return;
+    }
+    const rows = new Map(marketRows().map((row) => [row.symbol, row]));
+    for (const tr of body.rows) {
+      const symbol = tr.cells[0].querySelector(".code")?.textContent;
+      const row = rows.get(symbol);
+      if (!row) continue;
+      const cell = tr.cells[4];
+      const gap = high52Gap(row);
+      cell.replaceChildren(high52GapCell(row, gap));
+      cell.dataset.sortValue = gap == null ? "" : String(gap.percent);
+    }
+  }
+
   function renderStocks() {
     if (!snapshot) return;
     const filters = normalizeCandidateFilters();
     const disabled = updateCandidateOptions(filters);
     renderSetupHelp();
     let rows = TrendFollowFilters.filterRows(
-      snapshot.rows,
+      marketRows(),
       filters,
       snapshot.rules,
     );
@@ -596,7 +1132,7 @@ if (typeof document !== "undefined") {
       key === "search" ? value.trim() : value !== "all",
     ).length;
     $("filter-note").textContent =
-      `선택한 조건 ${active}개를 모두 만족하는 ${rows.length}종목을 표시합니다 (AND). RS는 선택 계좌의 ${snapshot.rules.rs_method === "mansfield" ? "Mansfield RS" : "RS 수익률 순위"} 기준입니다. 표시 필터는 신호·계좌를 변경하지 않습니다.`;
+      `선택한 조건 ${active}개를 모두 만족하는 ${rows.length}종목을 표시합니다 (AND). RS는 선택 계좌의 ${snapshot.rules.rs_method === "mansfield" ? "Mansfield RS" : "RS 수익률 순위"} 기준입니다. 52주 신고가의 장중 현재가 표시는 잠정값이며 필터는 저장된 종가 기준입니다. 표시 필터는 신호·계좌를 변경하지 않습니다.`;
     $("filter-disabled-help").hidden = !disabled.length;
     $("filter-disabled-summary").textContent =
       `현재 선택 때문에 비활성화된 다른 항목 ${disabled.length}개 보기`;
@@ -626,7 +1162,7 @@ if (typeof document !== "undefined") {
             : a.rs_percentile) ??
           -Infinity),
     );
-    $("row-count").textContent = `${rows.length} / ${snapshot.rows.length} 종목`;
+    $("row-count").textContent = `${rows.length} / ${marketRows().length} 종목`;
     table(
       "stock-table",
       [
@@ -641,14 +1177,20 @@ if (typeof document !== "undefined") {
           },
         ],
         ["산업", (r) => r.industry_name || r.sector],
-        ["종가", (r) => number(r.reference_price)],
+        [
+          "분석 상태",
+          (r) =>
+            r.candidate_unanalysed ? "일봉·후보 계산 전" : "저장된 종가 분석",
+        ],
+        [
+          "종가 / 52주 고가",
+          (r) => `${number(r.close ?? r.reference_price)} / ${r.prior_52w_high == null ? "자료 부족" : number(r.prior_52w_high)}`,
+          { sortable: false },
+        ],
         [
           "52주 신고가",
-          (r) =>
-            flag(
-              r.prior_52w_high == null ? null : r.high52_breakout,
-              "자료 부족",
-            ),
+          (r) => high52GapCell(r),
+          { sortValue: (r) => high52Gap(r)?.percent },
         ],
         ["RS 순위", (r) => number(r.rs_percentile, 1)],
         ["Mansfield", (r) => number(r.mansfield_rs, 2)],
@@ -704,7 +1246,12 @@ if (typeof document !== "undefined") {
         [
           "감시",
           (r) => {
-            const b = el("button", "선택", "quiet");
+            const b = el(
+              "button",
+              r.candidate_unanalysed ? "분석 후 선택" : "선택",
+              "quiet",
+            );
+            b.disabled = Boolean(r.candidate_unanalysed);
             b.onclick = () => {
               const set = new Set(watchSymbols());
               set.add(r.symbol);
@@ -717,15 +1264,15 @@ if (typeof document !== "undefined") {
         ],
       ],
       rows,
-      snapshot.rows.length
+      marketRows().length
         ? filters.setup === "trigger" &&
-          !snapshot.rows.some((row) => row.setup_trigger === true)
+          !marketRows().some((row) => row.setup_trigger === true)
           ? "이 기준일에 셋업 돌파가 발생한 종목이 없습니다. 다른 파동 구간을 선택하거나 파동 전체를 누르세요."
           : "현재 선택한 조건을 모두 만족하는 종목이 없습니다. 다른 조건을 해제하거나 필터 초기화를 누르세요."
         : "아직 후보 분석 자료가 없습니다. 후보 재계산을 실행하세요.",
     );
     const groups = {};
-    for (const r of snapshot.rows) {
+    for (const r of marketRows()) {
       const g =
         groups[r.sector] ||
         (groups[r.sector] = {
@@ -920,7 +1467,7 @@ if (typeof document !== "undefined") {
     renderSetupDetail(row);
     try {
       const p = await api(
-        `/api/prices?workspace=${workspace}&symbol=${row.symbol}`,
+        `/api/prices?workspace=${workspace}&symbol=${row.symbol}&as_of=${candidateView?.as_of || snapshot.as_of}`,
       );
       $("detail-chart").replaceChildren();
       if (!p.length) {
@@ -1301,16 +1848,41 @@ if (typeof document !== "undefined") {
   };
 
   // jobs.js
-  async function job(action, extra = {}) {
+  function actionDate(origin) {
+    return origin?.closest("#market")
+      ? $("candidate-date").value
+      : $("asof").value;
+  }
+  async function job(action, extra = {}, origin = null) {
     if (submittingAction) return;
+    if (
+      action === "candidate_universe" &&
+      $("candidate-source").value !== "kis" &&
+      !candidateDates?.candidate_sources?.includes($("candidate-source").value)
+    ) {
+      toast(
+        "UI 서버가 이전 버전입니다. 서버를 재시작하고 페이지를 새로고침하세요.",
+        true,
+      );
+      return;
+    }
     submittingAction = action;
     renderJobProgress();
     try {
       const queued = await api("/api/jobs", {
         workspace,
         action,
-        as_of: $("asof").value,
+        as_of: actionDate(origin),
         ...(action === "daily" ? { price_source: $("price-source").value } : {}),
+        ...(action === "candidate_universe"
+          ? {
+              candidate_source: $("candidate-source").value,
+              from_as_of:
+                $("candidate-source").value !== "kis"
+                  ? $("candidate-krx-start").value
+                  : undefined,
+            }
+          : {}),
         ...extra,
       });
       if (!currentJobs.some((item) => item.id === queued.id))
@@ -1329,7 +1901,7 @@ if (typeof document !== "undefined") {
   }
   document
     .querySelectorAll("[data-action]")
-    .forEach((b) => (b.onclick = () => job(b.dataset.action)));
+    .forEach((b) => (b.onclick = () => job(b.dataset.action, {}, b)));
   const jobButtonIds = {
     prepare_intraday: ["prepare-watch"],
     revision_continue: ["revision-continue"],
@@ -1339,7 +1911,8 @@ if (typeof document !== "undefined") {
   };
   function renderJobProgress() {
     const active = currentJobs.findLast(
-      (j) => j.workspace === workspace && ["queued", "running"].includes(j.status),
+      (j) =>
+        j.workspace === workspace && ["queued", "running"].includes(j.status),
     );
     const action = active?.action || submittingAction;
     const panel = $("job-progress");
@@ -1357,18 +1930,26 @@ if (typeof document !== "undefined") {
       button.classList.add("job-active-button");
       button.dataset.progressLabel = "진행 중";
     }
-    $("job-progress-title").textContent = `${labels[action] || action} · ${active?.status === "running" ? "진행 중" : "접수 중"}`;
+    $("job-progress-title").textContent =
+      `${labels[action] || action} · ${active?.status === "running" ? "진행 중" : "접수 중"}`;
     $("job-progress-phase").textContent = active?.progress || "작업 접수 중";
-    const elapsed = active ? Math.max(0, Math.floor((Date.now() - Date.parse(active.created_at)) / 1000)) : 0;
-    $("job-progress-elapsed").textContent = `경과 ${Math.floor(elapsed / 60)}분 ${elapsed % 60}초`;
+    const elapsed = active
+      ? Math.max(
+          0,
+          Math.floor((Date.now() - Date.parse(active.created_at)) / 1000),
+        )
+      : 0;
+    $("job-progress-elapsed").textContent =
+      `경과 ${Math.floor(elapsed / 60)}분 ${elapsed % 60}초`;
     const current = active?.progress_current;
     const total = active?.progress_total;
-    const counted = Number.isInteger(current) && Number.isInteger(total) && total > 0;
+    const counted =
+      Number.isInteger(current) && Number.isInteger(total) && total > 0;
     const bar = $("job-progress-bar");
-    if (counted) bar.value = Math.min(100, Math.round(current / total * 100));
+    if (counted) bar.value = Math.min(100, Math.round((current / total) * 100));
     else bar.removeAttribute("value");
     $("job-progress-count").textContent = counted
-      ? `${number(current)} / ${number(total)} · ${Math.round(current / total * 100)}%`
+      ? `${number(current)} / ${number(total)} · ${Math.round((current / total) * 100)}%`
       : "현재 단계를 처리 중입니다. 완료 건수를 알 수 없는 작업은 진행률 대신 단계를 표시합니다.";
   }
   function renderJobs(jobs) {
@@ -1390,10 +1971,15 @@ if (typeof document !== "undefined") {
     replayWorkspace = replay?.result?.workspace_id || null;
     $("revision-open-replay").hidden = !replayWorkspace;
     const busy =
-      loading || !!submittingAction || jobs.some((j) => ["queued", "running"].includes(j.status));
+      loading ||
+      !!submittingAction ||
+      jobs.some((j) => ["queued", "running"].includes(j.status));
     $("price-source").disabled = busy;
+    $("candidate-source").disabled = busy;
+    $("candidate-krx-start").disabled = busy;
     document.querySelectorAll("[data-action]").forEach((b) => {
-      b.disabled = busy;
+      b.disabled =
+        busy || (b.id === "candidate-refresh" && !candidateCaptureEnabled());
       b.setAttribute("aria-busy", String(busy));
     });
     table(
@@ -1428,6 +2014,35 @@ if (typeof document !== "undefined") {
         );
       }
     }
+  }
+
+  // watch_status.js
+  function quoteAvailability(run, symbol, quote, now = Date.now()) {
+    const summary = run?.summary;
+    if (!summary) return "관측 기록 없음";
+    if (summary.rejected_symbol === symbol) return "구독 거절";
+    if (summary.status === "completed" || summary.connection_state === "closed")
+      return "관측 종료";
+    if (
+      summary.status === "starting" &&
+      summary.connection_state === "disconnected"
+    )
+      return "연결 준비 중";
+    if (summary.connection_state === "reconnecting") return "재연결 중";
+    if (
+      ["disconnected", "failed", "unresponsive"].includes(
+        summary.connection_state,
+      )
+    )
+      return "연결 끊김";
+    if (summary.connection_state !== "active") return "연결·구독 확인 중";
+    if (summary.subscription_acks < summary.subscriptions_requested && !quote)
+      return "구독 승인 미확인";
+    if (!quote) return "최근 체결 없음";
+    if (quote.price_basis_mismatch) return "가격 기준 불일치";
+    const age = now - Date.parse(quote.timestamp);
+    if (!Number.isFinite(age) || age < -2000 || age > 60000) return "시세 지연";
+    return "수신 정상";
   }
 
   // intraday.js
@@ -1656,6 +2271,10 @@ if (typeof document !== "undefined") {
       data = await api("/api/intraday?workspace=" + encodeURIComponent(selected));
     if (selected !== workspace) return;
     watchData = data;
+    if (snapshot && !$("market").hidden) {
+      refreshHigh52Gaps();
+      renderCandidateBoard();
+    }
     if (!$("watch-session").value)
       $("watch-session").value = data.default_session;
     const c = watchData.control;
@@ -1728,6 +2347,7 @@ if (typeof document !== "undefined") {
       : "UI에서 수집한 장중 기록이 없습니다. OFF·미관측을 신호 0건으로 판단하지 않습니다. 감시 계획은 기준일 후보 자료로 생성합니다.";
     const events = run?.events || [];
     const quotes = Object.values(summary?.latest_target_quotes || {});
+    const quoteBySymbol = summary?.latest_target_quotes || {};
     const mismatches = quotes.filter((quote) => quote.price_basis_mismatch);
     $("watch-decision-status").className = mismatches.length
       ? "decision-alert"
@@ -1742,11 +2362,15 @@ if (typeof document !== "undefined") {
       : summary?.watch_mode === "symbols"
         ? "입력 종목만 관측 기록입니다. 산업 동반 상승과 진입 조건은 평가하지 않습니다."
         : "";
-    $("watch-quotes").hidden = !quotes.length;
-    if (quotes.length) {
+    const quoteRows = (run?.targets || []).map((symbol) => ({
+      symbol, ...quoteBySymbol[symbol], availability: quoteAvailability(run, symbol, quoteBySymbol[symbol]),
+    }));
+    $("watch-quotes").hidden = !quoteRows.length;
+    if (quoteRows.length) {
       table(
         "watch-quotes",
         [
+          ["시세 상태", (r) => r.availability],
           ["최근 체결 시각 (한국시간)", (r) => watchTimestamp(r.timestamp)],
           ["종목", (r) => r.symbol],
           ["시장", (r) => (r.market === "nxt_after" ? "NXT 애프터" : "KRX 정규")],
@@ -1759,7 +2383,7 @@ if (typeof document !== "undefined") {
             (r) => (r.price_basis_mismatch ? "불일치 · 판단 보류" : "일치"),
           ],
         ],
-        quotes,
+        quoteRows,
       );
     }
     const hourly = summary?.hourly_quotes || [];
@@ -1898,9 +2522,61 @@ if (typeof document !== "undefined") {
     });
     renderFlow();
   }
+  function renderMarketActions() {
+    if (!snapshot) return;
+    const date = $("candidate-date").value;
+    const accountDate = snapshot.account_as_of;
+    const frozen = snapshot.workspace.mode === "recalculation";
+    const analysisBlocked = !!accountDate && date !== accountDate;
+    const busy =
+      loading ||
+      !!submittingAction ||
+      currentJobs.some((j) => ["queued", "running"].includes(j.status));
+    const savedMarket = candidateDates?.selection_dates.includes(date);
+    $("candidate-analysis").textContent = savedMarket
+      ? `${date}까지 저장된 시장 후보 계산`
+      : "먼저 시장 후보군을 저장하세요";
+    for (const button of document.querySelectorAll(
+      '#market [data-action="market_analyze"], #market .action-strip [data-action="analyze"], #market .action-strip [data-action="paper"], #market .action-strip [data-action="daily"]',
+    )) {
+      const action = button.dataset.action;
+      const blocked =
+        !date ||
+        (action === "market_analyze" && !savedMarket) ||
+        (action === "analyze" && analysisBlocked) ||
+        (!["analyze", "market_analyze"].includes(action) &&
+          (frozen || (!!accountDate && date < accountDate)));
+      button.disabled = busy || blocked;
+      button.title = blocked
+        ? action === "market_analyze"
+          ? `${date || "선택 날짜"}의 시장 후보군을 먼저 저장하세요.`
+          : action === "analyze" && analysisBlocked
+          ? frozen
+            ? `정정 비교 계좌는 ${accountDate}에 고정돼 있습니다. 원계좌에서 선택한 날짜를 확인하세요.`
+            : `계좌 처리일은 ${accountDate}입니다. ${date} 후보 분석은 해당 날짜의 계좌 처리 후 가능합니다.`
+          : frozen
+            ? `정정 계좌는 ${accountDate}까지만 저장돼 있습니다. 원계좌에서 계속하세요.`
+            : `계좌 처리일 ${accountDate || "미시작"}과 후보 기준일 ${date || "미선택"}을 확인하세요.`
+        : "";
+    }
+    const analysisNote = $("candidate-analysis-note");
+    analysisNote.hidden = !analysisBlocked && !savedMarket;
+    if (savedMarket)
+      analysisNote.textContent = `${date} 시장 후보군이 저장돼 있습니다. 위 '저장된 시장 후보 계산'은 해당 날짜까지 계산되지 않은 저장 날짜를 순서대로 분석합니다. 새 후보의 과거 일봉을 먼저 보충하며 계좌의 매매 기록은 바꾸지 않습니다.${analysisBlocked ? ` 아래 '계좌 후보 재계산'은 계좌 처리일 ${accountDate}에만 사용할 수 있습니다.` : ""}`;
+    else if (analysisBlocked)
+      analysisNote.textContent = frozen
+        ? `현재 계좌는 ${accountDate}에 고정된 정정 비교 계좌입니다. ${date} 계좌 후보 재계산은 원계좌에서 확인하세요.`
+        : `현재 계좌 처리일은 ${accountDate}입니다. ${date} 계좌 후보 재계산은 해당 날짜까지 일별 처리한 뒤 가능합니다.`;
+    $("market-action-note").textContent = frozen
+      ? `정정 비교 계좌 · 저장 종료일 ${accountDate}. 후보 재계산은 ${accountDate}에만 가능하며, 이후 날짜는 원계좌에서 확인하세요.`
+      : accountDate && date !== accountDate
+        ? `선택한 후보 기준일 ${date} · 계좌 처리일 ${accountDate}. 후보 재계산은 계좌 처리일에만 가능합니다.`
+        : `선택한 후보 기준일 ${date || "없음"}에 실행합니다. 후보 재계산은 계좌 기록을 바꾸지 않습니다.`;
+  }
   function renderFlow() {
     renderRecoveryControls();
     renderWatchControls();
+    renderMarketActions();
     if (!snapshot || !guidance || snapshot.workspace.id !== workspace) {
       if (flowStep !== 4)
         showNextAction("자료 확인 중", "계좌와 작업 상태를 불러오고 있습니다.");
@@ -2382,6 +3058,8 @@ if (typeof document !== "undefined") {
       snapshot = data;
       loading = false;
       render();
+      await loadCandidateDates();
+      if (selected !== workspace || ticket !== loadSequence) return;
       if (prime) markExisting();
       const p = await api(
         "/api/pulse?workspace=" +
@@ -2415,6 +3093,14 @@ if (typeof document !== "undefined") {
         : s.status === "configuration_mismatch"
           ? "설정 불일치 · 기존 계좌 보존"
           : "기존 계좌 · 설정 일치";
+    $("candidate-policy").hidden = Boolean(
+      s.workspace.builtin ||
+        s.workspace.mode === "recalculation" ||
+        s.candidate_policy,
+    );
+    $("candidate-policy-note").textContent = s.candidate_policy
+      ? `${s.candidate_policy.enabled_after}까지의 계좌 기록은 그대로 두고, 이후 거래일부터 날짜별 선정 기록을 사용합니다. 같은 계좌에서 이어 처리합니다. 새 편입 종목의 과거 일봉은 네이버로 준비하고 새 거래일은 선택한 원천으로 갱신합니다.`
+      : "날짜별 후보군 적용은 기존 계좌의 처리 완료일 이후부터 시작합니다. 이전 매매·보유 기록은 유지합니다.";
     $("notice").hidden =
       s.status === "ready" && s.workspace.mode !== "recalculation";
     $("notice").textContent =
@@ -2529,6 +3215,12 @@ if (typeof document !== "undefined") {
           boot.workspaces[0]
         ).id;
     if (workspace !== previous) watchData = null;
+    if (workspace !== previous) {
+      candidateView = null;
+      candidateDates = null;
+      candidateSelection = null;
+      $("candidate-date").replaceChildren();
+    }
     localStorage.setItem("trendfollow-workspace", workspace);
     select.value = workspace;
     const presets = $("preset");
@@ -2549,6 +3241,10 @@ if (typeof document !== "undefined") {
     workspace = $("workspace").value;
     localStorage.setItem("trendfollow-workspace", workspace);
     watchData = null;
+    candidateView = null;
+    candidateDates = null;
+    candidateSelection = null;
+    $("candidate-date").replaceChildren();
     recoveryInfo = null;
     recoveryRows = null;
     recoveryKey = "";

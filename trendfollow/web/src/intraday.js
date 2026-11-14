@@ -223,6 +223,10 @@ async function renderWatch() {
     data = await api("/api/intraday?workspace=" + encodeURIComponent(selected));
   if (selected !== workspace) return;
   watchData = data;
+  if (snapshot && !$("market").hidden) {
+    refreshHigh52Gaps();
+    renderCandidateBoard();
+  }
   if (!$("watch-session").value)
     $("watch-session").value = data.default_session;
   const c = watchData.control;
@@ -295,6 +299,7 @@ async function renderWatch() {
     : "UI에서 수집한 장중 기록이 없습니다. OFF·미관측을 신호 0건으로 판단하지 않습니다. 감시 계획은 기준일 후보 자료로 생성합니다.";
   const events = run?.events || [];
   const quotes = Object.values(summary?.latest_target_quotes || {});
+  const quoteBySymbol = summary?.latest_target_quotes || {};
   const mismatches = quotes.filter((quote) => quote.price_basis_mismatch);
   $("watch-decision-status").className = mismatches.length
     ? "decision-alert"
@@ -309,11 +314,15 @@ async function renderWatch() {
     : summary?.watch_mode === "symbols"
       ? "입력 종목만 관측 기록입니다. 산업 동반 상승과 진입 조건은 평가하지 않습니다."
       : "";
-  $("watch-quotes").hidden = !quotes.length;
-  if (quotes.length) {
+  const quoteRows = (run?.targets || []).map((symbol) => ({
+    symbol, ...quoteBySymbol[symbol], availability: quoteAvailability(run, symbol, quoteBySymbol[symbol]),
+  }));
+  $("watch-quotes").hidden = !quoteRows.length;
+  if (quoteRows.length) {
     table(
       "watch-quotes",
       [
+        ["시세 상태", (r) => r.availability],
         ["최근 체결 시각 (한국시간)", (r) => watchTimestamp(r.timestamp)],
         ["종목", (r) => r.symbol],
         ["시장", (r) => (r.market === "nxt_after" ? "NXT 애프터" : "KRX 정규")],
@@ -326,7 +335,7 @@ async function renderWatch() {
           (r) => (r.price_basis_mismatch ? "불일치 · 판단 보류" : "일치"),
         ],
       ],
-      quotes,
+      quoteRows,
     );
   }
   const hourly = summary?.hourly_quotes || [];

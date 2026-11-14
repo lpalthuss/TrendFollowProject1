@@ -30,6 +30,12 @@ async function bootstrap(selected) {
         boot.workspaces[0]
       ).id;
   if (workspace !== previous) watchData = null;
+  if (workspace !== previous) {
+    candidateView = null;
+    candidateDates = null;
+    candidateSelection = null;
+    $("candidate-date").replaceChildren();
+  }
   localStorage.setItem("trendfollow-workspace", workspace);
   select.value = workspace;
   const presets = $("preset");
@@ -50,6 +56,10 @@ $("workspace").onchange = async () => {
   workspace = $("workspace").value;
   localStorage.setItem("trendfollow-workspace", workspace);
   watchData = null;
+  candidateView = null;
+  candidateDates = null;
+  candidateSelection = null;
+  $("candidate-date").replaceChildren();
   recoveryInfo = null;
   recoveryRows = null;
   recoveryKey = "";

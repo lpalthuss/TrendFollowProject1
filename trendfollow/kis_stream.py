@@ -114,6 +114,7 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
     def save():
         summary.update(health.snapshot(time.monotonic()))
         if sampler:
+            summary['touched_targets'] = sorted(monitor.touched_targets)
             summary['latest_target_quotes'] = {
                 symbol: {**quote, 'planned_previous_close':plan['targets'][symbol]['previous_close'],
                          'price_basis_mismatch':symbol in monitor.basis_mismatch}

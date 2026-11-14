@@ -143,7 +143,7 @@ function updateIndustryFilter() {
   all.value = "all";
   select.append(all);
   const groups = new Map();
-  for (const row of snapshot.rows)
+  for (const row of marketRows())
     if (row.sector) groups.set(row.sector, row.industry_name || row.sector);
   for (const [id, name] of [...groups].sort((a, b) =>
     a[1].localeCompare(b[1], "ko"),
@@ -156,13 +156,47 @@ function updateIndustryFilter() {
   $("volume-help-text").textContent =
     `거래량 배수 = 기준일 하루 거래량 ÷ 기준일을 제외한 직전 20거래일 평균 거래량입니다. 현재 계좌는 ${number(snapshot.rules.volume_multiple, 2)}배 이상을 거래량 조건 통과로 판단합니다. 1배는 평소 수준, 2배는 평균의 두 배를 뜻합니다.`;
 }
+function high52GapCell(row, gap = high52Gap(row)) {
+  if (!gap) return el("span", "자료 부족", "pill warn");
+  const cell = el("div", undefined, "high52-gap");
+  cell.append(
+    el(
+      "strong",
+      high52GapText(gap),
+      gap.percent > 0 ? "high52-gap-over" : "high52-gap-under",
+    ),
+    el("small", gap.source, "muted"),
+  );
+  return cell;
+}
+
+function refreshHigh52Gaps() {
+  const root = $("stock-table");
+  const body = root.querySelector("tbody");
+  if (!body) return;
+  if (root.dataset.sortColumn === "4" && root.dataset.sortDirection !== "none") {
+    renderStocks();
+    return;
+  }
+  const rows = new Map(marketRows().map((row) => [row.symbol, row]));
+  for (const tr of body.rows) {
+    const symbol = tr.cells[0].querySelector(".code")?.textContent;
+    const row = rows.get(symbol);
+    if (!row) continue;
+    const cell = tr.cells[4];
+    const gap = high52Gap(row);
+    cell.replaceChildren(high52GapCell(row, gap));
+    cell.dataset.sortValue = gap == null ? "" : String(gap.percent);
+  }
+}
+
 function renderStocks() {
   if (!snapshot) return;
   const filters = normalizeCandidateFilters();
   const disabled = updateCandidateOptions(filters);
   renderSetupHelp();
   let rows = TrendFollowFilters.filterRows(
-    snapshot.rows,
+    marketRows(),
     filters,
     snapshot.rules,
   );
@@ -170,7 +204,7 @@ function renderStocks() {
     key === "search" ? value.trim() : value !== "all",
   ).length;
   $("filter-note").textContent =
-    `선택한 조건 ${active}개를 모두 만족하는 ${rows.length}종목을 표시합니다 (AND). RS는 선택 계좌의 ${snapshot.rules.rs_method === "mansfield" ? "Mansfield RS" : "RS 수익률 순위"} 기준입니다. 표시 필터는 신호·계좌를 변경하지 않습니다.`;
+    `선택한 조건 ${active}개를 모두 만족하는 ${rows.length}종목을 표시합니다 (AND). RS는 선택 계좌의 ${snapshot.rules.rs_method === "mansfield" ? "Mansfield RS" : "RS 수익률 순위"} 기준입니다. 52주 신고가의 장중 현재가 표시는 잠정값이며 필터는 저장된 종가 기준입니다. 표시 필터는 신호·계좌를 변경하지 않습니다.`;
   $("filter-disabled-help").hidden = !disabled.length;
   $("filter-disabled-summary").textContent =
     `현재 선택 때문에 비활성화된 다른 항목 ${disabled.length}개 보기`;
@@ -200,7 +234,7 @@ function renderStocks() {
           : a.rs_percentile) ??
         -Infinity),
   );
-  $("row-count").textContent = `${rows.length} / ${snapshot.rows.length} 종목`;
+  $("row-count").textContent = `${rows.length} / ${marketRows().length} 종목`;
   table(
     "stock-table",
     [
@@ -215,14 +249,20 @@ function renderStocks() {
         },
       ],
       ["산업", (r) => r.industry_name || r.sector],
-      ["종가", (r) => number(r.reference_price)],
+      [
+        "분석 상태",
+        (r) =>
+          r.candidate_unanalysed ? "일봉·후보 계산 전" : "저장된 종가 분석",
+      ],
+      [
+        "종가 / 52주 고가",
+        (r) => `${number(r.close ?? r.reference_price)} / ${r.prior_52w_high == null ? "자료 부족" : number(r.prior_52w_high)}`,
+        { sortable: false },
+      ],
       [
         "52주 신고가",
-        (r) =>
-          flag(
-            r.prior_52w_high == null ? null : r.high52_breakout,
-            "자료 부족",
-          ),
+        (r) => high52GapCell(r),
+        { sortValue: (r) => high52Gap(r)?.percent },
       ],
       ["RS 순위", (r) => number(r.rs_percentile, 1)],
       ["Mansfield", (r) => number(r.mansfield_rs, 2)],
@@ -278,7 +318,12 @@ function renderStocks() {
       [
         "감시",
         (r) => {
-          const b = el("button", "선택", "quiet");
+          const b = el(
+            "button",
+            r.candidate_unanalysed ? "분석 후 선택" : "선택",
+            "quiet",
+          );
+          b.disabled = Boolean(r.candidate_unanalysed);
           b.onclick = () => {
             const set = new Set(watchSymbols());
             set.add(r.symbol);
@@ -291,15 +336,15 @@ function renderStocks() {
       ],
     ],
     rows,
-    snapshot.rows.length
+    marketRows().length
       ? filters.setup === "trigger" &&
-        !snapshot.rows.some((row) => row.setup_trigger === true)
+        !marketRows().some((row) => row.setup_trigger === true)
         ? "이 기준일에 셋업 돌파가 발생한 종목이 없습니다. 다른 파동 구간을 선택하거나 파동 전체를 누르세요."
         : "현재 선택한 조건을 모두 만족하는 종목이 없습니다. 다른 조건을 해제하거나 필터 초기화를 누르세요."
       : "아직 후보 분석 자료가 없습니다. 후보 재계산을 실행하세요.",
   );
   const groups = {};
-  for (const r of snapshot.rows) {
+  for (const r of marketRows()) {
     const g =
       groups[r.sector] ||
       (groups[r.sector] = {
@@ -494,7 +539,7 @@ async function detail(row) {
   renderSetupDetail(row);
   try {
     const p = await api(
-      `/api/prices?workspace=${workspace}&symbol=${row.symbol}`,
+      `/api/prices?workspace=${workspace}&symbol=${row.symbol}&as_of=${candidateView?.as_of || snapshot.as_of}`,
     );
     $("detail-chart").replaceChildren();
     if (!p.length) {

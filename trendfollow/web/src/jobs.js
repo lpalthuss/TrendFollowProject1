@@ -1,13 +1,38 @@
-async function job(action, extra = {}) {
+function actionDate(origin) {
+  return origin?.closest("#market")
+    ? $("candidate-date").value
+    : $("asof").value;
+}
+async function job(action, extra = {}, origin = null) {
   if (submittingAction) return;
+  if (
+    action === "candidate_universe" &&
+    $("candidate-source").value !== "kis" &&
+    !candidateDates?.candidate_sources?.includes($("candidate-source").value)
+  ) {
+    toast(
+      "UI 서버가 이전 버전입니다. 서버를 재시작하고 페이지를 새로고침하세요.",
+      true,
+    );
+    return;
+  }
   submittingAction = action;
   renderJobProgress();
   try {
     const queued = await api("/api/jobs", {
       workspace,
       action,
-      as_of: $("asof").value,
+      as_of: actionDate(origin),
       ...(action === "daily" ? { price_source: $("price-source").value } : {}),
+      ...(action === "candidate_universe"
+        ? {
+            candidate_source: $("candidate-source").value,
+            from_as_of:
+              $("candidate-source").value !== "kis"
+                ? $("candidate-krx-start").value
+                : undefined,
+          }
+        : {}),
       ...extra,
     });
     if (!currentJobs.some((item) => item.id === queued.id))
@@ -26,7 +51,7 @@ async function job(action, extra = {}) {
 }
 document
   .querySelectorAll("[data-action]")
-  .forEach((b) => (b.onclick = () => job(b.dataset.action)));
+  .forEach((b) => (b.onclick = () => job(b.dataset.action, {}, b)));
 const jobButtonIds = {
   prepare_intraday: ["prepare-watch"],
   revision_continue: ["revision-continue"],
@@ -36,7 +61,8 @@ const jobButtonIds = {
 };
 function renderJobProgress() {
   const active = currentJobs.findLast(
-    (j) => j.workspace === workspace && ["queued", "running"].includes(j.status),
+    (j) =>
+      j.workspace === workspace && ["queued", "running"].includes(j.status),
   );
   const action = active?.action || submittingAction;
   const panel = $("job-progress");
@@ -54,18 +80,26 @@ function renderJobProgress() {
     button.classList.add("job-active-button");
     button.dataset.progressLabel = "진행 중";
   }
-  $("job-progress-title").textContent = `${labels[action] || action} · ${active?.status === "running" ? "진행 중" : "접수 중"}`;
+  $("job-progress-title").textContent =
+    `${labels[action] || action} · ${active?.status === "running" ? "진행 중" : "접수 중"}`;
   $("job-progress-phase").textContent = active?.progress || "작업 접수 중";
-  const elapsed = active ? Math.max(0, Math.floor((Date.now() - Date.parse(active.created_at)) / 1000)) : 0;
-  $("job-progress-elapsed").textContent = `경과 ${Math.floor(elapsed / 60)}분 ${elapsed % 60}초`;
+  const elapsed = active
+    ? Math.max(
+        0,
+        Math.floor((Date.now() - Date.parse(active.created_at)) / 1000),
+      )
+    : 0;
+  $("job-progress-elapsed").textContent =
+    `경과 ${Math.floor(elapsed / 60)}분 ${elapsed % 60}초`;
   const current = active?.progress_current;
   const total = active?.progress_total;
-  const counted = Number.isInteger(current) && Number.isInteger(total) && total > 0;
+  const counted =
+    Number.isInteger(current) && Number.isInteger(total) && total > 0;
   const bar = $("job-progress-bar");
-  if (counted) bar.value = Math.min(100, Math.round(current / total * 100));
+  if (counted) bar.value = Math.min(100, Math.round((current / total) * 100));
   else bar.removeAttribute("value");
   $("job-progress-count").textContent = counted
-    ? `${number(current)} / ${number(total)} · ${Math.round(current / total * 100)}%`
+    ? `${number(current)} / ${number(total)} · ${Math.round((current / total) * 100)}%`
     : "현재 단계를 처리 중입니다. 완료 건수를 알 수 없는 작업은 진행률 대신 단계를 표시합니다.";
 }
 function renderJobs(jobs) {
@@ -87,10 +121,15 @@ function renderJobs(jobs) {
   replayWorkspace = replay?.result?.workspace_id || null;
   $("revision-open-replay").hidden = !replayWorkspace;
   const busy =
-    loading || !!submittingAction || jobs.some((j) => ["queued", "running"].includes(j.status));
+    loading ||
+    !!submittingAction ||
+    jobs.some((j) => ["queued", "running"].includes(j.status));
   $("price-source").disabled = busy;
+  $("candidate-source").disabled = busy;
+  $("candidate-krx-start").disabled = busy;
   document.querySelectorAll("[data-action]").forEach((b) => {
-    b.disabled = busy;
+    b.disabled =
+      busy || (b.id === "candidate-refresh" && !candidateCaptureEnabled());
     b.setAttribute("aria-busy", String(busy));
   });
   table(

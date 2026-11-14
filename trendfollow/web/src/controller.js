@@ -21,6 +21,8 @@ async function load(prime = true) {
     snapshot = data;
     loading = false;
     render();
+    await loadCandidateDates();
+    if (selected !== workspace || ticket !== loadSequence) return;
     if (prime) markExisting();
     const p = await api(
       "/api/pulse?workspace=" +
@@ -54,6 +56,14 @@ function render() {
       : s.status === "configuration_mismatch"
         ? "설정 불일치 · 기존 계좌 보존"
         : "기존 계좌 · 설정 일치";
+  $("candidate-policy").hidden = Boolean(
+    s.workspace.builtin ||
+      s.workspace.mode === "recalculation" ||
+      s.candidate_policy,
+  );
+  $("candidate-policy-note").textContent = s.candidate_policy
+    ? `${s.candidate_policy.enabled_after}까지의 계좌 기록은 그대로 두고, 이후 거래일부터 날짜별 선정 기록을 사용합니다. 같은 계좌에서 이어 처리합니다. 새 편입 종목의 과거 일봉은 네이버로 준비하고 새 거래일은 선택한 원천으로 갱신합니다.`
+    : "날짜별 후보군 적용은 기존 계좌의 처리 완료일 이후부터 시작합니다. 이전 매매·보유 기록은 유지합니다.";
   $("notice").hidden =
     s.status === "ready" && s.workspace.mode !== "recalculation";
   $("notice").textContent =

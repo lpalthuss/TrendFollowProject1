@@ -250,6 +250,7 @@ class IntradayMonitor:
         self.plan, self.quotes, self.last, self.invalidated = plan, {}, {}, set()
         self.basis_mismatch = set()
         self.latest_target_quotes = {}
+        self.touched_targets = set()
         self.last_stops = {}
         self.volume_samples = {}
 
@@ -296,6 +297,12 @@ class IntradayMonitor:
             self.quotes.pop(symbol,None)
             self.basis_mismatch.add(symbol)
             return self.evaluate(now) if evaluate else self.evaluate_stops(now,symbol)
+        if target:
+            levels = [target.get('setup_resistance'), target.get('high52_resistance')]
+            if all(value is None for value in levels):
+                levels = [target.get('resistance')]
+            if any(value is not None and normalized['price'] >= value for value in levels):
+                self.touched_targets.add(symbol)
         from .intraday_volume import capture_tick_boundary
         capture_tick_boundary(self,symbol,normalized,old,now)
         self.quotes[symbol] = normalized

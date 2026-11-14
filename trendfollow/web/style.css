@@ -347,6 +347,19 @@ header p {
   background: #fff0d0;
   color: #956411;
 }
+.high52-gap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  white-space: nowrap;
+}
+.high52-gap-over {
+  color: #c42d2d;
+}
+.high52-gap-under {
+  color: #2164b5;
+}
 .table-wrap {
   overflow: auto;
   background: #fff;
@@ -372,6 +385,34 @@ th {
   font-weight: 550;
   border-bottom: 1px solid var(--line);
   z-index: 1;
+}
+.table-sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.table-sort-button:hover,
+.table-sort-button:focus-visible,
+th[aria-sort="ascending"] .table-sort-button,
+th[aria-sort="descending"] .table-sort-button {
+  color: #126355;
+}
+.table-sort-button:focus-visible {
+  outline: 2px solid #126355;
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+.table-sort-indicator {
+  color: #6e8d83;
+  font-size: 10px;
 }
 td {
   padding: 11px 14px;
@@ -986,6 +1027,91 @@ footer {
   font-size: 12px;
   font-weight: 700;
   line-height: 1.6;
+}
+.candidate-criteria-note {
+  display: inline-block;
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  border: 1px solid #a8cbbd;
+  border-radius: 5px;
+  background: #eaf6ef;
+  color: #195a3f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.candidate-toolbar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.candidate-toolbar > div {
+  flex: 1 1 280px;
+}
+.candidate-toolbar h2 {
+  margin: 0 0 4px;
+}
+.candidate-toolbar p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.candidate-toolbar label {
+  min-width: 260px;
+}
+.candidate-stage-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 18px;
+}
+.candidate-stage-card {
+  padding: 12px;
+  border: 1px solid #cbdad5;
+  border-left: 4px solid #397ab4;
+  border-radius: 6px;
+  background: #fff;
+}
+.candidate-stage-card:nth-child(3) {
+  border-left-color: #16816b;
+}
+.candidate-stage-card:nth-child(4) {
+  border-left-color: #c18b50;
+}
+.candidate-stage-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.candidate-stage-heading b {
+  font-size: 18px;
+}
+.candidate-stage-card p {
+  min-height: 50px;
+  margin: 7px 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.candidate-stage-names {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.candidate-stage-names button {
+  padding: 4px 7px;
+  font-size: 11px;
+}
+@media (max-width: 1000px) {
+  .candidate-stage-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .candidate-stage-board {
+    grid-template-columns: 1fr;
+  }
 }
 .explanation-card {
   margin: 12px 0;

@@ -200,7 +200,12 @@ class IntradayService:
                         and age is not None
                         and -2 <= age <= 60
                     )
-                runs.append(dict(id=p.parent.name, as_of=plan.get("as_of"), summary=summary, events=events))
+                runs.append(dict(id=p.parent.name, as_of=plan.get("as_of"),
+                                 session=plan.get("session"), targets=list(plan.get("targets", {})),
+                                 levels={symbol: {key: target.get(key) for key in
+                                          ("resistance", "setup_resistance", "high52_resistance")}
+                                         for symbol, target in plan.get("targets", {}).items()},
+                                 summary=summary, events=events))
             except (OSError, ValueError):
                 continue
         default_session = default_watch_session(now)

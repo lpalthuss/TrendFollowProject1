@@ -481,6 +481,77 @@
         </div>
       </section>
       <section id="market" class="view" hidden>
+        <div class="candidate-toolbar">
+          <div>
+            <h2>날짜별 시장 후보</h2>
+            <p>
+              저장된 종가 후보를 날짜별로 확인합니다. 오늘 장중에는 직전 완료
+              거래일 후보가 기준입니다.
+            </p>
+          </div>
+          <label
+            >후보 기준일
+            <select id="candidate-date" aria-label="후보 기준일"></select
+          ></label>
+          <label
+            >누락 후보군 원천
+            <select id="candidate-source" aria-label="누락 후보군 원천">
+              <option value="kis">KIS 현재 마스터</option>
+              <option value="krx_open_api">KRX Open API 날짜별</option>
+              <option value="pykrx">pykrx 날짜별</option>
+            </select></label
+          >
+          <label id="candidate-krx-range" hidden
+            >누락 후보군 시작일
+            <input id="candidate-krx-start" type="date" />
+          </label>
+          <button
+            id="candidate-refresh"
+            data-action="candidate_universe"
+            class="quiet"
+          >
+            오늘 장마감 시장 후보군 저장
+          </button>
+          <button id="candidate-analysis" data-action="market_analyze" class="quiet">
+            저장된 시장 후보 계산
+          </button>
+          <button
+            id="candidate-policy"
+            data-action="candidate_policy"
+            class="quiet"
+          >
+            이 계좌에 날짜별 후보군 적용
+          </button>
+          <button
+            id="candidate-source-account"
+            class="quiet"
+            type="button"
+            hidden
+          >
+            원계좌의 저장된 날짜 보기
+          </button>
+        </div>
+        <p id="candidate-capture-note" class="muted"></p>
+        <p id="candidate-analysis-note" class="notice notice-info" hidden></p>
+        <p id="candidate-policy-note" class="muted"></p>
+        <p
+          id="candidate-selection-note"
+          class="filter-note"
+          aria-live="polite"
+        ></p>
+        <p id="candidate-criteria-note" class="candidate-criteria-note" hidden></p>
+        <details id="candidate-members" hidden>
+          <summary id="candidate-members-title">선정된 시장 종목 목록</summary>
+          <p id="candidate-members-note" class="muted"></p>
+          <div id="candidate-members-table" class="table-wrap"></div>
+        </details>
+        <details id="candidate-changes" hidden>
+          <summary id="candidate-changes-title">후보군 편입·제외 기록</summary>
+          <p id="candidate-changes-note" class="muted"></p>
+          <div id="candidate-added" class="table-wrap"></div>
+          <div id="candidate-removed" class="table-wrap"></div>
+        </details>
+        <div id="candidate-stage-board" class="candidate-stage-board"></div>
         <div class="candidate-filters" aria-label="선별 종목 필터">
           <label
             >산업<select id="filter-industry" aria-label="산업">
@@ -686,6 +757,7 @@
           <h2>선별 종목</h2>
           <span id="row-count" class="muted"></span>
         </div>
+        <p class="muted">52주 고가는 선택일을 제외한 직전 252거래일의 최고 고가입니다.</p>
         <div id="stock-table" class="table-wrap"></div>
         <div id="stock-detail" class="detail" hidden>
           <div class="section-head">
@@ -714,11 +786,15 @@
           <div>
             <strong>판단은 엔진에서, 실행은 명시적으로</strong>
             <p>
-              후보 재계산은 계좌를 바꾸지 않습니다. 일별 처리는 조건을 자동
-              판단해 로컬 모의계좌에 반영합니다. 장중 관측은 신호만 기록합니다.
+              후보 재계산: 선택한 계좌의 저장된 종목·가격으로 그 계좌의 후보를
+              다시 계산합니다. 날짜별 시장 후보군 저장만으로 분석 대상이
+              바뀌지는 않습니다. 일별 모의 처리: 저장 가격으로 계좌 판단을 반영합니다.
+              데이터 갱신 + 일별 처리: 빠진 거래일의 가격을 수집한 뒤 계좌
+              판단을 반영합니다.
             </p>
+            <p id="market-action-note" class="muted"></p>
           </div>
-          <button data-action="analyze">후보 재계산</button
+          <button data-action="analyze">계좌 후보 재계산</button
           ><button data-action="paper" class="primary">일별 모의 처리</button
           ><button data-action="daily" class="quiet">
             데이터 갱신 + 일별 처리

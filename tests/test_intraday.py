@@ -61,8 +61,10 @@ def test_industry_requires_full_fresh_coverage_and_excludes_candidate():
 def test_price_crossing_cancel_and_invalidated_setup_do_not_recover():
     m=IntradayMonitor(plan());populate(m)
     t=tick();assert m.update(t,t['timestamp'])[-1]['entry_watch'] is True
+    assert '000001' in m.touched_targets
     below=tick(price=104,volume=101,at='09:01:01')
     assert m.update(below,below['timestamp'])[-1]['entry_watch'] is False
+    assert '000001' in m.touched_targets
     broken=tick(price=106,volume=102,at='09:01:02',low=89)
     assert m.update(broken,broken['timestamp'])[-1]['setup_invalidated'] is True
     rebound=tick(price=110,volume=103,at='09:01:03')
