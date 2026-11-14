@@ -56,6 +56,8 @@ def decision_rule_settings(rules):
         from .setup import SETUP_SETTINGS
         for key in SETUP_SETTINGS:
             values.pop(key,None)
+    if not rules.setup_52w_enabled:
+        values.pop('setup_52w_enabled',None)
     if values.get('rs_method', 'percentile') == 'percentile':
         for key in ['rs_method', 'mansfield_weeks', 'min_mansfield', 'mansfield_benchmark']:
             values.pop(key, None)

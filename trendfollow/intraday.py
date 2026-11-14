@@ -119,19 +119,20 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
         f = prices[prices.symbol == symbol].sort_values('date')
         if f.empty or str(f.date.iloc[-1].date()) != as_of:
             raise ValueError('감시 종목의 기준일 가격이 없습니다.')
-        reasons = []
+        common_reasons = []
         for field in ['weekly_trend','eligible_history']:
-            if not bool(row[field]): reasons.append(field)
-        if row.avg_turnover < rules.min_turnover: reasons.append('low_liquidity')
+            if not bool(row[field]): common_reasons.append(field)
+        if row.avg_turnover < rules.min_turnover: common_reasons.append('low_liquidity')
         if not 0 < row.stop_price < row.reference_price or rules.stop_limit_enabled and (row.reference_price-row.stop_price)/row.reference_price > rules.max_stop_fraction:
-            reasons.append('invalid_stop')
+            common_reasons.append('invalid_stop')
         if rules.rs_method == 'percentile':
-            if not row.rs_percentile >= rules.min_rs or not row.excess_return > 0: reasons.append('weak_prior_rs')
+            if not row.rs_percentile >= rules.min_rs or not row.excess_return > 0: common_reasons.append('weak_prior_rs')
         elif not row.mansfield_rs > rules.min_mansfield:
-            reasons.append('weak_prior_mansfield')
+            common_reasons.append('weak_prior_mansfield')
+        setup_reasons = []
         resistance, floor = None, None
         if row.setup_phase != 'base' or pd.isna(row.setup_peak_date) or pd.isna(row.setup_resistance):
-            reasons.append('no_unconsumed_setup')
+            setup_reasons.append('no_unconsumed_setup')
         else:
             resistance = finite(row.setup_resistance, True)
             floor = resistance-rules.setup_max_retracement*(resistance-finite(row.setup_wave_low, True))
@@ -141,19 +142,34 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
             previous = f.close.shift()
             tr = pd.concat([f.high-f.low,(f.high-previous).abs(),(f.low-previous).abs()],axis=1).max(axis=1)/f.close
             if len(base) < 4 or base.low.min() < floor:
-                reasons.append('unhealthy_or_short_base')
+                setup_reasons.append('unhealthy_or_short_base')
             else:
                 middle = len(base)//2
                 volumes = base.volume
                 ranges = tr.loc[base.index]
                 vr = volumes.iloc[middle:].mean()/volumes.iloc[:middle].mean() if volumes.iloc[:middle].mean() > 0 else math.inf
                 rr = ranges.iloc[middle:].mean()/ranges.iloc[:middle].mean() if ranges.iloc[:middle].mean() > 0 else math.inf
-                if vr > rules.setup_volume_contraction: reasons.append('base_volume_not_contracted')
-                if rr > rules.setup_range_contraction: reasons.append('base_range_not_contracted')
+                if vr > rules.setup_volume_contraction: setup_reasons.append('base_volume_not_contracted')
+                if rr > rules.setup_range_contraction: setup_reasons.append('base_range_not_contracted')
+        high52_resistance = None
+        if rules.setup_52w_enabled:
+            from .indicators import HIGH_52W_SESSIONS
+            benchmark = prices[prices.symbol == str(row.benchmark)].sort_values('date')
+            if (len(f) >= HIGH_52W_SESSIONS and len(benchmark) >= HIGH_52W_SESSIONS
+                    and f.date.tail(HIGH_52W_SESSIONS).reset_index(drop=True).equals(
+                        benchmark.date.tail(HIGH_52W_SESSIONS).reset_index(drop=True))):
+                high52_resistance = finite(f.high.tail(HIGH_52W_SESSIONS).max(), True)
+        setup_pass = not common_reasons and not setup_reasons
+        high52_pass = not common_reasons and high52_resistance is not None
+        levels = [value for value in [resistance, high52_resistance] if value is not None]
+        reasons = [] if setup_pass or high52_pass else common_reasons + setup_reasons + (
+            ['insufficient_52w_history'] if rules.setup_52w_enabled and high52_resistance is None else [])
         targets[symbol] = {'name': str(row['name']), 'sector': sector, 'benchmark': str(row.benchmark),
-            'previous_close': finite(f.close.iloc[-1], True), 'resistance': resistance,
+            'previous_close': finite(f.close.iloc[-1], True), 'resistance': min(levels) if levels else None,
+            'setup_resistance': resistance, 'high52_resistance': high52_resistance,
             'healthy_floor': floor, 'holding_stop': finite(positions[symbol]['stop_price'],True) if symbol in positions else None,
-            'prior_filters_pass': not reasons, 'prior_filter_reasons': reasons,
+            'prior_filters_pass': setup_pass or high52_pass, 'prior_filter_reasons': reasons,
+            'prior_filters_pass_setup': setup_pass, 'prior_filters_pass_high52': high52_pass,
             'peer_symbols': sorted(scope['peer_symbols'].get(sector, set()) - {symbol})}
     input_paths = [signals_path,prices_path,universe_path,config_path]
     if watch_mode == 'industry':
@@ -217,7 +233,8 @@ def validate_plan(plan):
         elif target['peer_symbols']:
             raise ValueError('입력 종목만 구독하는 계획에는 산업 동료를 포함할 수 없습니다.')
         finite(target['previous_close'],True)
-        for field in ['resistance','healthy_floor','holding_stop']:
+        for field in ['resistance','healthy_floor','holding_stop','setup_resistance','high52_resistance']:
+            if field not in target: continue
             if target[field] is not None: finite(target[field],True)
         for peer in target['peer_symbols']:
             if peer == symbol or peer not in plan['members'] or plan['members'][peer]['sector'] != target['sector']:
@@ -330,12 +347,24 @@ class IntradayMonitor:
             mean_excess = sum(excess)/count if count else None
             action = bool(breadth >= self.plan['sector_min_breadth'] and mean_excess > 0) if available else None
             quote = fresh(symbol)
-            valid = quote is not None and symbol not in self.invalidated and symbol not in self.basis_mismatch
-            breakout = bool(quote['price'] > target['resistance']) if valid and target['resistance'] is not None else None
+            valid = quote is not None and symbol not in self.basis_mismatch
+            if 'setup_resistance' in target:
+                setup_breakout = (bool(quote['price'] > target['setup_resistance'])
+                    if valid and symbol not in self.invalidated and target['setup_resistance'] is not None else None)
+                high52_breakout = (bool(quote['price'] > target['high52_resistance'])
+                    if valid and target['high52_resistance'] is not None else None)
+                observed = [value for value in [setup_breakout,high52_breakout] if value is not None]
+                breakout = any(observed) if observed else None
+                route_pass = (setup_breakout is True and target['prior_filters_pass_setup']
+                    or high52_breakout is True and target['prior_filters_pass_high52'])
+            else:
+                valid = valid and symbol not in self.invalidated
+                breakout = bool(quote['price'] > target['resistance']) if valid and target['resistance'] is not None else None
+                route_pass = breakout and target['prior_filters_pass']
             stop = (bool(quote['day_low'] <= target['holding_stop'])
                     if quote and target['holding_stop'] is not None and symbol not in self.basis_mismatch else None)
             symbols_only = self.plan.get('watch_mode') == 'symbols'
-            watch = (bool(breakout and target['prior_filters_pass'] and (action or not self.plan['sector_require_action']))
+            watch = (bool(route_pass and (action or not self.plan['sector_require_action']))
                      if not symbols_only and valid and (available or not self.plan['sector_require_action']) else None)
             from .intraday_volume import volume_check
             volume=volume_check(self,symbol,now,quote)

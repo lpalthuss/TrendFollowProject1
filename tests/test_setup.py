@@ -68,6 +68,19 @@ def test_no_contraction_or_unhealthy_trigger_bar_rejects_entry():
     f=pattern();f.loc[f.index[-1],'low']=124
     row=setup_features(f,Rules(),atr_values=np.ones(len(f))).iloc[-1]
     assert row.setup_trigger and row.setup_invalidated and not row.setup_entry
+    assert row.setup_retracement_today > Rules().setup_max_retracement
+
+
+def test_same_day_setup_invalidation_and_52_week_breakout_can_coexist():
+    recent = pattern()
+    recent.loc[recent.index[-1],'low'] = 124
+    warm = pd.DataFrame([dict(open=100,high=101,low=99,close=100,volume=1000)]*252,
+        index=pd.bdate_range(end=recent.index[0]-pd.offsets.BDay(),periods=252))
+    prices = pd.concat([warm,recent])
+    setup = setup_features(prices,Rules(entry_method='setup'),atr_values=np.ones(len(prices))).iloc[-1]
+    prior_high = prices.high.shift().rolling(252).max().iloc[-1]
+    assert setup.setup_invalidated and setup.setup_trigger and not setup.setup_entry
+    assert prices.close.iloc[-1] > prior_high
 
 
 def sector_input(returns):
@@ -112,6 +125,36 @@ def test_core_and_backtest_use_same_setup_and_sector_rules():
                    'setup_trigger','setup_entry','signal_rs','signal_mansfield','signal']:
         a,b=current[column],historical[column]
         assert (pd.isna(a) and pd.isna(b)) or a==pytest.approx(b)
+
+
+def test_52_week_breakout_is_an_independent_opt_in_setup_entry_path():
+    dates = pd.bdate_range('2025-11-17', periods=255)
+    close = np.array([100 + i * .4 for i in range(254)] + [210.])
+    stock = pd.DataFrame(dict(date=dates, symbol='A', open=close, high=close+1,
+                              low=close-1, close=close, volume=[1000]*254+[2000]))
+    benchmark = stock.copy()
+    benchmark['symbol'] = 'INDEX'
+    benchmark[['open','high','low','close']] = 100.
+    prices = pd.concat([stock,benchmark],ignore_index=True)
+    universe = pd.DataFrame([dict(symbol='A',name='A',sector='S',benchmark='INDEX')])
+    options = dict(entry_method='setup', rs_days=5, weekly_ma=2, weekly_slope=1,
+                   atr_days=2, min_rs=0, min_turnover=1, volume_multiple=1,
+                   sector_require_action=False)
+    as_of = str(dates[-1].date())
+    old = screen(prices,universe,as_of,Rules(**options)).iloc[0]
+    enabled = Rules(**options,setup_52w_enabled=True)
+    current = screen(prices,universe,as_of,enabled).iloc[0]
+    historical = features(prices,universe,enabled)[0].iloc[-1]
+    assert not old.signal and old.high52_breakout and not old.setup_entry
+    assert current.high52_breakout and not current.setup_entry and current.signal
+    assert current.signal_entry_path == '52주 신고가'
+    assert current.prior_52w_high == pytest.approx(stock.high.iloc[1:-1].max())
+    assert historical.high52_breakout and historical.signal
+
+
+def test_52_week_option_requires_boolean():
+    with pytest.raises(ValueError, match='setup_52w_enabled'):
+        Rules(entry_method='setup',setup_52w_enabled='true').validate()
 
 
 def test_existing_breakout_account_settings_ignore_new_setup_options():

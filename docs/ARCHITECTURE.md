@@ -5,7 +5,7 @@
 ## Python
 
 - `config.py`: 전략 Rules와 검증. 기존 `strategy.Rules` import도 유지한다.
-- `indicators.py`: ATR·완료 주봉 추세·수익률·거래량·Mansfield 공통 계산.
+- `indicators.py`: ATR·완료 주봉 추세·수익률·거래량·Mansfield와 직전 252거래일 고가 공통 계산.
 - `signals.py`: 공통 진입 조건과 손절 제한·RS 청산·추가매수 검토 정책 연결.
 - `strategy.py`: 단일 기준일 후보 선별과 이유 표시.
 - `backtest.py`: 시계열 특징 구성과 연구용 체결 시뮬레이션. 선별과 같은 지표·조건을 사용한다.

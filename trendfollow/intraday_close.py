@@ -145,10 +145,21 @@ def close_comparison(plan_path, prices_path, peer_returns_path, output,
         close = float(today.close) if today is not None else None
         close_status = ('missing_close_bar' if today is None else 'missing_baseline_bar' if previous is None
                         else 'price_basis_mismatch' if basis_valid is False else 'available')
-        close_breakout = (bool(close > target['resistance'])
-                          if close is not None and basis_valid is True and target['resistance'] is not None else None)
         healthy = (bool(float(today.low) >= target['healthy_floor'])
                    if today is not None and basis_valid is True and target['healthy_floor'] is not None else None)
+        if 'setup_resistance' in target:
+            setup_close_breakout = (bool(close > target['setup_resistance'])
+                if close is not None and basis_valid is True and target['setup_resistance'] is not None else None)
+            high52_close_breakout = (bool(close > target['high52_resistance'])
+                if close is not None and basis_valid is True and target['high52_resistance'] is not None else None)
+            observed_close = [value for value in [
+                setup_close_breakout if healthy is not False else None, high52_close_breakout
+            ] if value is not None]
+            close_breakout = any(observed_close) if observed_close else None
+        else:
+            setup_close_breakout = high52_close_breakout = None
+            close_breakout = (bool(close > target['resistance'])
+                if close is not None and basis_valid is True and target['resistance'] is not None else None)
         stop = (bool(float(today.low) <= target['holding_stop'])
                 if today is not None and basis_valid is True and target['holding_stop'] is not None else None)
         excess, positive = [],0
@@ -185,6 +196,7 @@ def close_comparison(plan_path, prices_path, peer_returns_path, output,
             'quote_gap_seconds':unknown_gap_seconds,'connection_gap_count':observed['connection_gaps'],
             'connection_reset_records':observed['resets'],'close':close,'resistance':target['resistance'],
             'close_price_basis_valid':basis_valid,'close_above_resistance':close_breakout,'close_setup_healthy':healthy,
+            'close_setup_breakout':setup_close_breakout,'close_52w_breakout':high52_close_breakout,
             'close_stop_contact':stop,'close_industry_action':industry,
             'close_peer_count':count,'expected_peer_count':expected,'close_peer_coverage':coverage,
             'close_peer_up_fraction':breadth,'close_peer_excess_return':mean_excess,

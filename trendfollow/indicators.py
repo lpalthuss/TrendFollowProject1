@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 from .relative_strength import mansfield_weekly
 
+HIGH_52W_SESSIONS = 252
+
 
 def required_history(rules):
     return max(
@@ -45,6 +47,7 @@ def price_indicators(frame, benchmark, mansfield_benchmark, rules):
     trend = (weekly > average) & (average > average.shift(rules.weekly_slope))
     f["weekly_trend"] = trend.reindex(f.index, method="ffill").eq(True)
     f["prior_breakout_high"] = f.high.shift().rolling(rules.breakout_days).max()
+    f["prior_52w_high"] = f.high.shift().rolling(HIGH_52W_SESSIONS).max()
     f["volume_ratio"] = f.volume / f.volume.shift().rolling(20).mean().replace(
         0, np.nan
     )

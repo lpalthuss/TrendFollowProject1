@@ -8,7 +8,7 @@ import re
 import pandas as pd
 from .common import read_csv, json_rows
 
-SIGNAL_FIELDS = "symbol name sector benchmark date reference_price rs_percentile excess_return mansfield_rs allocation_score weekly_trend eligible_history volume_ratio avg_turnover atr stop_price stop_fraction signal signal_rs signal_mansfield setup_phase setup_ready setup_trigger setup_entry setup_invalidated setup_resistance setup_retracement setup_base_bars setup_volume_ratio setup_range_ratio sector_action sector_peer_count sector_up_fraction sector_excess_return sector_action_scope quantity planned_risk cash_required allocation_reason market_unit_regime market_unit_cap rs_exit_weak rs_exit_value".split()
+SIGNAL_FIELDS = "symbol name sector benchmark date reference_price rs_percentile excess_return mansfield_rs allocation_score weekly_trend eligible_history volume_ratio avg_turnover atr stop_price stop_fraction signal signal_rs signal_mansfield signal_entry_path prior_52w_high high52_breakout setup_phase setup_ready setup_trigger setup_entry setup_invalidated setup_resistance setup_retracement setup_retracement_today setup_base_bars setup_volume_ratio setup_range_ratio sector_action sector_peer_count sector_up_fraction sector_excess_return sector_action_scope quantity planned_risk cash_required allocation_reason market_unit_regime market_unit_cap rs_exit_weak rs_exit_value".split()
 
 
 class OperationsQueries:

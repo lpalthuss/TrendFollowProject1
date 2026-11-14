@@ -73,11 +73,13 @@ def features(prices, universe, rules=Rules(), exit_days=20):
         for name in [
             "weekly_trend",
             "prior_breakout_high",
+            "prior_52w_high",
             "volume_ratio",
             "avg_turnover",
             "stop_price",
         ]:
             f[name] = computed[name]
+        f["high52_breakout"] = f.close.gt(f.prior_52w_high).where(f.prior_52w_high.notna())
         f["trailing_channel"] = f.low.rolling(exit_days).min()
         f["entry_method"] = rules.entry_method
         if rules.entry_method == "setup":

@@ -25,6 +25,7 @@ class Rules:
     min_mansfield: float = 0
     mansfield_benchmark: str = "universe"
     entry_method: str = "breakout"
+    setup_52w_enabled: bool = False
     setup_reversal_atr: float = 2
     setup_min_rise_atr: float = 4
     setup_max_retracement: float = 0.5
@@ -132,6 +133,8 @@ class Rules:
             raise ValueError("rs_method는 percentile 또는 mansfield여야 합니다.")
         if self.entry_method not in {"breakout", "setup"}:
             raise ValueError("entry_method는 breakout 또는 setup이어야 합니다.")
+        if not isinstance(self.setup_52w_enabled, bool):
+            raise ValueError("setup_52w_enabled는 true/false여야 합니다.")
         if not isinstance(self.sector_require_action, bool):
             raise ValueError("sector_require_action은 true/false여야 합니다.")
         if (

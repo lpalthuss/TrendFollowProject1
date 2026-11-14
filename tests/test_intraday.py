@@ -212,6 +212,44 @@ def test_prepare_recomputes_base_including_last_completed_day(tmp_path):
     assert all(events[0][key] is None for key in ('industry_action','entry_watch','entry_confirmed'))
 
 
+def test_52_week_watch_route_survives_setup_invalidation():
+    p = plan()
+    target = p['targets']['000001']
+    target.update(setup_resistance=105, high52_resistance=110,
+                  prior_filters_pass_setup=True, prior_filters_pass_high52=True)
+    monitor = IntradayMonitor(p)
+    populate(monitor)
+    quote = tick(price=112,low=89)
+    monitor.update(quote,quote['timestamp'])
+    state = monitor.last['000001']
+    assert state['setup_invalidated'] is True
+    assert state['breakout_present'] is True
+    assert state['entry_watch'] is True
+
+
+def test_prepare_52_week_watch_without_a_base(tmp_path):
+    dates = pd.bdate_range(end='2026-11-12', periods=252)
+    stock = pd.DataFrame([dict(date=str(day.date()),symbol='000001',open=100,
+        high=101+i*.1,low=99,close=100,volume=1000) for i,day in enumerate(dates)])
+    benchmark = stock.copy();benchmark['symbol']='069500'
+    pd.concat([stock,benchmark]).to_csv(tmp_path/'prices.csv',index=False)
+    signal = dict(date='2026-11-12',symbol='000001',name='Alpha',benchmark='069500',sector='S',
+        rs_method='percentile',entry_method='setup',weekly_trend=True,eligible_history=True,
+        avg_turnover=1e10,stop_price=95,reference_price=100,rs_percentile=99,excess_return=.1,
+        setup_phase='seeking',setup_peak_date=None,setup_resistance=None,setup_wave_low=None)
+    pd.DataFrame([signal]).to_csv(tmp_path/'signals.csv',index=False)
+    pd.DataFrame([dict(symbol='000001',benchmark='069500',sector='S')]).to_csv(
+        tmp_path/'universe.csv',index=False)
+    (tmp_path/'config.json').write_text(json.dumps({'rules':{
+        'entry_method':'setup','setup_52w_enabled':True,'sector_require_action':False}}))
+    p = prepare_plan(tmp_path/'signals.csv',tmp_path/'prices.csv',tmp_path/'universe.csv',
+        '2026-11-13',['000001'],tmp_path/'config.json',tmp_path/'plan.json',watch_mode='symbols')
+    target = p['targets']['000001']
+    assert target['prior_filters_pass_setup'] is False
+    assert target['prior_filters_pass_high52'] is True
+    assert target['high52_resistance'] == pytest.approx(stock.high.iloc[-1])
+
+
 def test_probe_only_logs_sanitized_acks_and_never_quotes_or_orders(tmp_path,monkeypatch):
     import websocket
     import trendfollow.kis_stream as stream

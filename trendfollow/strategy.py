@@ -123,6 +123,7 @@ def screen(
         ret = float(latest.return_126d)
         trend = bool(latest.weekly_trend)
         high = float(latest.prior_breakout_high)
+        high_52w = float(latest.prior_52w_high)
         # Preserve the snapshot API's zero-volume presentation for an all-zero base.
         volume_ratio = (
             float(latest.volume_ratio) if f.volume.iloc[-21:-1].mean() > 0 else 0
@@ -163,6 +164,8 @@ def screen(
             weekly_trend=bool(trend),
             prior_breakout_high=high,
             breakout=bool(close > high),
+            prior_52w_high=high_52w,
+            high52_breakout=None if math.isnan(high_52w) else bool(close > high_52w),
             volume_ratio=volume_ratio,
             avg_turnover=turnover,
         )

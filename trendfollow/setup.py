@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 
-SETUP_SETTINGS = ['entry_method','setup_reversal_atr','setup_min_rise_atr',
+SETUP_SETTINGS = ['entry_method','setup_52w_enabled','setup_reversal_atr','setup_min_rise_atr',
                   'setup_max_retracement','setup_volume_contraction','setup_range_contraction',
                   'sector_require_action','sector_min_peers','sector_min_breadth']
 
@@ -39,6 +39,7 @@ def setup_features(frame, rules, atr_values=None, calendar=None):
              'setup_invalidated':False,
              'setup_wave_start':None,'setup_peak_date':None,'setup_confirmed_at':None,
              'setup_wave_low':np.nan,'setup_resistance':np.nan,'setup_retracement':np.nan,
+             'setup_retracement_today':np.nan,
              'setup_base_bars':0,'setup_volume_ratio':np.nan,'setup_range_ratio':np.nan}
         if sessions is not None and i and (not np.isfinite(sessions[i-1:i+1]).all() or sessions[i]-sessions[i-1]!=1):
             phase='seeking';start=peak=i;confirmed=-1
@@ -73,7 +74,8 @@ def setup_features(frame, rules, atr_values=None, calendar=None):
             healthy=(wave>0 and np.isfinite(depth) and 0<=depth<=rules.setup_max_retracement)
             ready=bool(healthy and count>=4)
             trigger=bool(close[i]>high[peak] and close[i-1]<=high[peak])
-            today_healthy=(high[peak]-min(base_low,low[i]))/wave<=rules.setup_max_retracement if wave>0 else False
+            today_depth=(high[peak]-min(base_low,low[i]))/wave if wave>0 else np.nan
+            today_healthy=bool(np.isfinite(today_depth) and today_depth<=rules.setup_max_retracement)
             row.update(setup_ready=ready,setup_trigger=trigger,
                 setup_invalidated=bool(not today_healthy),
                 setup_entry=bool(ready and trigger and today_healthy and
@@ -81,6 +83,7 @@ def setup_features(frame, rules, atr_values=None, calendar=None):
                 setup_wave_start=str(f.index[start].date()),setup_peak_date=str(f.index[peak].date()),
                 setup_confirmed_at=str(f.index[confirmed].date()),setup_wave_low=float(low[start]),
                 setup_resistance=float(high[peak]),setup_retracement=float(depth),
+                setup_retracement_today=float(today_depth),
                 setup_base_bars=count,setup_volume_ratio=vr,setup_range_ratio=rr)
             if not today_healthy:
                 phase='seeking';start=peak=i;confirmed=-1
