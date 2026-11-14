@@ -47,9 +47,12 @@ class JobManager:
         action = payload.get("action")
         if action not in {
             "analyze",
+            "market_analyze",
             "paper",
             "daily",
             "industry",
+            "candidate_universe",
+            "candidate_policy",
             "prepare_intraday",
             "intraday_close",
             "volume_import",
@@ -59,7 +62,18 @@ class JobManager:
             "revision_replay",
         }:
             raise ValueError("지원하지 않는 작업입니다.")
-        if action == "prepare_intraday":
+        if action == "candidate_policy":
+            state = self.context.state(w)
+            if not state:
+                raise ValueError("먼저 계좌의 첫 종가 처리를 완료하세요.")
+            as_of = state["last_date"]
+        elif action == "candidate_universe":
+            from ..candidate_universe import latest_completed_session
+
+            if payload.get("candidate_source") not in {"kis", "krx_open_api", "pykrx"}:
+                raise ValueError("후보군 자료 원천이 전달되지 않았습니다. UI 서버를 재시작하고 화면을 새로고침하세요.")
+            as_of = latest_completed_session(self.context.now())
+        elif action == "prepare_intraday":
             from ..krx_sessions import require_previous_close
 
             as_of = require_previous_close(payload.get("session"), payload.get("as_of"))
@@ -68,7 +82,9 @@ class JobManager:
         as_of = self.context.completed_date(as_of)
         if w.get("mode") == "recalculation" and action not in {
             "analyze",
+            "market_analyze",
             "revision_check",
+            "candidate_universe",
         }:
             raise ValueError(
                 "정정 재계산 계좌는 고정 자료를 사용하는 비교 결과입니다. 원계좌에서 운용을 계속하세요."
@@ -115,6 +131,10 @@ class JobManager:
                 owner_id=self.context.instance_id,
                 owner_pid=os.getpid(),
             )
+            if action == "candidate_universe":
+                job["candidate_source"] = payload["candidate_source"]
+                if job["candidate_source"] in {"krx_open_api", "pykrx"}:
+                    job["from_as_of"] = payload.get("from_as_of")
             self.context.jobs[key] = job
             try:
                 save_job(self.context.home / "jobs" / f"{key}.json", job)

@@ -143,11 +143,30 @@ class ActionRunner:
         config = self.context.path(w["config"])
         state_path = self.context.path(w["state"])
         rules, limits = self.context.configuration(w)
-        if action == "analyze":
+        if action == "market_analyze":
+            from ..market_candidate_analysis import analyze_saved_selections
+
+            result = analyze_saved_selections(self.context, w, as_of, key, progress)
+        elif action == "analyze":
             from ..backtest import features
             from ..research_store import require_published_research
 
+            state = self.context.state(w)
+            if state and state["last_date"] != as_of:
+                if w.get("mode") == "recalculation":
+                    raise ValueError(
+                        f"이 정정 재계산 계좌는 {state['last_date']}까지만 저장돼 있습니다. "
+                        "다른 날짜의 후보는 원계좌에서 확인하세요."
+                    )
+                raise ValueError(
+                    f"후보 재계산은 계좌 처리일 {state['last_date']}에만 가능합니다. "
+                    "먼저 일별 모의 처리를 진행하세요."
+                )
             require_published_research(prices)
+            if not pd.read_csv(prices, usecols=["date"], dtype=str).date.eq(as_of).any():
+                raise ValueError(
+                    f"{as_of} 저장 가격이 없습니다. 일반 계좌에서 데이터 갱신 + 일별 처리를 먼저 실행하세요."
+                )
             progress("후보 조건 계산 중")
             p, u, r, l = read_inputs(prices, universe, as_of, config)
             f, bad = features(p, u, r)
@@ -155,11 +174,6 @@ class ActionRunner:
             if today.empty:
                 raise ValueError(
                     "기준일 가격이 없습니다. 데이터 갱신 상태를 확인하세요."
-                )
-            state = self.context.state(w)
-            if state and state["last_date"] != as_of:
-                raise ValueError(
-                    "후보 수량 계산은 계좌 기준일과 같은 날짜로 실행하세요. 먼저 일별 모의 처리를 진행하세요."
                 )
             holdings = (
                 [
@@ -272,20 +286,75 @@ class ActionRunner:
                         self.context.root / "data/industries",
                         refresh=True,
                     )
-            result = daily_run(
-                universe,
-                self.context.path(w["data_dir"]),
-                state_path,
-                as_of,
-                w["capital"],
-                config,
-                self.context.root / ".env",
-                "kiwoom",
-                catch_up=True,
-                reconstruct_missing_peers=True,
-                progress=progress,
-                price_source=payload.get("price_source", "naver"),
-            )
+            from ..candidate_universe import read_policy
+
+            policy = read_policy(self.context.root, w["id"])
+            if policy and self.context.state(w) and as_of > policy["enabled_after"]:
+                from exchange_calendars import get_calendar
+                from ..candidate_universe import (
+                    account_universe, acquisition_universe, available_selections,
+                    backfill_added_history, capture_selection, latest_completed_session,
+                )
+
+                last = self.context.state(w)["last_date"]
+                sessions = [day.date().isoformat() for day in get_calendar(
+                    "XKRX", start=last, end=as_of
+                ).sessions_in_range(last, as_of) if day.date().isoformat() > last]
+                if not sessions or sessions[-1] != as_of:
+                    raise ValueError("마지막 처리일 이후의 완료 거래일을 선택하세요.")
+                available = set(available_selections(self.context.root))
+                missing = [day for day in sessions if day not in available]
+                latest = latest_completed_session(self.context.now())
+                if missing == [latest]:
+                    progress(f"{latest} 시장 후보군 선정 중")
+                    capture_selection(self.context.root, latest, self.context.now(), progress)
+                    available.add(latest)
+                    missing = [day for day in sessions if day not in available]
+                if missing:
+                    raise ValueError("과거 날짜의 후보군 선정 기록이 없습니다: " + ", ".join(missing) +
+                                     ". 현재 종목 마스터로 과거 목록을 소급하지 않습니다. 계좌는 보존되었습니다.")
+                if rules.entry_method == "setup":
+                    absent = [day for day in sessions if not (
+                        self.context.root / "data" / "industries" / "snapshots" / day / "memberships.csv"
+                    ).is_file()]
+                    if absent:
+                        raise ValueError("날짜별 산업 구성 기록이 없습니다: " + ", ".join(absent) +
+                                         ". 계좌는 보존되었습니다.")
+                completed = []
+                for day in sessions:
+                    progress(f"{day} 후보군·보유 종목 준비 중", len(completed), len(sessions))
+                    state = self.context.state(self.context.workspace(w["id"]))
+                    current = self.context.workspace(w["id"])
+                    decision = account_universe(self.context, current, day, state)
+                    acquisition = acquisition_universe(self.context, current, decision)
+                    backfill_added_history(self.context.path(current["data_dir"]), decision, day, progress)
+                    result = daily_run(
+                        current["universe"], self.context.path(current["data_dir"]), state_path,
+                        day, current["capital"], config, self.context.root / ".env", "kiwoom",
+                        catch_up=True, reconstruct_missing_peers=True, progress=progress,
+                        price_source=payload.get("price_source", "naver"),
+                        universe_by_session={day: decision},
+                        fingerprint_universe_path=current["universe"],
+                        acquisition_universe_path=acquisition,
+                    )
+                    completed.append(day)
+                result["processed_dates"] = completed
+                result["candidate_universe_mode"] = "daily"
+            else:
+                result = daily_run(
+                    universe,
+                    self.context.path(w["data_dir"]),
+                    state_path,
+                    as_of,
+                    w["capital"],
+                    config,
+                    self.context.root / ".env",
+                    "kiwoom",
+                    catch_up=True,
+                    reconstruct_missing_peers=True,
+                    progress=progress,
+                    price_source=payload.get("price_source", "naver"),
+                )
         elif action == "industry":
             from ..industries import industry_sync
 
@@ -296,6 +365,19 @@ class ActionRunner:
                 self.context.root / "data/industries",
                 refresh=True,
             )
+        elif action == "candidate_universe":
+            from ..candidate_universe import capture_selection, capture_krx_missing
+
+            if payload["candidate_source"] in {"krx_open_api", "pykrx"}:
+                result = capture_krx_missing(self.context.root, self.context.now(), progress,
+                                             from_as_of=payload.get("from_as_of"),
+                                             source=payload["candidate_source"])
+            else:
+                result = capture_selection(self.context.root, as_of, self.context.now(), progress)
+        elif action == "candidate_policy":
+            from ..candidate_universe import enable_daily_account
+
+            result = enable_daily_account(self.context, w, progress)
         elif action == "prepare_intraday":
             from ..intraday import prepare_plan
             from ..research_store import require_published_research

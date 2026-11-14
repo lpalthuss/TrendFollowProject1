@@ -125,14 +125,14 @@ def run_comparison(prices_path, universe_path, start, split, end, output_dir,
 
 
 def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_000_000,config_path=None,
-                     approved_symbols=None,revision_id=None):
+                     approved_symbols=None,revision_id=None,fingerprint_universe_path=None):
     from .observation_control import control_lock
     with control_lock(Path(state_path)):
-        return _paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved_symbols,revision_id)
+        return _paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved_symbols,revision_id,fingerprint_universe_path)
 
 
 def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_000_000,config_path=None,
-                     approved_symbols=None,revision_id=None):
+                     approved_symbols=None,revision_id=None,fingerprint_universe_path=None):
     """First run seeds a close-of-day plan. Later runs simulate only subsequent sessions."""
     prices,universe,rules,limits=read_inputs(prices_path,universe_path,as_of,config_path)
     if rules.entry_method=='setup' and 'industry_peer_history' in universe:
@@ -142,12 +142,16 @@ def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_
     asof=pd.Timestamp(as_of)
     if approved_symbols is not None:
         prepared.loc[(prepared.date==asof)&~prepared.symbol.isin(approved_symbols),'signal']=False
+    if 'candidate_active' in prepared:
+        prepared.loc[(prepared.date==asof)&~prepared.candidate_active.eq(True),'signal']=False
     benchmark_rows=prices[(prices.symbol.isin(set(universe.benchmark)))&(prices.date==as_of)]
     if benchmark_rows.symbol.nunique()!=universe.benchmark.nunique():
         raise ValueError('기준일의 벤치마크가 누락되었습니다. 휴장·수집 상태를 확인하세요.')
     state_file=Path(state_path)
     from .industries import decision_universe_records
-    fingerprint=hashlib.sha256(json.dumps({'universe':decision_universe_records(universe),
+    fingerprint_universe=(pd.read_csv(fingerprint_universe_path,dtype={'symbol':str,'benchmark':str},keep_default_na=False)
+        if fingerprint_universe_path else universe)
+    fingerprint=hashlib.sha256(json.dumps({'universe':decision_universe_records(fingerprint_universe),
         'rules':decision_rule_settings(rules),'limits':asdict(limits),'capital':capital},sort_keys=True).encode()).hexdigest()
     history_fingerprint=paper_input_digest(prices,universe,rules)
     applied_revision=None
@@ -171,7 +175,22 @@ def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_
                     'mansfield_candidates':int(todays.signal_mansfield.sum()),
                     'mansfield_ready_count':int(todays.mansfield_rs.notna().sum())}
         prior_history=prices[prices.date<=old['last_date']]
-        prior_digest=paper_input_digest(prior_history,universe,rules)
+        prior_universe=(pd.read_csv(old['decision_universe_path'],dtype={'symbol':str,'benchmark':str},keep_default_na=False)
+            if fingerprint_universe_path and old.get('decision_universe_path') else fingerprint_universe if fingerprint_universe_path else universe)
+        prior_digest=paper_input_digest(prior_history,prior_universe,rules)
+        if prior_digest!=old['input_fingerprint']:
+            if fingerprint_universe_path:
+                from .revisions import load_snapshot,snapshot_path
+                saved_path=snapshot_path(state_path,old.get('input_snapshot',old['input_fingerprint']))
+                if not (saved_path/'manifest.json').is_file():
+                    raise ValueError('이전 처리일의 보존 입력 스냅샷이 없어 계좌 처리를 보류했습니다.')
+                saved_prices,saved_peers,_=load_snapshot(saved_path)
+                sort=lambda frame:frame.sort_values(['symbol','date']).reset_index(drop=True)
+                saved_digest=paper_input_digest(sort(saved_prices),prior_universe,rules,peer_history=saved_peers)
+                current_digest=paper_input_digest(sort(prior_history),prior_universe,rules)
+                if saved_digest!=current_digest:
+                    raise ValueError('이전 처리일의 가격·산업 입력이 바뀌었습니다. 날짜별 후보군 계좌는 과거 입력 정정 검토 후 계속 처리하세요. 계좌는 보존되었습니다.')
+                prior_digest=old['input_fingerprint']
         if prior_digest!=old['input_fingerprint']:
             from .revisions import report_revision,validated_approval,approve_revision,DataRevisionError
             if revision_id is None:
@@ -206,6 +225,8 @@ def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_
     state.update(config_fingerprint=fingerprint,input_fingerprint=history_fingerprint,
                  generated_at=datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),source=str(prices_path),
                  limitations=LIMITATIONS,execution='local simulation; no broker order API')
+    if fingerprint_universe_path:
+        state['decision_universe_path']=str(Path(universe_path).resolve())
     from .revisions import snapshot_inputs,write_json,report_path
     state['input_snapshot']=snapshot_inputs(state_path,prices,universe,rules)
     if state_file.exists():state['revision_lineage']=old.get('revision_lineage',[])
@@ -235,7 +256,8 @@ def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_
 def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_000,
               config_path=None, env_file='.env', verify_provider='kiwoom', catch_up=False,
               reconstruct_missing_peers=False, progress=None, use_existing_prices=False,
-              price_source='naver'):
+              price_source='naver', universe_by_session=None,
+              fingerprint_universe_path=None, acquisition_universe_path=None):
     """Process one close, or every missing close when the UI requests catch-up."""
     from .market import NaverResearchSource, acquire_research
     if price_source not in {'naver','pykrx'}:
@@ -280,7 +302,9 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
     if state_file.exists():
         state=json.loads(state_file.read_text(encoding='utf-8'))
         if state['last_date']==as_of:
-            return paper_checkpoint(Path(data_dir)/'prices.csv',universe_path,as_of,state_path,capital,config_path)
+            decision_path=state.get('decision_universe_path',universe_path) if fingerprint_universe_path else universe_path
+            return paper_checkpoint(Path(data_dir)/'prices.csv',decision_path,as_of,state_path,capital,config_path,
+                                    fingerprint_universe_path=fingerprint_universe_path)
         if state['last_date']>as_of:
             raise ValueError('처리 완료일보다 과거의 daily 실행은 허용하지 않습니다.')
         if price_source == 'pykrx':
@@ -310,10 +334,10 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
         if progress:progress('선택 날짜까지 가격 자료 수집 중')
         if price_source == 'pykrx':
             from .krx_bulk import acquire_missing_sessions
-            manifest=acquire_missing_sessions(universe_path,data_dir,sessions,include_market_indices=include_indices,progress=progress)
+            manifest=acquire_missing_sessions(acquisition_universe_path or universe_path,data_dir,sessions,include_market_indices=include_indices,progress=progress)
         else:
             start=state['last_date'] if state else '2020-01-01'
-            manifest=acquire_research(universe_path,data_dir,start,as_of,include_market_indices=include_indices,required_session=as_of,progress=progress,append_sessions=sessions)
+            manifest=acquire_research(acquisition_universe_path or universe_path,data_dir,start,as_of,include_market_indices=include_indices,required_session=as_of,progress=progress,append_sessions=sessions)
         if manifest['errors']:
             raise ValueError('일부 연구 데이터 수집에 실패했습니다. 모의 계좌는 변경하지 않습니다.')
     prices_path=Path(data_dir)/'prices.csv'
@@ -322,11 +346,19 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
         print(f'종가 처리 {session} ({len(completed)+1}/{len(sessions)})',flush=True)
         if progress:progress(f'{session} 종가 처리 중',len(completed)+1,len(sessions))
         try:
-            prices,u,rules,limits=read_inputs(prices_path,universe_path,session,config_path)
+            decision_path=(universe_by_session or {}).get(session,universe_path)
+            prices,u,rules,limits=read_inputs(prices_path,decision_path,session,config_path)
             prepared,_=features(prices,u,rules)
             candidates=prepared[(prepared.date==pd.Timestamp(session))&prepared.signal]
+            if 'candidate_active' in candidates:
+                candidates=candidates[candidates.candidate_active.eq(True)]
             approved=verify_paper_candidates(candidates,prices,active_rules,session,state_path,env_file,verify_provider,include_indices)
-            report=paper_checkpoint(prices_path,universe_path,session,state_path,capital,config_path,approved)
+            checkpoint_options = (
+                {"fingerprint_universe_path": fingerprint_universe_path}
+                if fingerprint_universe_path is not None else {}
+            )
+            report=paper_checkpoint(prices_path,decision_path,session,state_path,capital,config_path,approved,
+                                    **checkpoint_options)
             report['approved_signals']=len(approved)
         except (ValueError,FileNotFoundError) as exc:
             if len(sessions)>1:

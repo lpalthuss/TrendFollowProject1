@@ -55,12 +55,18 @@ def make_server(root,port=8765):
                 key=query.get('workspace',[''])[0]
                 if url.path=='/api/bootstrap':result=dict(workspaces=operations.workspaces(),presets=operations.presets(),csrf=token)
                 elif url.path=='/api/snapshot':result=operations.snapshot(key)
+                elif url.path=='/api/candidate/dates':result=operations.candidate_dates(key)
+                elif url.path=='/api/candidate/day':
+                    snapshot=operations.snapshot(key,query.get('as_of',[''])[0])
+                    result=dict(as_of=snapshot['as_of'],rows=snapshot['rows'],rules=snapshot['rules'],
+                                analysis=snapshot['analysis'])
+                elif url.path=='/api/candidate/selection':result=operations.candidate_selection(query.get('as_of',[''])[0])
                 elif url.path=='/api/pulse':result=operations.pulse(key,query.get('as_of',[None])[0])
                 elif url.path=='/api/intraday':result=operations.intraday(key or None)
                 elif url.path=='/api/watch/basis':result=operations.intraday_service.plan_basis(key,query.get('session',[''])[0])
                 elif url.path=='/api/watch/subscriptions':result=operations.intraday_service.subscription_preview(
                     key,query.get('as_of',[''])[0],query.get('symbol',[]),query.get('watch_mode',['industry'])[0],query.get('session',[None])[0])
-                elif url.path=='/api/prices':result=operations.prices(key,query.get('symbol',[''])[0])
+                elif url.path=='/api/prices':result=operations.prices(key,query.get('symbol',[''])[0],query.get('as_of',[None])[0])
                 elif url.path=='/api/revision':result=operations.revision_view(key,query.get('report_id',[None])[0],
                     int(query.get('offset',['0'])[0]),query.get('symbol',[''])[0],query.get('source',[''])[0],query.get('date',[''])[0])
                 else:return self.send(404,{'error':'요청한 화면을 찾을 수 없습니다.'})

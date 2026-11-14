@@ -81,6 +81,12 @@ class Operations:
     def latest_signals(self, *args, **kwargs):
         return self.queries.latest_signals(*args, **kwargs)
 
+    def candidate_dates(self, *args, **kwargs):
+        return self.queries.candidate_dates(*args, **kwargs)
+
+    def candidate_selection(self, *args, **kwargs):
+        return self.queries.candidate_selection(*args, **kwargs)
+
     def guidance(self, *args, **kwargs):
         return self.queries.guidance(*args, **kwargs)
 

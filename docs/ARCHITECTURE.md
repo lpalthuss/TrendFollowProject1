@@ -14,6 +14,10 @@
 - `operations/queries.py`: 화면 조회와 운용 안내.
 - `operations/jobs.py`: 작업 제출·공유 기록·실행 상태 관리.
 - `operations/actions.py`: 데이터 갱신·분석·모의 처리·정정 복구 실행 연결.
+- `candidate_universe.py`: 완료 거래일의 KIS 종목 마스터로 시장 후보군을 날짜별 보존하고, 기존 계좌의 다음 거래일 후보군·보유 종목 관리 입력을 분리.
+- `krx_open_api.py`: 별도 인증키로 KRX 날짜별 종목기본정보·일별매매정보를 조회해 최근 누락 거래일의 후보군을 다른 기준으로 저장한다. 출처와 적용 기준을 함께 보존하며 KIS 스냅샷을 덮어쓰지 않는다.
+- `pykrx_universe.py`: KRX 로그인으로 조회한 과거 날짜별 종목 목록과 전종목 거래정보에서 후보군을 선정한다. KIS 전용 상태 필드가 없다는 차이를 저장한다.
+- `market_candidate_analysis.py`: 저장된 날짜별 시장 후보군에 계좌의 전략 규칙을 읽기 전용으로 적용한다. 새 종목의 과거 일봉은 별도 캐시에 보충하고 날짜별 분석 결과를 계좌 거래 기록과 분리해 저장한다.
 - `operations/intraday.py`: 장중 프로세스와 관측 제어.
 - `operations/__init__.py`: 기존 Operations 메서드를 유지하는 조합 진입점. 시각은 주입 가능한 clock으로 받는다.
 - `ui_service.py`: 기존 Operations import 경로의 호환 진입점.

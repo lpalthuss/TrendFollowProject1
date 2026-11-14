@@ -183,6 +183,96 @@ def test_missing_mansfield_is_unknown_not_failed_and_signal_columns_are_allowlis
     assert all('APP_SECRET' not in row for row in rows)
 
 
+def test_old_signals_show_52_week_status_from_saved_prices_without_reprocessing(ops):
+    w=create(ops)
+    day='2026-11-06'
+    dates=pd.bdate_range(end=day,periods=253)
+    prices=pd.DataFrame([
+        dict(date=str(date.date()),symbol=symbol,high=100+i)
+        for symbol,count in [('DEMO01',253),('DEMO02',240)]
+        for i,date in enumerate(dates[-count:])
+    ])
+    prices.to_csv(ops.path(w['data_dir'])/'prices.csv',index=False)
+    signal=ops.home/'analyses'/w['id']/day/'signals.csv'
+    signal.parent.mkdir(parents=True)
+    pd.DataFrame([
+        dict(date=day,symbol='DEMO01',reference_price=400),
+        dict(date=day,symbol='DEMO02',reference_price=400),
+    ]).to_csv(signal,index=False)
+    before=signal.read_bytes()
+    rows={row['symbol']:row for row in ops.snapshot(w['id'])['rows']}
+    assert rows['DEMO01']['prior_52w_high']==351
+    assert rows['DEMO01']['high52_breakout'] is True
+    assert rows['DEMO02'].get('prior_52w_high') is None
+    assert signal.read_bytes()==before
+    earlier=pd.DataFrame([
+        dict(date=str(date.date()),symbol='DEMO02',high=120)
+        for date in dates[:13]
+    ])
+    pd.concat([prices,earlier]).to_csv(ops.path(w['data_dir'])/'prices.csv',index=False)
+    updated={row['symbol']:row for row in ops.snapshot(w['id'])['rows']}
+    assert updated['DEMO02']['prior_52w_high']==338
+    assert updated['DEMO02']['high52_breakout'] is True
+    assert signal.read_bytes()==before
+
+
+def test_candidate_dates_include_saved_account_days_and_select_without_changing_account(ops):
+    w=create(ops)
+    job=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
+    assert job['status']=='completed', job.get('error')
+    before=ops.path(w['state']).read_bytes()
+    dates=ops.candidate_dates(w['id'])
+    assert '2026-11-06' in dates['signal_dates']
+    selected=ops.snapshot(w['id'],'2026-11-06')
+    assert selected['as_of']=='2026-11-06' and selected['rows']
+    assert ops.path(w['state']).read_bytes()==before
+
+
+def test_enabling_daily_candidates_keeps_one_account_and_prior_state(ops):
+    from trendfollow.candidate_universe import enable_daily_account
+
+    w=create(ops)
+    job=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
+    assert job['status']=='completed', job.get('error')
+    before=ops.path(w['state']).read_bytes()
+    policy=enable_daily_account(ops,w)
+    updated=ops.workspace(w['id'])
+    assert policy['enabled_after']=='2026-11-06'
+    assert updated['id']==w['id'] and updated['data_dir']!=w['data_dir']
+    assert updated['universe']!=w['universe']
+    assert ops.snapshot(w['id'])['status']=='ready'
+    assert ops.path(w['state']).read_bytes()==before
+    assert len([row for row in ops.workspaces() if row['id']==w['id']])==1
+
+
+def test_daily_job_passes_the_dated_selection_into_the_same_account(ops, monkeypatch):
+    from trendfollow.candidate_universe import enable_daily_account, selection_home
+    from trendfollow.operations import actions
+
+    w=create(ops)
+    first=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
+    assert first['status']=='completed', first.get('error')
+    enable_daily_account(ops,w)
+    folder=selection_home(ops.root)/'2026-11-09'
+    folder.mkdir(parents=True)
+    base=pd.read_csv(ops.path(ops.workspace(w['id'])['universe']),dtype={'symbol':str})
+    base.iloc[:2].to_csv(folder/'universe.csv',index=False)
+    pd.DataFrame(columns=['symbol','reason']).to_csv(folder/'added.csv',index=False)
+    pd.DataFrame(columns=['symbol','reason']).to_csv(folder/'removed.csv',index=False)
+    (folder/'summary.json').write_text(json.dumps({'as_of':'2026-11-09','count':2}),encoding='utf-8')
+    calls=[]
+    monkeypatch.setattr(actions,'daily_run',lambda *args,**kwargs: calls.append((args,kwargs)) or {'status':'processed'})
+    monkeypatch.setattr('trendfollow.candidate_universe.backfill_added_history',lambda *args,**kwargs: [])
+    monkeypatch.setattr(ops,'clock',lambda:datetime.fromisoformat('2026-11-09T18:00:00+09:00'))
+    job=wait_job(ops,ops.submit(dict(workspace=w['id'],action='daily',as_of='2026-11-09')))
+    assert job['status']=='completed', job.get('error')
+    assert len(calls)==1
+    args,kwargs=calls[0]
+    assert args[2]==ops.path(w['state']) and args[3]=='2026-11-09'
+    assert '2026-11-09' in kwargs['universe_by_session']
+    assert ops.path(w['state']).exists()
+
+
 def test_old_closed_intraday_signals_are_never_current_and_accounts_are_isolated(ops):
     w=create(ops)
     run=ops.run_path('a'*16)
@@ -304,6 +394,11 @@ def test_revision_replay_is_a_separate_frozen_account_and_continue_preserves_sou
     new=ops.workspace(replay['result']['workspace_id'])
     assert new['mode']=='recalculation' and ops.state(new)['last_date']=='2026-11-06'
     assert ops.path(w['state']).read_bytes()==original
+    same_day_analysis=wait_job(ops,ops.submit(dict(workspace=new['id'],action='analyze',as_of='2026-11-06')))
+    assert same_day_analysis['status']=='completed',same_day_analysis
+    later_analysis=wait_job(ops,ops.submit(dict(workspace=new['id'],action='analyze',as_of='2026-11-09')))
+    assert later_analysis['status']=='failed'
+    assert '2026-11-06까지만 저장' in later_analysis['error']
     with pytest.raises(ValueError,match='고정 자료'):ops.submit(dict(workspace=new['id'],action='daily',as_of='2026-11-06'))
     with pytest.raises(ValueError,match='확인'):ops.submit(dict(workspace=w['id'],action='revision_continue',as_of='2026-11-06',report_id=report['id']))
     continued=wait_job(ops,ops.submit(dict(workspace=w['id'],action='revision_continue',as_of='2026-11-06',report_id=report['id'],reviewed=True,price_reviewed=True)))

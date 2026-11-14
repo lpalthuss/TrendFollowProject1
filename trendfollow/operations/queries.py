@@ -2,13 +2,33 @@
 
 from dataclasses import asdict
 from datetime import datetime
+from functools import lru_cache
 import hashlib
 import json
 import re
 import pandas as pd
 from .common import read_csv, json_rows
 
-SIGNAL_FIELDS = "symbol name sector benchmark date reference_price rs_percentile excess_return mansfield_rs allocation_score weekly_trend eligible_history volume_ratio avg_turnover atr stop_price stop_fraction signal signal_rs signal_mansfield signal_entry_path prior_52w_high high52_breakout setup_phase setup_ready setup_trigger setup_entry setup_invalidated setup_resistance setup_retracement setup_retracement_today setup_base_bars setup_volume_ratio setup_range_ratio sector_action sector_peer_count sector_up_fraction sector_excess_return sector_action_scope quantity planned_risk cash_required allocation_reason market_unit_regime market_unit_cap rs_exit_weak rs_exit_value".split()
+SIGNAL_FIELDS = "symbol name sector industry_name benchmark date open high low close reference_price rs_percentile excess_return mansfield_rs allocation_score weekly_trend eligible_history volume_ratio avg_turnover atr stop_price stop_fraction signal signal_rs signal_mansfield signal_entry_path prior_52w_high high52_breakout setup_phase setup_ready setup_trigger setup_entry setup_invalidated setup_resistance setup_retracement setup_retracement_today setup_base_bars setup_volume_ratio setup_range_ratio sector_action sector_peer_count sector_up_fraction sector_action_scope quantity planned_risk cash_required allocation_reason market_unit_regime market_unit_cap rs_exit_weak rs_exit_value".split()
+
+
+@lru_cache(maxsize=8)
+def _legacy_52w_highs(prices_path, _modified_ns, _size, as_of):
+    """Read-only display values for signals saved before 52-week fields existed."""
+    prices = pd.read_csv(
+        prices_path, usecols=["date", "symbol", "high"], dtype={"symbol": str}
+    )
+    prices = prices[prices.date.astype(str).le(as_of)].sort_values(["symbol", "date"])
+    highs = {}
+    for symbol, rows in prices.groupby("symbol", sort=False):
+        previous = rows.high.iloc[-253:-1]
+        if (
+            len(rows) >= 253
+            and str(rows.date.iloc[-1])[:10] == as_of
+            and previous.notna().all()
+        ):
+            highs[symbol] = float(previous.max())
+    return highs
 
 
 class OperationsQueries:
@@ -16,6 +36,9 @@ class OperationsQueries:
         self.context = context
 
     def pulse(self, key, as_of=None):
+        from ..candidate_universe import policy_path, selection_home
+        from ..market_candidate_analysis import analysis_home
+
         self.context.refresh_jobs()
         w = self.context.workspace(key)
         paths = [
@@ -23,6 +46,10 @@ class OperationsQueries:
             self.context.path(w["config"]),
             self.context.path(w["universe"]),
             self.context.root / "data/industries/peer-returns.csv",
+            selection_home(self.context.root),
+            analysis_home(self.context.root, w["id"]),
+            policy_path(self.context.root, w["id"]),
+            self.context.registry,
         ]
         signal = self.context.latest_signals(w)
         if signal:
@@ -38,9 +65,17 @@ class OperationsQueries:
         )
 
     def latest_signals(self, w, as_of=None):
+        if as_of and re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of):
+            from ..market_candidate_analysis import latest_analysis
+
+            market = latest_analysis(self.context.root, w["id"], as_of)
+            if market:
+                return market / "signals.csv"
         state = self.context.state(w)
         candidates = []
-        if state:
+        if as_of and re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of):
+            candidates.append(self.context.path(w["state"]).parent / as_of / "signals.csv")
+        elif state:
             candidates.append(
                 self.context.path(w["state"]).parent
                 / state["last_date"]
@@ -56,6 +91,47 @@ class OperationsQueries:
                 pd.read_csv(p, usecols=["date"], nrows=1).date.astype(str).str[:10].eq(as_of).any()
             )]
         return max(available, key=lambda p: p.stat().st_mtime_ns) if available else None
+
+    def candidate_dates(self, key):
+        from ..candidate_universe import available_selections, latest_completed_session
+        from ..krx_sessions import calendar
+
+        w = self.context.workspace(key)
+        root = self.context.path(w["state"]).parent
+        processed = [p.name for p in root.glob("????-??-??") if (p / "signals.csv").is_file()]
+        analysis_root = self.context.home / "analyses" / w["id"]
+        for signal in analysis_root.glob("*/signals.csv") if analysis_root.exists() else []:
+            header = pd.read_csv(signal, usecols=["date"], nrows=1)
+            if not header.empty:
+                processed.append(str(header.date.iloc[0])[:10])
+        from ..market_candidate_analysis import analysis_home
+
+        market_root = analysis_home(self.context.root, w["id"])
+        if market_root.exists():
+            market_dates = [p.name for p in market_root.iterdir() if p.is_dir()
+                            and any((run / "signals.csv").is_file() for run in p.iterdir() if run.is_dir())]
+            processed.extend(market_dates)
+        else:
+            market_dates = []
+        selections = available_selections(self.context.root)
+        now = self.context.now()
+        completed = latest_completed_session(now)
+        exchange = calendar(int(completed[:4]))
+        reference_dates = [completed]
+        for _ in range(4):
+            reference_dates.append(exchange.previous_session(reference_dates[-1]).date().isoformat())
+        return dict(signal_dates=sorted(set(processed), reverse=True),
+                    market_analysis_dates=sorted(set(market_dates), reverse=True),
+                    selection_dates=selections,
+                    reference_dates=reference_dates,
+                    candidate_sources=["kis", "krx_open_api", "pykrx"],
+                    capture_as_of=completed,
+                    capture_available=now.date().isoformat() == completed and completed not in selections)
+
+    def candidate_selection(self, as_of):
+        from ..candidate_universe import display_selection
+
+        return display_selection(self.context.root, as_of)
 
     def guidance(self, key, as_of=None):
         w = self.context.workspace(key)
@@ -152,11 +228,12 @@ class OperationsQueries:
             report=report, policy=read_policy(state_path), rows=rows, total=total
         )
 
-    def snapshot(self, key):
+    def snapshot(self, key, market_as_of=None):
+        from ..candidate_universe import read_policy
         w = self.context.workspace(key)
         rules, limits = self.context.configuration(w)
         state = self.context.state(w)
-        signal = self.context.latest_signals(w)
+        signal = self.context.latest_signals(w, market_as_of)
         frame = read_csv(signal) if signal else pd.DataFrame()
         fields = [c for c in SIGNAL_FIELDS if c in frame]
         rows = json_rows(frame[fields])
@@ -167,7 +244,7 @@ class OperationsQueries:
             if r.get("industry_name")
         }
         for row in rows:
-            row["industry_name"] = industry_names.get(
+            row["industry_name"] = row.get("industry_name") or industry_names.get(
                 row.get("symbol"), row.get("sector")
             )
             row["rs_pass"] = (
@@ -264,6 +341,19 @@ class OperationsQueries:
             != hashlib.sha256(self.context.path(w["config"]).read_bytes()).hexdigest()
         ):
             status = "configuration_mismatch"
+        if status != "configuration_mismatch" and rows and "prior_52w_high" not in fields:
+            prices_path = self.context.path(w["data_dir"]) / "prices.csv"
+            if prices_path.is_file():
+                day = str(frame.date.iloc[0])[:10]
+                stat = prices_path.stat()
+                highs = _legacy_52w_highs(
+                    str(prices_path), stat.st_mtime_ns, stat.st_size, day
+                )
+                for row in rows:
+                    high = highs.get(row.get("symbol"))
+                    if high is not None and row.get("reference_price") is not None:
+                        row["prior_52w_high"] = high
+                        row["high52_breakout"] = row["reference_price"] > high
         as_of = (
             str(frame.date.iloc[0])[:10]
             if not frame.empty and "date" in frame
@@ -271,6 +361,7 @@ class OperationsQueries:
         )
         return dict(
             workspace=w,
+            candidate_policy=read_policy(self.context.root, w["id"]),
             rules=asdict(rules),
             limits=asdict(limits),
             status=status,
@@ -303,7 +394,7 @@ class OperationsQueries:
             )
         return value
 
-    def prices(self, key, symbol):
+    def prices(self, key, symbol, as_of=None):
         w = self.context.workspace(key)
         if not re.fullmatch("[0-9A-Z]{6}", symbol):
             raise ValueError("종목코드를 확인하세요.")
@@ -316,16 +407,23 @@ class OperationsQueries:
             rows = chunk[chunk.symbol.eq(symbol)]
             if not rows.empty:
                 result.extend(json_rows(rows))
+        extra = self.context.root / "outputs" / "ui" / "market-analyses" / "extra-prices.csv"
+        if extra.is_file():
+            for chunk in pd.read_csv(extra, dtype={"symbol": str}, chunksize=100000):
+                rows = chunk[chunk.symbol.eq(symbol)]
+                if not rows.empty:
+                    existing = {item["date"] for item in result}
+                    result.extend(item for item in json_rows(rows) if item["date"] not in existing)
         state = self.context.state(w)
-        date = state["last_date"] if state else "9999-12-31"
-        signal = self.context.latest_signals(w)
+        date = as_of or (state["last_date"] if state else "9999-12-31")
+        signal = self.context.latest_signals(w) if not as_of else None
         if signal:
             header = pd.read_csv(signal, usecols=["date"], nrows=1)
             if not header.empty:
                 date = str(header.date.iloc[0])[:10]
         return [
             r
-            for r in result
+            for r in sorted(result, key=lambda item: item["date"])
             if r["date"] <= date
             and all(r.get(k, 0) > 0 for k in ["open", "high", "low", "close"])
         ][-180:]
