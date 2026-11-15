@@ -131,6 +131,44 @@ def test_create_new_configuration_never_overwrites_templates_or_initializes_acco
     assert snap['cash']==10000000 and snap['files_ready']
 
 
+def test_account_archive_preserves_history_and_can_be_restored(ops):
+    w=create(ops)
+    job=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
+    assert job['status']=='completed'
+    before=ops.path(w['state']).read_bytes()
+    summary=next(row for row in ops.workspace_summaries() if row['id']==w['id'])
+    assert summary['account_as_of']=='2026-11-06'
+    assert not summary.get('archived_at')
+    archived=ops.set_archived(w['id'],True)
+    assert archived['archived_at']
+    assert ops.path(w['state']).read_bytes()==before
+    assert ops.workspace(w['id'])['archived_at']==archived['archived_at']
+    assert ops.set_archived(w['id'],True)['archived_at']==archived['archived_at']
+    assert 'archived_at' not in ops.set_archived(w['id'],False)
+    assert ops.path(w['state']).read_bytes()==before
+    with pytest.raises(ValueError,match='기본 계좌'):ops.set_archived('baseline',True)
+    with pytest.raises(ValueError,match='보관 상태'):ops.set_archived(w['id'],'true')
+
+
+def test_account_rename_changes_only_registry_name(ops):
+    w=create(ops)
+    job=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
+    assert job['status']=='completed'
+    state_before=ops.path(w['state']).read_bytes()
+    config_before=ops.path(w['config']).read_bytes()
+    renamed=ops.rename_workspace(w['id'],'  새 이름  ')
+    assert renamed['name']=='새 이름'
+    assert renamed['id']==w['id']
+    assert ops.workspace(w['id'])['name']=='새 이름'
+    assert ops.path(w['state']).read_bytes()==state_before
+    assert ops.path(w['config']).read_bytes()==config_before
+    assert ops.snapshot(w['id'])['status']=='ready'
+    with pytest.raises(ValueError,match='기본 계좌'):ops.rename_workspace('baseline','새 이름')
+    with pytest.raises(ValueError,match='1~60자'):ops.rename_workspace(w['id'],'  ')
+    with pytest.raises(ValueError,match='1~60자'):ops.rename_workspace(w['id'],'가'*61)
+    with pytest.raises(ValueError,match='찾을 수 없습니다'):ops.rename_workspace('missing','새 이름')
+
+
 def test_invalid_risk_and_pyramiding_configuration_is_rejected_before_saving(ops):
     with pytest.raises(ValueError,match='2%'):create(ops,limits=asdict(Limits(max_trade_risk=.03)))
     with pytest.raises(ValueError):create(ops,rules=asdict(Rules(pyramiding_enabled=True)))
@@ -342,7 +380,7 @@ def test_price_chart_returns_only_fifteen_months_through_selected_day(ops):
     assert '2026-11-13' not in dates
 
 
-def test_comparison_market_chart_uses_same_source_prices_as_market_analysis(ops,project):
+def test_comparison_chart_uses_frozen_account_prices(ops,project):
     original=create(ops)
     comparison=create(ops)
     original_path=ops.path(original['data_dir'])/'prices.csv'
@@ -352,14 +390,17 @@ def test_comparison_market_chart_uses_same_source_prices_as_market_analysis(ops,
     fresh['date']='2026-11-13'
     fresh['volume']=123456
     pd.concat([prices,fresh],ignore_index=True).to_csv(original_path,index=False)
-    stale=project/'stale-prices'
+    stale=ops.path(comparison['state']).parent/'recalculation-inputs'
     stale.mkdir()
     prices.to_csv(stale/'prices.csv',index=False)
-    comparison.update(mode='recalculation',source_workspace=original['id'],data_dir='stale-prices')
+    comparison.update(mode='recalculation',source_workspace=original['id'],
+                      data_dir=str(stale.relative_to(project)))
     ops.accounts.update_workspace(comparison)
     rows=ops.prices(comparison['id'],symbol,as_of='2026-11-13')
-    assert rows[-1]['date']=='2026-11-13'
-    assert rows[-1]['volume']==123456
+    expected=prices.loc[prices.symbol.eq(symbol)].sort_values('date').iloc[-1]
+    assert rows[-1]['date']==expected['date']
+    assert rows[-1]['volume']==expected['volume']
+    assert all(row['date']!='2026-11-13' for row in rows)
 
 
 def test_price_chart_daily_atr_uses_account_wilder_period_and_full_history(ops):

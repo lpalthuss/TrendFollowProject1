@@ -53,7 +53,7 @@ def make_server(root,port=8765):
             if not self.authenticated():return self.send(403,{'error':'UI 페이지를 먼저 여세요.'})
             try:
                 key=query.get('workspace',[''])[0]
-                if url.path=='/api/bootstrap':result=dict(workspaces=operations.workspaces(),presets=operations.presets(),csrf=token)
+                if url.path=='/api/bootstrap':result=dict(workspaces=operations.workspace_summaries(),presets=operations.presets(),csrf=token)
                 elif url.path=='/api/snapshot':result=operations.snapshot(key)
                 elif url.path=='/api/candidate/dates':result=operations.candidate_dates(key)
                 elif url.path=='/api/candidate/day':
@@ -85,6 +85,8 @@ def make_server(root,port=8765):
                 if not isinstance(payload,dict):raise ValueError('JSON 객체가 필요합니다.')
                 path=urlsplit(self.path).path
                 if path=='/api/workspaces':result=operations.create_workspace(payload)
+                elif path=='/api/workspaces/archive':result=operations.set_archived(payload.get('workspace'),payload.get('archived'))
+                elif path=='/api/workspaces/rename':result=operations.rename_workspace(payload.get('workspace'),payload.get('name'))
                 elif path=='/api/jobs':result=operations.submit(payload)
                 elif path=='/api/revision/policy':result=operations.revision_policy(payload)
                 elif path=='/api/watch/start':result=operations.start_watch(payload)

@@ -15,6 +15,16 @@
       </div>
       <label class="eyebrow" for="workspace">운용 계좌</label
       ><select id="workspace"></select>
+      <label class="account-archive-toggle"><input id="show-archived" type="checkbox" /> 보관 계좌 표시</label>
+      <button id="toggle-account-archive" type="button" class="quiet account-archive-button"></button>
+      <details id="rename-account" class="account-rename">
+        <summary>계좌 이름 변경</summary>
+        <form id="rename-account-form">
+          <label for="rename-account-name">새 계좌 이름</label>
+          <input id="rename-account-name" maxlength="60" required />
+          <button type="submit" class="quiet">이름 저장</button>
+        </form>
+      </details>
       <p id="account-status" class="muted"></p>
       <nav>
         <button class="nav active" data-view="workflow">

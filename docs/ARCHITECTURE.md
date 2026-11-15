@@ -10,7 +10,7 @@
 - `strategy.py`: 단일 기준일 후보 선별과 이유 표시.
 - `backtest.py`: 시계열 특징 구성과 연구용 체결 시뮬레이션. 선별과 같은 지표·조건을 사용한다.
 - `workflow.py`: 저장된 계좌의 일별 처리와 입출력 검증.
-- `operations/accounts.py`: 계좌 목록·설정 저장과 경로 검증.
+- `operations/accounts.py`: 계좌 목록·설정 저장·표시 이름·보관 상태와 경로 검증. 이름 변경과 보관은 레지스트리만 변경하고 계좌 파일을 유지한다.
 - `operations/queries.py`: 화면 조회와 운용 안내.
 - `operations/jobs.py`: 작업 제출·공유 기록·실행 상태 관리.
 - `operations/actions.py`: 데이터 갱신·분석·모의 처리·정정 복구 실행 연결.

@@ -1,9 +1,11 @@
 """Accounts responsibilities for the local operations UI."""
 
 from dataclasses import asdict
+from datetime import datetime
 import json
 import math
 import uuid
+from zoneinfo import ZoneInfo
 from ..risk import Limits
 from ..config import Rules
 from ..workflow import save_json
@@ -70,6 +72,15 @@ class WorkspaceStore:
             for k, v in BUILTINS.items()
         ]
         return rows + self.context.registry_rows()
+
+    def workspace_summaries(self):
+        rows = []
+        for workspace in self.workspaces():
+            row = dict(workspace)
+            state = self.state(row)
+            row["account_as_of"] = state["last_date"] if state else None
+            rows.append(row)
+        return rows
 
     def workspace(self, key):
         for row in self.context.workspaces():
@@ -160,3 +171,41 @@ class WorkspaceStore:
                 self.registry,
                 [row if x["id"] == row["id"] else x for x in self.registry_rows()],
             )
+
+    def set_archived(self, key, archived):
+        if type(archived) is not bool:
+            raise ValueError("계좌 보관 상태를 확인하세요.")
+        if key in BUILTINS:
+            raise ValueError("기본 계좌는 보관할 수 없습니다.")
+        with self.context.lock, control_lock(self.registry):
+            rows = self.registry_rows()
+            row = next((item for item in rows if item["id"] == key), None)
+            if row is None:
+                raise ValueError("계좌를 찾을 수 없습니다.")
+            self.context.refresh_jobs()
+            if archived and any(
+                job["workspace"] == key and job["status"] in {"queued", "running", "unconfirmed"}
+                for job in self.context.jobs.values()
+            ):
+                raise ValueError("이 계좌의 작업이 끝난 뒤 보관하세요.")
+            updated = dict(row)
+            if archived:
+                updated["archived_at"] = row.get("archived_at") or datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
+            else:
+                updated.pop("archived_at", None)
+            save_json(self.registry, [updated if item["id"] == key else item for item in rows])
+            return updated
+
+    def rename_workspace(self, key, name):
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
+            raise ValueError("계좌 이름은 1~60자로 입력하세요.")
+        if key in BUILTINS:
+            raise ValueError("기본 계좌의 이름은 변경할 수 없습니다.")
+        with self.context.lock, control_lock(self.registry):
+            rows = self.registry_rows()
+            row = next((item for item in rows if item["id"] == key), None)
+            if row is None:
+                raise ValueError("계좌를 찾을 수 없습니다.")
+            updated = dict(row, name=name.strip())
+            save_json(self.registry, [updated if item["id"] == key else item for item in rows])
+            return updated

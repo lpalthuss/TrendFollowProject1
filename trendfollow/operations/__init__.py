@@ -63,6 +63,15 @@ class Operations:
     def workspaces(self, *args, **kwargs):
         return self.accounts.workspaces(*args, **kwargs)
 
+    def workspace_summaries(self, *args, **kwargs):
+        return self.accounts.workspace_summaries(*args, **kwargs)
+
+    def set_archived(self, *args, **kwargs):
+        return self.accounts.set_archived(*args, **kwargs)
+
+    def rename_workspace(self, *args, **kwargs):
+        return self.accounts.rename_workspace(*args, **kwargs)
+
     def workspace(self, *args, **kwargs):
         return self.accounts.workspace(*args, **kwargs)
 

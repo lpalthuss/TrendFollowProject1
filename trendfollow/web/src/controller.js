@@ -48,10 +48,19 @@ function render() {
     r = s.rules,
     rows = s.rows,
     ready = rows.length > 0;
+  const selectedAccount = boot.workspaces.find((w) => w.id === s.workspace.id);
+  if (selectedAccount) {
+    selectedAccount.account_as_of = s.account_as_of;
+    const option = Array.from($("workspace").options).find(
+      (item) => item.value === s.workspace.id,
+    );
+    if (option) option.textContent = accountOptionLabel(selectedAccount);
+  }
   $("context").textContent =
     `${s.workspace.name} · ${s.as_of || "분석 전"} 완료 종가 · ${r.rs_method === "percentile" ? "RS 순위" : "Mansfield RS"} · ${r.entry_method === "setup" ? "파동 셋업" : "돌파 기준선"}`;
-  $("account-status").textContent =
-    s.status === "not_started"
+  $("account-status").textContent = s.workspace.archived_at
+    ? "보관 계좌 · 자료 유지됨"
+    : s.status === "not_started"
       ? "미시작 · 설정 저장됨"
       : s.status === "configuration_mismatch"
         ? "설정 불일치 · 기존 계좌 보존"

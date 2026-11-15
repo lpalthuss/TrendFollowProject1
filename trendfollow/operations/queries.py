@@ -399,16 +399,11 @@ class OperationsQueries:
 
     def prices(self, key, symbol, as_of=None):
         w = self.context.workspace(key)
-        source = (
-            self.context.workspace(w["source_workspace"])
-            if w.get("mode") == "recalculation" and w.get("source_workspace")
-            else w
-        )
         if not re.fullmatch("[0-9A-Z]{6}", symbol):
             raise ValueError("종목코드를 확인하세요.")
         result = []
         for chunk in pd.read_csv(
-            self.context.path(source["data_dir"]) / "prices.csv",
+            self.context.path(w["data_dir"]) / "prices.csv",
             dtype={"symbol": str},
             chunksize=100000,
         ):
@@ -416,7 +411,7 @@ class OperationsQueries:
             if not rows.empty:
                 result.extend(json_rows(rows))
         extra = self.context.root / "outputs" / "ui" / "market-analyses" / "extra-prices.csv"
-        if extra.is_file():
+        if w.get("mode") != "recalculation" and extra.is_file():
             for chunk in pd.read_csv(extra, dtype={"symbol": str}, chunksize=100000):
                 rows = chunk[chunk.symbol.eq(symbol)]
                 if not rows.empty:
