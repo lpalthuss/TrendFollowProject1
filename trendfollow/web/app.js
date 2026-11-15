@@ -1105,7 +1105,10 @@ if (typeof document !== "undefined") {
     const root = $("stock-table");
     const body = root.querySelector("tbody");
     if (!body) return;
-    if (root.dataset.sortColumn === "4" && root.dataset.sortDirection !== "none") {
+    if (
+      root.dataset.sortColumn === "4" &&
+      root.dataset.sortDirection !== "none"
+    ) {
       renderStocks();
       return;
     }
@@ -1187,7 +1190,8 @@ if (typeof document !== "undefined") {
         ],
         [
           "종가 / 52주 고가",
-          (r) => `${number(r.close ?? r.reference_price)} / ${r.prior_52w_high == null ? "자료 부족" : number(r.prior_52w_high)}`,
+          (r) =>
+            `${number(r.close ?? r.reference_price)} / ${r.prior_52w_high == null ? "자료 부족" : number(r.prior_52w_high)}`,
           { sortable: false },
         ],
         [
@@ -1435,9 +1439,201 @@ if (typeof document !== "undefined") {
       }),
     );
   }
+  let chartRows = [];
+  let chartRequest = 0;
+  let chartEnd = "";
+  function drawDetailChart() {
+    const target = $("detail-chart");
+    const months = Number($("chart-months").value);
+    $("chart-months-value").textContent = `${months}개월`;
+    if (!chartRows.length) return;
+    const end = chartEnd;
+    const first = new Date(`${end}T00:00:00Z`);
+    const day = first.getUTCDate();
+    first.setUTCDate(1);
+    first.setUTCMonth(first.getUTCMonth() - months);
+    first.setUTCDate(
+      Math.min(
+        day,
+        new Date(
+          Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0),
+        ).getUTCDate(),
+      ),
+    );
+    const start = first.toISOString().slice(0, 10);
+    const p = chartRows.filter((bar) => bar.date >= start && bar.date <= end);
+    target.replaceChildren();
+    if (!p.length) {
+      target.textContent = "선택한 기간에 표시할 일봉이 없습니다.";
+      return;
+    }
+    const candle = $("chart-candle").getAttribute("aria-pressed") === "true";
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    const width = 900;
+    svg.setAttribute("viewBox", `0 0 ${width} 295`);
+    svg.setAttribute("role", "img");
+    svg.setAttribute("tabindex", "0");
+    svg.setAttribute(
+      "aria-label",
+      `${months}개월 ${candle ? "캔들" : "종가 선"} 차트, ${p[0].date}부터 ${p.at(-1).date}까지`,
+    );
+    const min = Math.min(...p.map((bar) => Number(bar.low))) * 0.98;
+    const max = Math.max(...p.map((bar) => Number(bar.high))) * 1.02;
+    const y = (value) => 174 - ((value - min) * 150) / (max - min || 1);
+    const x = (index) => 50 + ((width - 80) * (index + 0.5)) / p.length;
+    const barWidth = Math.min(5, ((width - 80) / p.length) * 0.72);
+    const maxVolume = Math.max(1, ...p.map((bar) => Number(bar.volume) || 0));
+    const shape = (name, attributes, parent = svg) => {
+      const node = document.createElementNS(ns, name);
+      for (const [key, value] of Object.entries(attributes))
+        node.setAttribute(key, value);
+      parent.append(node);
+      return node;
+    };
+    if (candle) {
+      p.forEach((bar, index) => {
+        const center = x(index);
+        const rise = Number(bar.close) >= Number(bar.open);
+        const color = rise ? "#b33f38" : "#276eaa";
+        const group = shape("g", {});
+        shape(
+          "line",
+          {
+            x1: center,
+            x2: center,
+            y1: y(bar.high),
+            y2: y(bar.low),
+            stroke: color,
+            "stroke-width": 1.3,
+          },
+          group,
+        );
+        const top = Math.min(y(bar.open), y(bar.close));
+        shape(
+          "rect",
+          {
+            x: center - barWidth / 2,
+            y: top,
+            width: barWidth,
+            height: Math.max(1, Math.abs(y(bar.open) - y(bar.close))),
+            fill: color,
+          },
+          group,
+        );
+      });
+    } else {
+      shape("polyline", {
+        points: p.map((bar, index) => `${x(index)},${y(bar.close)}`).join(" "),
+        fill: "none",
+        stroke: "#14796c",
+        "stroke-width": 2,
+      });
+    }
+    shape("line", {
+      x1: 50,
+      x2: width - 30,
+      y1: 195,
+      y2: 195,
+      stroke: "#d8e0dc",
+    });
+    p.forEach((bar, index) => {
+      const rise = Number(bar.close) >= Number(bar.open);
+      const height = Math.max(1, ((Number(bar.volume) || 0) / maxVolume) * 48);
+      shape("rect", {
+        x: x(index) - barWidth / 2,
+        y: 253 - height,
+        width: barWidth,
+        height,
+        fill: rise ? "#b33f38" : "#276eaa",
+        opacity: 0.65,
+      });
+    });
+    const cursor = shape("line", {
+      x1: 0,
+      x2: 0,
+      y1: 20,
+      y2: 255,
+      stroke: "#506b60",
+      "stroke-width": 1,
+      "stroke-dasharray": "3 3",
+      visibility: "hidden",
+      "pointer-events": "none",
+    });
+    let hovered = p.length - 1;
+    const showBar = (index, showCursor = true) => {
+      hovered = Math.max(0, Math.min(p.length - 1, index));
+      const bar = p[hovered];
+      const atrMovement =
+        bar.atr_up_multiple == null || bar.atr_down_multiple == null
+          ? "상·하 변동 계산 불가"
+          : `상승 변동 ${number(bar.atr_up_multiple, 2)}배 · 하락 변동 ${number(bar.atr_down_multiple, 2)}배`;
+      $("chart-hover").textContent =
+        `${bar.date} · 시가 ${number(bar.open)}원 · 고가 ${number(bar.high)}원 · 저가 ${number(bar.low)}원 · 종가 ${number(bar.close)}원 · 거래량 ${number(bar.volume)}주 · ATR(${snapshot.rules.atr_days}) ${bar.atr == null ? "자료 부족" : `${number(bar.atr, 2)}원 (${atrMovement})`}`;
+      cursor.setAttribute("x1", x(hovered));
+      cursor.setAttribute("x2", x(hovered));
+      cursor.setAttribute("visibility", showCursor ? "visible" : "hidden");
+    };
+    svg.onpointermove = (event) => {
+      const rect = svg.getBoundingClientRect();
+      const position = ((event.clientX - rect.left) * width) / rect.width;
+      showBar(Math.floor(((position - 50) * p.length) / (width - 80)));
+    };
+    svg.onpointerleave = () => showBar(p.length - 1, false);
+    svg.onkeydown = (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      showBar(hovered + (event.key === "ArrowRight" ? 1 : -1));
+    };
+    for (const [left, top, label] of [
+      [5, 28, `${number(max)}원`],
+      [5, 184, `${number(min)}원`],
+      [5, 215, "거래량"],
+      [5, 253, `${number(maxVolume)}주`],
+      [50, 282, p[0].date],
+      [width - 135, 282, p.at(-1).date],
+    ]) {
+      shape("text", {
+        x: left,
+        y: top,
+        "font-size": 11,
+        fill: "#657079",
+      }).textContent = label;
+    }
+    for (const fraction of [0.25, 0.5, 0.75]) {
+      const index = Math.round((p.length - 1) * fraction);
+      shape("text", {
+        x: x(index) - 34,
+        y: 282,
+        "font-size": 11,
+        fill: "#657079",
+      }).textContent = p[index].date;
+    }
+    target.append(svg);
+    showBar(p.length - 1, false);
+    target.append(
+      el(
+        "p",
+        `선택 ${months}개월 전체 표시: ${p[0].date}~${p.at(-1).date} · ${p.length}거래일 · 상·하 변동 배수는 전일 종가에서 당일 고가·저가까지의 폭 ÷ ATR · 연구용 수정 가격 · 빨강 상승 / 파랑 하락 · 마우스나 방향키로 날짜 확인`,
+        "muted",
+      ),
+    );
+  }
+  for (const type of ["candle", "line"]) {
+    $(`chart-${type}`).onclick = () => {
+      $("chart-candle").setAttribute("aria-pressed", String(type === "candle"));
+      $("chart-line").setAttribute("aria-pressed", String(type === "line"));
+      drawDetailChart();
+    };
+  }
+  $("chart-months").oninput = drawDetailChart;
   async function detail(row) {
+    const request = ++chartRequest;
+    chartRows = [];
+    chartEnd = candidateView?.as_of || snapshot.as_of;
     $("stock-detail").hidden = false;
     $("detail-name").textContent = `${row.name || row.symbol} · ${row.symbol}`;
+    $("chart-hover").textContent = "";
     $("detail-chart").textContent = "가격 이력을 읽고 있습니다.";
     facts("detail-facts", [
       ["주봉 추세", row.weekly_trend ? "통과" : "미통과·자료 부족"],
@@ -1472,49 +1668,21 @@ if (typeof document !== "undefined") {
       const p = await api(
         `/api/prices?workspace=${workspace}&symbol=${row.symbol}&as_of=${candidateView?.as_of || snapshot.as_of}`,
       );
-      $("detail-chart").replaceChildren();
+      if (request !== chartRequest) return;
       if (!p.length) {
         $("detail-chart").textContent = "표시 가능한 가격 이력이 없습니다.";
         return;
       }
-      const ns = "http://www.w3.org/2000/svg",
-        svg = document.createElementNS(ns, "svg");
-      svg.setAttribute("viewBox", "0 0 900 210");
-      const values = p.map((x) => x.close),
-        min = Math.min(...values) * 0.98,
-        max = Math.max(...values) * 1.02;
-      const xy = (v, i) =>
-        `${50 + (i * 820) / Math.max(1, p.length - 1)},${170 - ((v - min) * 145) / (max - min || 1)}`;
-      const line = document.createElementNS(ns, "polyline");
-      line.setAttribute("points", p.map((x, i) => xy(x.close, i)).join(" "));
-      line.setAttribute("fill", "none");
-      line.setAttribute("stroke", "#14796c");
-      line.setAttribute("stroke-width", "2");
-      svg.append(line);
-      for (const [x, y, text] of [
-        [5, 30, number(max) + "원"],
-        [5, 175, number(min) + "원"],
-        [50, 202, p[0].date],
-        [765, 202, p.at(-1).date],
-      ]) {
-        const t = document.createElementNS(ns, "text");
-        t.setAttribute("x", x);
-        t.setAttribute("y", y);
-        t.setAttribute("font-size", "10");
-        t.setAttribute("fill", "#657079");
-        t.textContent = text;
-        svg.append(t);
+      if (!("atr" in p[0]) || !("atr_up_multiple" in p[0])) {
+        $("chart-hover").textContent = "";
+        $("detail-chart").textContent =
+          "UI 서버가 이전 가격 조회 코드를 사용 중입니다. UI 서버를 재시작한 뒤 화면을 새로고침하세요.";
+        return;
       }
-      $("detail-chart").append(
-        svg,
-        el(
-          "p",
-          "최근 최대 180개 완료 일봉 종가 · 저장된 연구용 수정 가격 · 원 단위",
-          "muted",
-        ),
-      );
+      chartRows = p;
+      drawDetailChart();
     } catch (e) {
-      $("detail-chart").textContent = e.message;
+      if (request === chartRequest) $("detail-chart").textContent = e.message;
     }
   }
   $("detail-close").onclick = () => ($("stock-detail").hidden = true);

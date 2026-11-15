@@ -312,6 +312,61 @@ def test_historical_analysis_chart_does_not_show_future_prices(ops):
     assert rows and all(row['date']<='2026-11-05' for row in rows)
 
 
+def test_price_chart_returns_only_fifteen_months_through_selected_day(ops):
+    w=create(ops)
+    path=ops.path(w['data_dir'])/'prices.csv'
+    prices=pd.read_csv(path,dtype={'symbol':str})
+    symbol=prices.symbol.iloc[0]
+    sample=prices.loc[prices.symbol.eq(symbol)].iloc[[0]].copy()
+    additions=[]
+    for day in ('2025-08-11','2025-08-12','2026-11-13'):
+        row=sample.copy()
+        row['date']=day
+        additions.append(row)
+    pd.concat([prices,*additions],ignore_index=True).to_csv(path,index=False)
+    rows=ops.prices(w['id'],symbol,as_of='2026-11-12')
+    dates={row['date'] for row in rows}
+    assert '2025-08-11' not in dates
+    assert '2025-08-12' in dates
+    assert '2026-11-13' not in dates
+
+
+def test_comparison_market_chart_uses_same_source_prices_as_market_analysis(ops,project):
+    original=create(ops)
+    comparison=create(ops)
+    original_path=ops.path(original['data_dir'])/'prices.csv'
+    prices=pd.read_csv(original_path,dtype={'symbol':str})
+    symbol=prices.symbol.iloc[0]
+    fresh=prices.loc[prices.symbol.eq(symbol)].iloc[[0]].copy()
+    fresh['date']='2026-11-13'
+    fresh['volume']=123456
+    pd.concat([prices,fresh],ignore_index=True).to_csv(original_path,index=False)
+    stale=project/'stale-prices'
+    stale.mkdir()
+    prices.to_csv(stale/'prices.csv',index=False)
+    comparison.update(mode='recalculation',source_workspace=original['id'],data_dir='stale-prices')
+    ops.accounts.update_workspace(comparison)
+    rows=ops.prices(comparison['id'],symbol,as_of='2026-11-13')
+    assert rows[-1]['date']=='2026-11-13'
+    assert rows[-1]['volume']==123456
+
+
+def test_price_chart_daily_atr_uses_account_wilder_period_and_full_history(ops):
+    from trendfollow.indicators import wilder_atr_series
+    w=create(ops,rules=asdict(Rules(atr_days=5)))
+    prices=pd.read_csv(ops.path(w['data_dir'])/'prices.csv',dtype={'symbol':str})
+    symbol=prices.symbol.iloc[0]
+    history=prices.loc[prices.symbol.eq(symbol)].sort_values('date')
+    history=history.loc[history.date.le('2026-11-12')]
+    expected=wilder_atr_series(history,5).iloc[-1]
+    rows=ops.prices(w['id'],symbol,as_of='2026-11-12')
+    assert rows[-1]['atr']==pytest.approx(expected)
+    previous_close=history.close.iloc[-2]
+    assert rows[-1]['atr_up_multiple']==pytest.approx(max(0,history.high.iloc[-1]-previous_close)/expected)
+    assert rows[-1]['atr_down_multiple']==pytest.approx(max(0,previous_close-history.low.iloc[-1])/expected)
+    assert all(row['atr'] is None or row['atr']>0 for row in rows)
+
+
 def test_serial_job_queue_rejects_overlapping_mutations(ops,monkeypatch):
     w=create(ops);started=threading.Event();release=threading.Event()
     def execute(key,*args):

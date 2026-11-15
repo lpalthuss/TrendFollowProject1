@@ -802,7 +802,16 @@
             <h2 id="detail-name"></h2>
             <button id="detail-close" class="quiet">닫기</button>
           </div>
-          <div id="detail-chart"></div>
+          <div class="chart-controls">
+            <div class="chart-type" role="group" aria-label="차트 종류">
+              <button id="chart-candle" type="button" aria-pressed="true">캔들</button>
+              <button id="chart-line" type="button" aria-pressed="false">선</button>
+            </div>
+            <label for="chart-months">기간 <strong id="chart-months-value">6개월</strong></label>
+            <input id="chart-months" type="range" min="1" max="15" value="6" />
+          </div>
+          <div id="chart-hover" class="chart-hover" aria-label="선택한 일봉 정보"></div>
+          <div id="detail-chart" class="chart-frame"></div>
           <div id="detail-facts" class="facts"></div>
           <section id="detail-setup" class="setup-detail" hidden>
             <h3>셋업 조건 확인</h3>

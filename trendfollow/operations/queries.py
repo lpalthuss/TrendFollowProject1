@@ -8,6 +8,7 @@ import json
 import re
 import pandas as pd
 from .common import read_csv, json_rows
+from ..indicators import wilder_atr_series
 
 SIGNAL_FIELDS = "symbol name sector industry_name benchmark date open high low close reference_price rs_percentile excess_return mansfield_rs allocation_score weekly_trend eligible_history volume_ratio avg_turnover atr stop_price stop_fraction signal signal_rs signal_mansfield signal_entry_path prior_52w_high high52_breakout setup_phase setup_ready setup_trigger setup_entry setup_invalidated setup_resistance setup_retracement setup_retracement_today setup_base_bars setup_volume_ratio setup_range_ratio sector_action sector_peer_count sector_up_fraction sector_action_scope quantity planned_risk cash_required allocation_reason market_unit_regime market_unit_cap rs_exit_weak rs_exit_value".split()
 
@@ -398,11 +399,16 @@ class OperationsQueries:
 
     def prices(self, key, symbol, as_of=None):
         w = self.context.workspace(key)
+        source = (
+            self.context.workspace(w["source_workspace"])
+            if w.get("mode") == "recalculation" and w.get("source_workspace")
+            else w
+        )
         if not re.fullmatch("[0-9A-Z]{6}", symbol):
             raise ValueError("종목코드를 확인하세요.")
         result = []
         for chunk in pd.read_csv(
-            self.context.path(w["data_dir"]) / "prices.csv",
+            self.context.path(source["data_dir"]) / "prices.csv",
             dtype={"symbol": str},
             chunksize=100000,
         ):
@@ -417,15 +423,34 @@ class OperationsQueries:
                     existing = {item["date"] for item in result}
                     result.extend(item for item in json_rows(rows) if item["date"] not in existing)
         state = self.context.state(w)
-        date = as_of or (state["last_date"] if state else "9999-12-31")
+        date = as_of or (state["last_date"] if state else max((r["date"] for r in result), default="1970-01-01"))
         signal = self.context.latest_signals(w) if not as_of else None
         if signal:
             header = pd.read_csv(signal, usecols=["date"], nrows=1)
             if not header.empty:
                 date = str(header.date.iloc[0])[:10]
-        return [
+        valid = [
             r
             for r in sorted(result, key=lambda item: item["date"])
             if r["date"] <= date
             and all(r.get(k, 0) > 0 for k in ["open", "high", "low", "close"])
-        ][-180:]
+        ]
+        if not valid:
+            return []
+        period = self.context.configuration(w)[0].atr_days
+        atr = wilder_atr_series(pd.DataFrame(valid), period)
+        chart_start = (pd.Timestamp(date) - pd.DateOffset(months=15)).date().isoformat()
+        chart = []
+        for index, row in enumerate(valid):
+            if row["date"] < chart_start:
+                continue
+            daily_atr = atr.iloc[index]
+            previous_close = float(valid[index - 1]["close"]) if index else None
+            multiples_available = previous_close is not None and pd.notna(daily_atr) and daily_atr > 0
+            chart.append({
+                **row,
+                "atr": None if pd.isna(daily_atr) else float(daily_atr),
+                "atr_up_multiple": max(0.0, float(row["high"]) - previous_close) / daily_atr if multiples_available else None,
+                "atr_down_multiple": max(0.0, previous_close - float(row["low"])) / daily_atr if multiples_available else None,
+            })
+        return chart
