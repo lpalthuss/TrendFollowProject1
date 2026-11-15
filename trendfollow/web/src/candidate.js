@@ -198,7 +198,7 @@ function renderCandidateBoard() {
     }),
   );
   $("candidate-selection-note").textContent = candidateSelection
-    ? `${candidateView?.as_of || snapshot.as_of} ${candidateSelection.summary.source === "KRX Open API" ? "KRX 날짜별 재구성" : candidateSelection.summary.source === "pykrx" ? "pykrx 날짜별 재구성" : "KIS 마스터 선정"} ${number(candidateSelection.summary.count)}종목 · 전회 대비 편입 ${number(candidateSelection.summary.added)} / 제외 ${number(candidateSelection.summary.removed)} · 그 외 분석 종목 ${number(groups.other.length)}종목. ${candidateView?.analysis?.mode === "market_candidate_research" ? "선정 종목 조건 계산 완료 · 계좌 반영 없음." : "저장된 시장 종목 전체의 조건 계산은 위 '저장된 시장 후보 계산'에서 실행합니다."} ${candidateSelection.summary.note || ""} ${candidateSelection.summary.comparison_available && candidateSelection.summary.comparison_same_source === false ? "비교 원천이 달라 편입·제외 수치에 기준 차이가 포함됩니다." : ""} ${run ? "감시 종목의 상태는 KIS 장중 잠정 시세입니다." : "위 상태는 저장된 종가 자료 기준입니다."}`
+    ? `${candidateView?.as_of || snapshot.as_of} · ${candidateSelection.summary.source === "KRX Open API" ? "KRX Open API" : candidateSelection.summary.source === "pykrx" ? "pykrx" : "KIS"}로 ${number(candidateSelection.summary.count)}종목 선정 · 전회 대비 편입 ${number(candidateSelection.summary.added)} / 제외 ${number(candidateSelection.summary.removed)}. ${candidateView?.analysis?.mode === "market_candidate_research" ? "선택 계좌의 전략 조건 계산 완료 · 계좌 매매 기록에는 미반영." : "전략 조건 계산 전."} ${candidateSelection.summary.comparison_available && candidateSelection.summary.comparison_same_source === false ? "전회와 자료 원천이 달라 편입·제외 수치에 기준 차이가 있습니다." : ""} ${run ? "감시 종목만 KIS 장중 잠정 시세를 표시합니다." : "가격 판정은 저장된 종가 기준입니다."}`
     : `${candidateView?.as_of || snapshot.as_of || "선택한 날짜"}의 시장 후보군 선정 기록은 없습니다. 아래는 저장된 계좌 분석 결과이며 당시 시장 전체 목록의 편입·제외는 확인할 수 없습니다.${snapshot.workspace.source_workspace ? " 원계좌의 저장된 날짜를 보려면 위 원계좌 버튼을 누르세요." : ""}`;
   const criteria = $("candidate-criteria-note");
   const selectionSummary = candidateSelection?.summary;
@@ -211,7 +211,7 @@ function renderCandidateBoard() {
     const amount = threshold >= 100_000_000
       ? `${number(threshold / 100_000_000, 1)}억원`
       : `${number(threshold / 10_000, 1)}만원`;
-    criteria.textContent = `이 날짜의 후보 선정 기준 · ${basis} ${amount} 이상 · 종목 유형과 거래 여부 등 추가 조건 적용`;
+    criteria.textContent = `1단계 선정 기준 · ${basis} ${amount} 이상 · 보통주 여부와 거래 상태 등도 확인`;
   }
   $("candidate-members").hidden = !candidateSelection;
   if (candidateSelection) {
@@ -330,6 +330,18 @@ async function loadCandidateDate(date) {
   renderMarketActions();
 }
 
+function candidateDateLabel(dates, date) {
+  const hasSelection = dates.selection_dates.includes(date);
+  const hasMarketAnalysis = dates.market_analysis_dates?.includes(date);
+  const hasAccountAnalysis = dates.account_analysis_dates?.includes(date);
+  if (hasMarketAnalysis && hasAccountAnalysis) return "시장·계좌 조건 계산 기록 있음";
+  if (hasMarketAnalysis) return "시장 후보 조건 계산 기록 있음";
+  if (hasSelection && hasAccountAnalysis) return "시장 종목 선정·계좌 계산 기록 있음";
+  if (hasSelection) return "시장 종목 선정 기록 있음";
+  if (hasAccountAnalysis) return "계좌 조건 계산 기록 있음";
+  return "후보·계좌 기록 없음";
+}
+
 async function loadCandidateDates() {
   const selected = workspace;
   const datesResult = await api(
@@ -344,7 +356,7 @@ async function loadCandidateDates() {
   $("candidate-source-account").hidden = !source;
   if (source)
     $("candidate-source-account").textContent =
-      `원계좌로 이동 · ${boot.workspaces.find((w) => w.id === source)?.name || "원계좌"}`;
+      `원계좌로 이동해 계속 처리 · ${boot.workspaces.find((w) => w.id === source)?.name || "원계좌"}`;
   const select = $("candidate-date");
   const prior = select.value;
   const dates = [
@@ -358,16 +370,7 @@ async function loadCandidateDates() {
     .reverse();
   select.replaceChildren(
     ...dates.map((date) => {
-      const hasSelection = candidateDates.selection_dates.includes(date);
-      const hasMarketAnalysis = candidateDates.market_analysis_dates?.includes(date);
-      const hasAnalysis = candidateDates.signal_dates.includes(date);
-      const label = hasMarketAnalysis
-        ? "시장 후보 계산 완료"
-        : hasSelection
-        ? "시장 후보군 있음"
-        : hasAnalysis
-          ? "이 계좌 분석 있음"
-          : "계좌 분석·시장 기록 없음";
+      const label = candidateDateLabel(candidateDates, date);
       const option = el("option", `${date} · ${label}`);
       option.value = date;
       return option;

@@ -223,6 +223,7 @@ def test_candidate_dates_include_saved_account_days_and_select_without_changing_
     before=ops.path(w['state']).read_bytes()
     dates=ops.candidate_dates(w['id'])
     assert '2026-11-06' in dates['signal_dates']
+    assert '2026-11-06' in dates['account_analysis_dates']
     selected=ops.snapshot(w['id'],'2026-11-06')
     assert selected['as_of']=='2026-11-06' and selected['rows']
     assert ops.path(w['state']).read_bytes()==before

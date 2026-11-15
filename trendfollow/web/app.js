@@ -722,7 +722,7 @@ if (typeof document !== "undefined") {
       }),
     );
     $("candidate-selection-note").textContent = candidateSelection
-      ? `${candidateView?.as_of || snapshot.as_of} ${candidateSelection.summary.source === "KRX Open API" ? "KRX 날짜별 재구성" : candidateSelection.summary.source === "pykrx" ? "pykrx 날짜별 재구성" : "KIS 마스터 선정"} ${number(candidateSelection.summary.count)}종목 · 전회 대비 편입 ${number(candidateSelection.summary.added)} / 제외 ${number(candidateSelection.summary.removed)} · 그 외 분석 종목 ${number(groups.other.length)}종목. ${candidateView?.analysis?.mode === "market_candidate_research" ? "선정 종목 조건 계산 완료 · 계좌 반영 없음." : "저장된 시장 종목 전체의 조건 계산은 위 '저장된 시장 후보 계산'에서 실행합니다."} ${candidateSelection.summary.note || ""} ${candidateSelection.summary.comparison_available && candidateSelection.summary.comparison_same_source === false ? "비교 원천이 달라 편입·제외 수치에 기준 차이가 포함됩니다." : ""} ${run ? "감시 종목의 상태는 KIS 장중 잠정 시세입니다." : "위 상태는 저장된 종가 자료 기준입니다."}`
+      ? `${candidateView?.as_of || snapshot.as_of} · ${candidateSelection.summary.source === "KRX Open API" ? "KRX Open API" : candidateSelection.summary.source === "pykrx" ? "pykrx" : "KIS"}로 ${number(candidateSelection.summary.count)}종목 선정 · 전회 대비 편입 ${number(candidateSelection.summary.added)} / 제외 ${number(candidateSelection.summary.removed)}. ${candidateView?.analysis?.mode === "market_candidate_research" ? "선택 계좌의 전략 조건 계산 완료 · 계좌 매매 기록에는 미반영." : "전략 조건 계산 전."} ${candidateSelection.summary.comparison_available && candidateSelection.summary.comparison_same_source === false ? "전회와 자료 원천이 달라 편입·제외 수치에 기준 차이가 있습니다." : ""} ${run ? "감시 종목만 KIS 장중 잠정 시세를 표시합니다." : "가격 판정은 저장된 종가 기준입니다."}`
       : `${candidateView?.as_of || snapshot.as_of || "선택한 날짜"}의 시장 후보군 선정 기록은 없습니다. 아래는 저장된 계좌 분석 결과이며 당시 시장 전체 목록의 편입·제외는 확인할 수 없습니다.${snapshot.workspace.source_workspace ? " 원계좌의 저장된 날짜를 보려면 위 원계좌 버튼을 누르세요." : ""}`;
     const criteria = $("candidate-criteria-note");
     const selectionSummary = candidateSelection?.summary;
@@ -735,7 +735,7 @@ if (typeof document !== "undefined") {
       const amount = threshold >= 100_000_000
         ? `${number(threshold / 100_000_000, 1)}억원`
         : `${number(threshold / 10_000, 1)}만원`;
-      criteria.textContent = `이 날짜의 후보 선정 기준 · ${basis} ${amount} 이상 · 종목 유형과 거래 여부 등 추가 조건 적용`;
+      criteria.textContent = `1단계 선정 기준 · ${basis} ${amount} 이상 · 보통주 여부와 거래 상태 등도 확인`;
     }
     $("candidate-members").hidden = !candidateSelection;
     if (candidateSelection) {
@@ -854,6 +854,18 @@ if (typeof document !== "undefined") {
     renderMarketActions();
   }
 
+  function candidateDateLabel(dates, date) {
+    const hasSelection = dates.selection_dates.includes(date);
+    const hasMarketAnalysis = dates.market_analysis_dates?.includes(date);
+    const hasAccountAnalysis = dates.account_analysis_dates?.includes(date);
+    if (hasMarketAnalysis && hasAccountAnalysis) return "시장·계좌 조건 계산 기록 있음";
+    if (hasMarketAnalysis) return "시장 후보 조건 계산 기록 있음";
+    if (hasSelection && hasAccountAnalysis) return "시장 종목 선정·계좌 계산 기록 있음";
+    if (hasSelection) return "시장 종목 선정 기록 있음";
+    if (hasAccountAnalysis) return "계좌 조건 계산 기록 있음";
+    return "후보·계좌 기록 없음";
+  }
+
   async function loadCandidateDates() {
     const selected = workspace;
     const datesResult = await api(
@@ -868,7 +880,7 @@ if (typeof document !== "undefined") {
     $("candidate-source-account").hidden = !source;
     if (source)
       $("candidate-source-account").textContent =
-        `원계좌로 이동 · ${boot.workspaces.find((w) => w.id === source)?.name || "원계좌"}`;
+        `원계좌로 이동해 계속 처리 · ${boot.workspaces.find((w) => w.id === source)?.name || "원계좌"}`;
     const select = $("candidate-date");
     const prior = select.value;
     const dates = [
@@ -882,16 +894,7 @@ if (typeof document !== "undefined") {
       .reverse();
     select.replaceChildren(
       ...dates.map((date) => {
-        const hasSelection = candidateDates.selection_dates.includes(date);
-        const hasMarketAnalysis = candidateDates.market_analysis_dates?.includes(date);
-        const hasAnalysis = candidateDates.signal_dates.includes(date);
-        const label = hasMarketAnalysis
-          ? "시장 후보 계산 완료"
-          : hasSelection
-          ? "시장 후보군 있음"
-          : hasAnalysis
-            ? "이 계좌 분석 있음"
-            : "계좌 분석·시장 기록 없음";
+        const label = candidateDateLabel(candidateDates, date);
         const option = el("option", `${date} · ${label}`);
         option.value = date;
         return option;
@@ -2533,23 +2536,30 @@ if (typeof document !== "undefined") {
       !!submittingAction ||
       currentJobs.some((j) => ["queued", "running"].includes(j.status));
     const savedMarket = candidateDates?.selection_dates.includes(date);
+    const marketCalculated = candidateDates?.market_analysis_dates?.includes(date);
+    const accountAlreadyProcessed = !!accountDate && !!date && date <= accountDate;
     $("candidate-analysis").textContent = savedMarket
-      ? `${date}까지 저장된 시장 후보 계산`
+      ? marketCalculated
+        ? `${date}까지 조건 계산 갱신`
+        : `${date}까지 시장 후보 조건 계산`
       : "먼저 시장 후보군을 저장하세요";
     for (const button of document.querySelectorAll(
-      '#market [data-action="market_analyze"], #market .action-strip [data-action="analyze"], #market .action-strip [data-action="paper"], #market .action-strip [data-action="daily"]',
+      '#market [data-action="market_analyze"], #market [data-action="analyze"], #market [data-action="paper"], #market [data-action="daily"]',
     )) {
       const action = button.dataset.action;
       const blocked =
         !date ||
         (action === "market_analyze" && !savedMarket) ||
         (action === "analyze" && analysisBlocked) ||
+        (action === "daily" && accountAlreadyProcessed) ||
         (!["analyze", "market_analyze"].includes(action) &&
           (frozen || (!!accountDate && date < accountDate)));
       button.disabled = busy || blocked;
       button.title = blocked
         ? action === "market_analyze"
           ? `${date || "선택 날짜"}의 시장 후보군을 먼저 저장하세요.`
+          : action === "daily" && accountAlreadyProcessed && !frozen
+          ? `${date}은 이미 계좌 처리 완료일 ${accountDate}까지 포함됩니다. 다음 미처리 거래일을 선택하세요.`
           : action === "analyze" && analysisBlocked
           ? frozen
             ? `정정 비교 계좌는 ${accountDate}에 고정돼 있습니다. 원계좌에서 선택한 날짜를 확인하세요.`
@@ -2559,19 +2569,26 @@ if (typeof document !== "undefined") {
             : `계좌 처리일 ${accountDate || "미시작"}과 후보 기준일 ${date || "미선택"}을 확인하세요.`
         : "";
     }
+    $("candidate-policy").disabled = busy || !accountDate || snapshot.status !== "ready" || frozen || Boolean(snapshot.workspace.builtin) || Boolean(snapshot.candidate_policy);
     const analysisNote = $("candidate-analysis-note");
     analysisNote.hidden = !analysisBlocked && !savedMarket;
     if (savedMarket)
-      analysisNote.textContent = `${date} 시장 후보군이 저장돼 있습니다. 위 '저장된 시장 후보 계산'은 해당 날짜까지 계산되지 않은 저장 날짜를 순서대로 분석합니다. 새 후보의 과거 일봉을 먼저 보충하며 계좌의 매매 기록은 바꾸지 않습니다.${analysisBlocked ? ` 아래 '계좌 후보 재계산'은 계좌 처리일 ${accountDate}에만 사용할 수 있습니다.` : ""}`;
+      analysisNote.textContent = marketCalculated
+        ? `${date} 시장 종목에 계좌의 전략 조건을 계산한 결과가 저장돼 있습니다. 표에는 통과·미통과 종목이 모두 보이며 계좌 매매 기록은 바뀌지 않았습니다.`
+        : `${date} 시장 종목 선정 기록이 있습니다. 조건 계산을 누르면 선택 계좌의 RS·진입 규칙으로 해당 날짜까지 미계산된 종목을 평가합니다. 계좌 매매 기록은 바뀌지 않습니다.`;
     else if (analysisBlocked)
       analysisNote.textContent = frozen
         ? `현재 계좌는 ${accountDate}에 고정된 정정 비교 계좌입니다. ${date} 계좌 후보 재계산은 원계좌에서 확인하세요.`
         : `현재 계좌 처리일은 ${accountDate}입니다. ${date} 계좌 후보 재계산은 해당 날짜까지 일별 처리한 뒤 가능합니다.`;
     $("market-action-note").textContent = frozen
-      ? `정정 비교 계좌 · 저장 종료일 ${accountDate}. 후보 재계산은 ${accountDate}에만 가능하며, 이후 날짜는 원계좌에서 확인하세요.`
+      ? `비활성화 이유: 이 정정 비교 계좌는 ${accountDate}에 고정돼 있습니다. ${date}까지 계속 처리하려면 위 '원계좌로 이동해 계속 처리'를 누르세요.`
+      : snapshot.workspace.builtin
+        ? "기본 계좌는 날짜별 후보군을 적용할 수 없습니다. 별도 일반 모의계좌에서 이어 처리하세요."
+      : accountDate && date === accountDate
+        ? `${date}까지 계좌 처리가 완료됐습니다. ${snapshot.candidate_policy ? `날짜별 후보군 설정은 ${snapshot.candidate_policy.enabled_after} 이후 거래일부터 적용되며 과거 기록에는 소급되지 않습니다.` : "다음 거래일부터 날짜별 종목을 쓰려면 먼저 위 적용 버튼을 누르세요."} 다음 미처리 거래일을 선택하면 가격 갱신·일별 처리를 할 수 있습니다.`
       : accountDate && date !== accountDate
-        ? `선택한 후보 기준일 ${date} · 계좌 처리일 ${accountDate}. 후보 재계산은 계좌 처리일에만 가능합니다.`
-        : `선택한 후보 기준일 ${date || "없음"}에 실행합니다. 후보 재계산은 계좌 기록을 바꾸지 않습니다.`;
+        ? `계좌 처리일 ${accountDate} → 선택 날짜 ${date}. '계좌 후보 재계산'은 처리 완료일에만 사용할 수 있습니다. ${snapshot.candidate_policy ? "날짜별 종목 적용 중이므로" : "날짜별 종목을 사용하려면 먼저 위 적용 버튼을 누른 뒤"} 누락 가격 갱신 + 일별 모의 처리를 실행하세요.`
+        : `계좌 처리일 ${accountDate || "없음"}. 저장된 가격으로 처리·재계산은 아래 '저장된 가격으로 처리·재계산'에서 선택합니다.`;
   }
   function renderFlow() {
     renderRecoveryControls();
@@ -3093,14 +3110,36 @@ if (typeof document !== "undefined") {
         : s.status === "configuration_mismatch"
           ? "설정 불일치 · 기존 계좌 보존"
           : "기존 계좌 · 설정 일치";
+    const frozen = s.workspace.mode === "recalculation";
+    const builtin = Boolean(s.workspace.builtin);
+    const accountContext = $("candidate-account-context");
+    accountContext.className = `candidate-account-context ${frozen ? "frozen" : builtin ? "unavailable" : ""}`;
+    $("candidate-account-title").textContent = frozen
+      ? `정정 비교 계좌 · ${s.account_as_of || "저장일 미확인"}에 고정`
+      : builtin
+        ? "기본 계좌 · 날짜별 후보군 적용 불가"
+        : s.candidate_policy
+          ? "일반 모의계좌 · 날짜별 후보군 적용 중"
+          : "일반 모의계좌 · 날짜별 후보군 미적용";
+    $("candidate-account-description").textContent = frozen
+      ? "시장 후보는 조회·조건 계산할 수 있지만 이 계좌의 날짜별 후보군 설정과 일별 처리는 할 수 없습니다. 원계좌로 이동해 이어 처리하세요."
+      : builtin
+        ? "시장 후보는 조회할 수 있습니다. 날짜별 후보군으로 이어 처리하려면 별도 일반 모의계좌가 필요합니다."
+        : s.candidate_policy
+          ? `${s.candidate_policy.enabled_after} 이후 거래일부터 저장된 날짜별 종목을 이 계좌의 일별 판단에 사용합니다.`
+          : "시장 후보 표에는 계좌 규칙으로 계산한 결과가 보이지만, 날짜별 종목 목록은 아직 계좌의 일별 처리에 적용되지 않았습니다.";
     $("candidate-policy").hidden = Boolean(
-      s.workspace.builtin ||
-        s.workspace.mode === "recalculation" ||
-        s.candidate_policy,
+      builtin || frozen || s.candidate_policy,
     );
-    $("candidate-policy-note").textContent = s.candidate_policy
-      ? `${s.candidate_policy.enabled_after}까지의 계좌 기록은 그대로 두고, 이후 거래일부터 날짜별 선정 기록을 사용합니다. 같은 계좌에서 이어 처리합니다. 새 편입 종목의 과거 일봉은 네이버로 준비하고 새 거래일은 선택한 원천으로 갱신합니다.`
-      : "날짜별 후보군 적용은 기존 계좌의 처리 완료일 이후부터 시작합니다. 이전 매매·보유 기록은 유지합니다.";
+    $("candidate-policy-note").textContent = frozen
+      ? "이 계좌는 정정 비교용으로 고정돼 있어 적용·일별 처리 버튼이 비활성화됩니다."
+      : builtin
+        ? "기본 계좌에서는 날짜별 후보군을 적용할 수 없습니다."
+        : s.candidate_policy
+          ? `적용 중 · ${s.candidate_policy.enabled_after}까지의 기록은 유지하고 다음 거래일부터 날짜별 선정 종목을 사용합니다.`
+          : s.account_as_of
+            ? `미적용 · 적용 버튼을 누르면 계좌 처리일 ${s.account_as_of} 이후부터 날짜별 선정 종목을 사용합니다.`
+            : "첫 거래일을 처리한 뒤 날짜별 후보군 적용을 켤 수 있습니다.";
     $("notice").hidden =
       s.status === "ready" && s.workspace.mode !== "recalculation";
     $("notice").textContent =

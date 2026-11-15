@@ -1060,6 +1060,143 @@ footer {
 .candidate-toolbar label {
   min-width: 260px;
 }
+.candidate-account-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 12px 0 16px;
+  padding: 14px 17px;
+  border: 1px solid #b7d6ca;
+  border-left: 5px solid #17836c;
+  border-radius: 6px;
+  background: #eaf6f0;
+  color: #164d3e;
+}
+.candidate-account-context.frozen {
+  border-color: #dfc49d;
+  border-left-color: #a86821;
+  background: #fff4e4;
+  color: #6a3d15;
+}
+.candidate-account-context.unavailable {
+  border-color: #d4d9d6;
+  border-left-color: #7d8982;
+  background: #f3f5f3;
+  color: #41534a;
+}
+.candidate-account-context strong {
+  display: block;
+  font-size: 14px;
+}
+.candidate-account-context p {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.candidate-account-context button {
+  flex: 0 0 auto;
+}
+.candidate-flow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.candidate-step {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid #cbdad5;
+  border-radius: 6px;
+  background: #fff;
+}
+.candidate-step-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 75px;
+}
+.candidate-step-heading > span {
+  display: grid;
+  place-items: center;
+  flex: 0 0 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #167b69;
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+}
+.candidate-step h3 {
+  margin: 2px 0 5px;
+  font-size: 14px;
+}
+.candidate-step-heading p,
+.candidate-step > p {
+  margin: 0 0 9px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.candidate-step-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+}
+.candidate-step-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #52665c;
+  font-size: 11px;
+}
+.candidate-step-controls select,
+.candidate-step-controls input,
+.candidate-step button {
+  width: 100%;
+}
+.candidate-step > button {
+  margin: 3px 0 10px;
+  white-space: normal;
+}
+.candidate-step .candidate-criteria-note {
+  margin: 0 0 10px;
+  padding: 7px 9px;
+  font-size: 11px;
+}
+.candidate-policy-note {
+  color: #244c70;
+  font-weight: 650;
+}
+.candidate-advanced-actions {
+  margin-top: 6px;
+  border-top: 1px solid #e1e8e3;
+  padding-top: 9px;
+  font-size: 11px;
+}
+.candidate-advanced-actions summary {
+  cursor: pointer;
+  color: #365d72;
+  font-weight: 650;
+}
+.candidate-advanced-actions .action-strip {
+  padding: 10px 0 0;
+}
+@media (max-width: 1150px) {
+  .candidate-flow {
+    grid-template-columns: 1fr;
+  }
+  .candidate-step-heading {
+    min-height: 0;
+    margin-bottom: 12px;
+  }
+}
+@media (max-width: 650px) {
+  .candidate-account-context {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
 .candidate-stage-board {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

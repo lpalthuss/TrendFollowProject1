@@ -104,6 +104,7 @@ class OperationsQueries:
             header = pd.read_csv(signal, usecols=["date"], nrows=1)
             if not header.empty:
                 processed.append(str(header.date.iloc[0])[:10])
+        account_dates = sorted(set(processed), reverse=True)
         from ..market_candidate_analysis import analysis_home
 
         market_root = analysis_home(self.context.root, w["id"])
@@ -121,6 +122,7 @@ class OperationsQueries:
         for _ in range(4):
             reference_dates.append(exchange.previous_session(reference_dates[-1]).date().isoformat())
         return dict(signal_dates=sorted(set(processed), reverse=True),
+                    account_analysis_dates=account_dates,
                     market_analysis_dates=sorted(set(market_dates), reverse=True),
                     selection_dates=selections,
                     reference_dates=reference_dates,

@@ -56,14 +56,36 @@ function render() {
       : s.status === "configuration_mismatch"
         ? "설정 불일치 · 기존 계좌 보존"
         : "기존 계좌 · 설정 일치";
+  const frozen = s.workspace.mode === "recalculation";
+  const builtin = Boolean(s.workspace.builtin);
+  const accountContext = $("candidate-account-context");
+  accountContext.className = `candidate-account-context ${frozen ? "frozen" : builtin ? "unavailable" : ""}`;
+  $("candidate-account-title").textContent = frozen
+    ? `정정 비교 계좌 · ${s.account_as_of || "저장일 미확인"}에 고정`
+    : builtin
+      ? "기본 계좌 · 날짜별 후보군 적용 불가"
+      : s.candidate_policy
+        ? "일반 모의계좌 · 날짜별 후보군 적용 중"
+        : "일반 모의계좌 · 날짜별 후보군 미적용";
+  $("candidate-account-description").textContent = frozen
+    ? "시장 후보는 조회·조건 계산할 수 있지만 이 계좌의 날짜별 후보군 설정과 일별 처리는 할 수 없습니다. 원계좌로 이동해 이어 처리하세요."
+    : builtin
+      ? "시장 후보는 조회할 수 있습니다. 날짜별 후보군으로 이어 처리하려면 별도 일반 모의계좌가 필요합니다."
+      : s.candidate_policy
+        ? `${s.candidate_policy.enabled_after} 이후 거래일부터 저장된 날짜별 종목을 이 계좌의 일별 판단에 사용합니다.`
+        : "시장 후보 표에는 계좌 규칙으로 계산한 결과가 보이지만, 날짜별 종목 목록은 아직 계좌의 일별 처리에 적용되지 않았습니다.";
   $("candidate-policy").hidden = Boolean(
-    s.workspace.builtin ||
-      s.workspace.mode === "recalculation" ||
-      s.candidate_policy,
+    builtin || frozen || s.candidate_policy,
   );
-  $("candidate-policy-note").textContent = s.candidate_policy
-    ? `${s.candidate_policy.enabled_after}까지의 계좌 기록은 그대로 두고, 이후 거래일부터 날짜별 선정 기록을 사용합니다. 같은 계좌에서 이어 처리합니다. 새 편입 종목의 과거 일봉은 네이버로 준비하고 새 거래일은 선택한 원천으로 갱신합니다.`
-    : "날짜별 후보군 적용은 기존 계좌의 처리 완료일 이후부터 시작합니다. 이전 매매·보유 기록은 유지합니다.";
+  $("candidate-policy-note").textContent = frozen
+    ? "이 계좌는 정정 비교용으로 고정돼 있어 적용·일별 처리 버튼이 비활성화됩니다."
+    : builtin
+      ? "기본 계좌에서는 날짜별 후보군을 적용할 수 없습니다."
+      : s.candidate_policy
+        ? `적용 중 · ${s.candidate_policy.enabled_after}까지의 기록은 유지하고 다음 거래일부터 날짜별 선정 종목을 사용합니다.`
+        : s.account_as_of
+          ? `미적용 · 적용 버튼을 누르면 계좌 처리일 ${s.account_as_of} 이후부터 날짜별 선정 종목을 사용합니다.`
+          : "첫 거래일을 처리한 뒤 날짜별 후보군 적용을 켤 수 있습니다.";
   $("notice").hidden =
     s.status === "ready" && s.workspace.mode !== "recalculation";
   $("notice").textContent =

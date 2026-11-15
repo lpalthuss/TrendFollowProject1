@@ -22,17 +22,19 @@ test("unknown candidate route names the server mismatch", async () => {
 test("frozen comparison account explains why a later candidate cannot be recalculated", () => {
   const analyze = { dataset: { action: "analyze" }, disabled: false };
   const marketAnalyze = { dataset: { action: "market_analyze" }, disabled: false };
+  const daily = { dataset: { action: "daily" }, disabled: false };
   const controls = {
     "candidate-date": { value: "2026-11-13" },
     "candidate-analysis": marketAnalyze,
     "candidate-analysis-note": { hidden: true, textContent: "" },
     "market-action-note": { textContent: "" },
+    "candidate-policy": { disabled: false },
   };
   const context = {
     $: (id) => (controls[id] ||= {}),
     document: { querySelectorAll: (query) =>
-      query.startsWith("#market [data-action") ? [marketAnalyze, analyze] : [] },
-    snapshot: { account_as_of: "2026-11-10", workspace: { mode: "recalculation" } },
+      query.startsWith("#market [data-action") ? [marketAnalyze, analyze, daily] : [] },
+    snapshot: { account_as_of: "2026-11-10", status: "ready", workspace: { mode: "recalculation" } },
     candidateDates: { signal_dates: [], selection_dates: ["2026-11-13"] },
     currentJobs: [],
     loading: false,
@@ -45,8 +47,53 @@ test("frozen comparison account explains why a later candidate cannot be recalcu
   context.renderMarketActions();
   assert.equal(analyze.disabled, true);
   assert.equal(marketAnalyze.disabled, false);
+  assert.equal(daily.disabled, true);
+  assert.equal(controls["candidate-policy"].disabled, true);
   assert.equal(controls["candidate-analysis-note"].hidden, false);
-  assert.match(controls["candidate-analysis-note"].textContent, /11-13.*시장 후보 계산.*11-10/);
+  assert.match(controls["candidate-analysis-note"].textContent, /11-13.*계좌의 RS·진입 규칙/);
+  assert.match(controls["market-action-note"].textContent, /11-10.*원계좌로 이동/);
+});
+
+test("date labels distinguish market selection, strategy analysis and account records", () => {
+  const context = { $: () => ({}) };
+  runInNewContext(readFileSync(join(__dirname, "../trendfollow/web/src/candidate.js"), "utf8"), context);
+  const dates = {
+    selection_dates: ["2026-11-11", "2026-11-12", "2026-11-13"],
+    market_analysis_dates: ["2026-11-12", "2026-11-13"],
+    account_analysis_dates: ["2026-11-10", "2026-11-13"],
+  };
+  assert.equal(context.candidateDateLabel(dates, "2026-11-10"), "계좌 조건 계산 기록 있음");
+  assert.equal(context.candidateDateLabel(dates, "2026-11-11"), "시장 종목 선정 기록 있음");
+  assert.equal(context.candidateDateLabel(dates, "2026-11-12"), "시장 후보 조건 계산 기록 있음");
+  assert.equal(context.candidateDateLabel(dates, "2026-11-13"), "시장·계좌 조건 계산 기록 있음");
+});
+
+test("a processed account date does not offer another catch-up run or retroactive candidate policy", () => {
+  const daily = { dataset: { action: "daily" }, disabled: false };
+  const controls = {
+    "candidate-date": { value: "2026-11-13" },
+    "candidate-analysis": { textContent: "" },
+    "candidate-analysis-note": { hidden: true, textContent: "" },
+    "candidate-policy": { disabled: false },
+    "market-action-note": { textContent: "" },
+  };
+  const context = {
+    $: (id) => (controls[id] ||= {}),
+    document: { querySelectorAll: () => [daily] },
+    snapshot: {
+      account_as_of: "2026-11-13",
+      status: "ready",
+      candidate_policy: { enabled_after: "2026-11-13" },
+      workspace: {},
+    },
+    candidateDates: { selection_dates: ["2026-11-13"], market_analysis_dates: ["2026-11-13"] },
+    currentJobs: [], loading: false, submittingAction: null,
+  };
+  runInNewContext(readFileSync(join(__dirname, "../trendfollow/web/src/workflow.js"), "utf8"), context);
+  context.renderMarketActions();
+  assert.equal(daily.disabled, true);
+  assert.equal(controls["candidate-policy"].disabled, true);
+  assert.match(controls["market-action-note"].textContent, /2026-11-13 이후 거래일부터.*소급되지/);
 });
 
 test("candidate stages distinguish confirmed close from live quote evidence", () => {

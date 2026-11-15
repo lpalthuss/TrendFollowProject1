@@ -23,23 +23,30 @@ function renderMarketActions() {
     !!submittingAction ||
     currentJobs.some((j) => ["queued", "running"].includes(j.status));
   const savedMarket = candidateDates?.selection_dates.includes(date);
+  const marketCalculated = candidateDates?.market_analysis_dates?.includes(date);
+  const accountAlreadyProcessed = !!accountDate && !!date && date <= accountDate;
   $("candidate-analysis").textContent = savedMarket
-    ? `${date}까지 저장된 시장 후보 계산`
+    ? marketCalculated
+      ? `${date}까지 조건 계산 갱신`
+      : `${date}까지 시장 후보 조건 계산`
     : "먼저 시장 후보군을 저장하세요";
   for (const button of document.querySelectorAll(
-    '#market [data-action="market_analyze"], #market .action-strip [data-action="analyze"], #market .action-strip [data-action="paper"], #market .action-strip [data-action="daily"]',
+    '#market [data-action="market_analyze"], #market [data-action="analyze"], #market [data-action="paper"], #market [data-action="daily"]',
   )) {
     const action = button.dataset.action;
     const blocked =
       !date ||
       (action === "market_analyze" && !savedMarket) ||
       (action === "analyze" && analysisBlocked) ||
+      (action === "daily" && accountAlreadyProcessed) ||
       (!["analyze", "market_analyze"].includes(action) &&
         (frozen || (!!accountDate && date < accountDate)));
     button.disabled = busy || blocked;
     button.title = blocked
       ? action === "market_analyze"
         ? `${date || "선택 날짜"}의 시장 후보군을 먼저 저장하세요.`
+        : action === "daily" && accountAlreadyProcessed && !frozen
+        ? `${date}은 이미 계좌 처리 완료일 ${accountDate}까지 포함됩니다. 다음 미처리 거래일을 선택하세요.`
         : action === "analyze" && analysisBlocked
         ? frozen
           ? `정정 비교 계좌는 ${accountDate}에 고정돼 있습니다. 원계좌에서 선택한 날짜를 확인하세요.`
@@ -49,19 +56,26 @@ function renderMarketActions() {
           : `계좌 처리일 ${accountDate || "미시작"}과 후보 기준일 ${date || "미선택"}을 확인하세요.`
       : "";
   }
+  $("candidate-policy").disabled = busy || !accountDate || snapshot.status !== "ready" || frozen || Boolean(snapshot.workspace.builtin) || Boolean(snapshot.candidate_policy);
   const analysisNote = $("candidate-analysis-note");
   analysisNote.hidden = !analysisBlocked && !savedMarket;
   if (savedMarket)
-    analysisNote.textContent = `${date} 시장 후보군이 저장돼 있습니다. 위 '저장된 시장 후보 계산'은 해당 날짜까지 계산되지 않은 저장 날짜를 순서대로 분석합니다. 새 후보의 과거 일봉을 먼저 보충하며 계좌의 매매 기록은 바꾸지 않습니다.${analysisBlocked ? ` 아래 '계좌 후보 재계산'은 계좌 처리일 ${accountDate}에만 사용할 수 있습니다.` : ""}`;
+    analysisNote.textContent = marketCalculated
+      ? `${date} 시장 종목에 계좌의 전략 조건을 계산한 결과가 저장돼 있습니다. 표에는 통과·미통과 종목이 모두 보이며 계좌 매매 기록은 바뀌지 않았습니다.`
+      : `${date} 시장 종목 선정 기록이 있습니다. 조건 계산을 누르면 선택 계좌의 RS·진입 규칙으로 해당 날짜까지 미계산된 종목을 평가합니다. 계좌 매매 기록은 바뀌지 않습니다.`;
   else if (analysisBlocked)
     analysisNote.textContent = frozen
       ? `현재 계좌는 ${accountDate}에 고정된 정정 비교 계좌입니다. ${date} 계좌 후보 재계산은 원계좌에서 확인하세요.`
       : `현재 계좌 처리일은 ${accountDate}입니다. ${date} 계좌 후보 재계산은 해당 날짜까지 일별 처리한 뒤 가능합니다.`;
   $("market-action-note").textContent = frozen
-    ? `정정 비교 계좌 · 저장 종료일 ${accountDate}. 후보 재계산은 ${accountDate}에만 가능하며, 이후 날짜는 원계좌에서 확인하세요.`
+    ? `비활성화 이유: 이 정정 비교 계좌는 ${accountDate}에 고정돼 있습니다. ${date}까지 계속 처리하려면 위 '원계좌로 이동해 계속 처리'를 누르세요.`
+    : snapshot.workspace.builtin
+      ? "기본 계좌는 날짜별 후보군을 적용할 수 없습니다. 별도 일반 모의계좌에서 이어 처리하세요."
+    : accountDate && date === accountDate
+      ? `${date}까지 계좌 처리가 완료됐습니다. ${snapshot.candidate_policy ? `날짜별 후보군 설정은 ${snapshot.candidate_policy.enabled_after} 이후 거래일부터 적용되며 과거 기록에는 소급되지 않습니다.` : "다음 거래일부터 날짜별 종목을 쓰려면 먼저 위 적용 버튼을 누르세요."} 다음 미처리 거래일을 선택하면 가격 갱신·일별 처리를 할 수 있습니다.`
     : accountDate && date !== accountDate
-      ? `선택한 후보 기준일 ${date} · 계좌 처리일 ${accountDate}. 후보 재계산은 계좌 처리일에만 가능합니다.`
-      : `선택한 후보 기준일 ${date || "없음"}에 실행합니다. 후보 재계산은 계좌 기록을 바꾸지 않습니다.`;
+      ? `계좌 처리일 ${accountDate} → 선택 날짜 ${date}. '계좌 후보 재계산'은 처리 완료일에만 사용할 수 있습니다. ${snapshot.candidate_policy ? "날짜별 종목 적용 중이므로" : "날짜별 종목을 사용하려면 먼저 위 적용 버튼을 누른 뒤"} 누락 가격 갱신 + 일별 모의 처리를 실행하세요.`
+      : `계좌 처리일 ${accountDate || "없음"}. 저장된 가격으로 처리·재계산은 아래 '저장된 가격으로 처리·재계산'에서 선택합니다.`;
 }
 function renderFlow() {
   renderRecoveryControls();
