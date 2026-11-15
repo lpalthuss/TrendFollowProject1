@@ -312,6 +312,17 @@ def test_historical_analysis_chart_does_not_show_future_prices(ops):
     assert rows and all(row['date']<='2026-11-05' for row in rows)
 
 
+def test_candidate_detail_exposes_saved_peer_excess_return(ops):
+    w=create(ops)
+    folder=ops.home/'analyses'/w['id']/'saved'
+    folder.mkdir(parents=True)
+    pd.DataFrame([dict(symbol='005930',date='2026-11-13',sector_peer_count=162,
+                       sector_up_fraction=0.747,sector_excess_return=0.0329)]).to_csv(folder/'signals.csv',index=False)
+    row=ops.snapshot(w['id'],'2026-11-13')['rows'][0]
+    assert row['sector_peer_count']==162
+    assert row['sector_excess_return']==pytest.approx(0.0329)
+
+
 def test_price_chart_returns_only_fifteen_months_through_selected_day(ops):
     w=create(ops)
     path=ops.path(w['data_dir'])/'prices.csv'

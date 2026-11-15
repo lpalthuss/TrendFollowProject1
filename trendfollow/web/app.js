@@ -1313,6 +1313,8 @@ if (typeof document !== "undefined") {
     section.hidden = snapshot.rules.entry_method !== "setup";
     if (section.hidden) return;
     const rules = snapshot.rules;
+    const beforeBase = ["seeking", "rising"].includes(row.setup_phase);
+    const unavailable = beforeBase ? "조정·베이스 형성 전" : "미확인";
     const known = (value) => typeof value === "number" && Number.isFinite(value);
     const checks = [
       [
@@ -1324,20 +1326,24 @@ if (typeof document !== "undefined") {
         "준비 조건",
         row.setup_ready === true
           ? "충족"
-          : row.setup_ready === false
-            ? "미충족"
-            : "미확인",
+          : beforeBase
+            ? unavailable
+            : row.setup_ready === false
+              ? "미충족"
+              : "미확인",
         row.setup_ready === true
           ? "pass"
-          : row.setup_ready === false
-            ? "fail"
-            : "unknown",
+          : beforeBase
+            ? "unknown"
+            : row.setup_ready === false
+              ? "fail"
+              : "unknown",
       ],
       [
         "준비 판정 반납 · 오늘 이전 베이스",
         known(row.setup_retracement)
           ? `${percent(row.setup_retracement)} / 기준 ${percent(rules.setup_max_retracement)} 이하`
-          : `미확인 / 기준 ${percent(rules.setup_max_retracement)} 이하`,
+          : `${unavailable} / 기준 ${percent(rules.setup_max_retracement)} 이하`,
         known(row.setup_retracement)
           ? row.setup_retracement <= rules.setup_max_retracement
             ? "pass"
@@ -1348,7 +1354,7 @@ if (typeof document !== "undefined") {
         "오늘 저가 포함 반납",
         known(row.setup_retracement_today)
           ? `${percent(row.setup_retracement_today)} / 기준 ${percent(rules.setup_max_retracement)} 이하`
-          : `미확인 / 기준 ${percent(rules.setup_max_retracement)} 이하`,
+          : `${unavailable} / 기준 ${percent(rules.setup_max_retracement)} 이하`,
         known(row.setup_retracement_today)
           ? row.setup_retracement_today <= rules.setup_max_retracement
             ? "pass"
@@ -1359,7 +1365,7 @@ if (typeof document !== "undefined") {
         "베이스 관측",
         known(row.setup_base_bars) && row.setup_resistance != null
           ? `${number(row.setup_base_bars)}거래일 / 기준 4거래일 이상`
-          : "미확인 / 기준 4거래일 이상",
+          : `${unavailable} / 기준 4거래일 이상`,
         known(row.setup_base_bars) && row.setup_resistance != null
           ? row.setup_base_bars >= 4
             ? "pass"
@@ -1370,7 +1376,7 @@ if (typeof document !== "undefined") {
         "거래량 수축비",
         known(row.setup_volume_ratio)
           ? `${number(row.setup_volume_ratio, 2)} / 기준 ${number(rules.setup_volume_contraction, 2)} 이하`
-          : `미확인 / 기준 ${number(rules.setup_volume_contraction, 2)} 이하`,
+          : `${unavailable} / 기준 ${number(rules.setup_volume_contraction, 2)} 이하`,
         known(row.setup_volume_ratio)
           ? row.setup_volume_ratio <= rules.setup_volume_contraction
             ? "pass"
@@ -1381,7 +1387,7 @@ if (typeof document !== "undefined") {
         "변동성 수축비",
         known(row.setup_range_ratio)
           ? `${number(row.setup_range_ratio, 2)} / 기준 ${number(rules.setup_range_contraction, 2)} 이하`
-          : `미확인 / 기준 ${number(rules.setup_range_contraction, 2)} 이하`,
+          : `${unavailable} / 기준 ${number(rules.setup_range_contraction, 2)} 이하`,
         known(row.setup_range_ratio)
           ? row.setup_range_ratio <= rules.setup_range_contraction
             ? "pass"
@@ -1392,7 +1398,7 @@ if (typeof document !== "undefined") {
         "셋업 돌파",
         row.setup_resistance != null
           ? `${row.setup_trigger === true ? "발생" : "미발생"} · 종가 ${number(row.reference_price)}원 / 저항 ${number(row.setup_resistance)}원`
-          : "미확인 / 저항 자료 없음",
+          : `${unavailable} / 저항 자료 없음`,
         row.setup_resistance == null
           ? "unknown"
           : row.setup_trigger === true
@@ -1405,7 +1411,7 @@ if (typeof document !== "undefined") {
           ? "무효화 발생"
           : row.setup_resistance != null
             ? "무효화 없음"
-            : "미확인",
+            : unavailable,
         row.setup_resistance == null
           ? "unknown"
           : row.setup_invalidated === true
@@ -1418,7 +1424,7 @@ if (typeof document !== "undefined") {
           ? "충족"
           : row.setup_entry === false && row.setup_resistance != null
             ? "미충족"
-            : "미확인",
+            : unavailable,
         row.setup_resistance == null
           ? "unknown"
           : row.setup_entry === true
@@ -1436,6 +1442,116 @@ if (typeof document !== "undefined") {
         const item = el("li", "", `setup-check ${state}`);
         item.append(el("span", label), el("strong", value));
         return item;
+      }),
+    );
+  }
+  function renderDetailHelp(rules) {
+    const groups = [
+      [
+        "추세·산업",
+        [
+          [
+            "주봉 추세",
+            `완료 주봉 종가가 ${rules.weekly_ma}주 평균보다 높고 평균도 상승 중인지 확인합니다. 최종 진입의 공통 조건입니다.`,
+          ],
+          [
+            "RS 순위 / Mansfield",
+            "시장 또는 기준 종목보다 강한 정도를 두 방식으로 보여줍니다. 계좌에서 선택한 RS 방식만 최종 진입에 사용합니다.",
+          ],
+          [
+            "산업 동료 수",
+            `같은 산업에서 자기 종목을 제외하고 당일 수익률을 확인한 종목 수입니다. 산업 액션의 계좌 기준은 ${number(rules.sector_min_peers)}종목 이상입니다.`,
+          ],
+          [
+            "자기 제외 동료 상승 비율",
+            `그 동료 중 당일 상승한 종목의 비율입니다. 산업 액션의 계좌 기준은 ${percent(rules.sector_min_breadth)} 이상입니다.`,
+          ],
+          [
+            "동료 초과수익",
+            "동료의 평균 수익률에서 각자의 기준 지수 수익률을 뺀 값입니다. 산업 액션은 이 값이 양수인지도 봅니다.",
+          ],
+          [
+            "산업 자료 범위",
+            "동료 집계에 사용한 산업 구성 기록의 종류입니다. 수익률이나 진입 조건의 점수가 아닙니다.",
+          ],
+        ],
+      ],
+    ];
+    if (rules.entry_method === "setup")
+      groups.push([
+        "파동 셋업",
+        [
+          [
+            "파동 단계",
+            "상승 탐색→상승 진행→조정·베이스로 이어집니다. 돌파 당일에는 다음 상승 파동으로 전환되어도 그날의 베이스 값은 남습니다.",
+          ],
+          [
+            "준비 판정 반납",
+            "확정된 파동 상승 폭 중 오늘 이전 베이스에서 되돌린 비율입니다. 준비 조건의 반납 한도를 확인합니다.",
+          ],
+          [
+            "오늘 저가 포함 반납",
+            "당일 저가까지 포함한 되돌림 비율입니다. 한도를 넘으면 셋업 무효화로 판단합니다.",
+          ],
+          [
+            "베이스 관측·준비 조건",
+            `베이스를 4거래일 이상 관측하고 반납이 ${percent(rules.setup_max_retracement)} 이하이면 준비 충족입니다. 아직 진입 신호는 아닙니다.`,
+          ],
+          [
+            "거래량 수축비",
+            `베이스 후반 평균 거래량 ÷ 전반 평균 거래량입니다. 셋업 진입의 계좌 기준은 ${number(rules.setup_volume_contraction, 2)} 이하입니다.`,
+          ],
+          [
+            "변동성 수축비",
+            `일중 (고가−저가) ÷ 종가 비율의 베이스 후반 평균 ÷ 전반 평균입니다. 셋업 진입의 계좌 기준은 ${number(rules.setup_range_contraction, 2)} 이하입니다.`,
+          ],
+          [
+            "셋업 저항·돌파",
+            "선행 상승 파동의 고가가 저항선입니다. 전일 종가는 이하이고 당일 종가가 이를 넘으면 셋업 돌파입니다.",
+          ],
+          [
+            "셋업 진입 조건",
+            "준비·돌파·무효화 없음·거래량 및 변동성 수축을 함께 확인합니다. 최종 신호에는 공통 조건도 더 적용됩니다.",
+          ],
+        ],
+      ]);
+    groups.push([
+      "돌파·계좌",
+      [
+        [
+          "직전 252거래일 최고가 / 52주 신고가 돌파",
+          "오늘을 제외한 직전 252거래일 최고 고가와 오늘 종가를 비교합니다. 52주 경로를 켠 계좌에서 별도 진입 후보로 사용합니다.",
+        ],
+        [
+          "최종 신호 경로",
+          "모든 조건을 통과했을 때 셋업 돌파·52주 신고가 등 어느 경로에서 신호가 났는지 표시합니다.",
+        ],
+        [
+          "손절 폭",
+          "기준 종가와 예상 손절가의 차이를 종가 대비 비율로 표시합니다. 모의 수량 배분과 위험 한도 확인에 사용합니다.",
+        ],
+        [
+          "배분 사유",
+          "모의계좌의 현금·보유·위험 한도로 수량을 계획한 결과입니다. 시장 후보 분석만으로는 계산하지 않습니다.",
+        ],
+        [
+          "ATR",
+          `일별 실제 변동폭을 Wilder 방식으로 평활화한 값입니다. 이 계좌는 ${rules.atr_days}거래일 기준이며 파동 판정과 설정에 따른 손절 폭에 쓰입니다.`,
+        ],
+      ],
+    ]);
+    $("detail-help-content").replaceChildren(
+      ...groups.map(([heading, items]) => {
+        const section = el("section", undefined, "detail-help-group");
+        const list = el("dl");
+        section.append(el("h3", heading));
+        for (const [term, description] of items) {
+          const item = el("div");
+          item.append(el("dt", term), el("dd", description));
+          list.append(item);
+        }
+        section.append(list);
+        return section;
       }),
     );
   }
@@ -1631,6 +1747,17 @@ if (typeof document !== "undefined") {
     const request = ++chartRequest;
     chartRows = [];
     chartEnd = candidateView?.as_of || snapshot.as_of;
+    const beforeBase =
+      snapshot.rules.entry_method === "setup" &&
+      ["seeking", "rising"].includes(row.setup_phase);
+    const setupValue = (value, format) =>
+      value == null && beforeBase ? "조정·베이스 형성 전" : format(value);
+    const scopeLabels = {
+      industry_snapshot: "저장된 산업 구성",
+      candidate_universe: "후보군 산업 구성",
+      missing_industry_snapshot: "산업 기록 없음",
+      unclassified_industry: "산업 분류 없음",
+    };
     $("stock-detail").hidden = false;
     $("detail-name").textContent = `${row.name || row.symbol} · ${row.symbol}`;
     $("chart-hover").textContent = "";
@@ -1643,12 +1770,26 @@ if (typeof document !== "undefined") {
       ],
       ["산업 동료 수", number(row.sector_peer_count)],
       ["자기 제외 동료 상승 비율", percent(row.sector_up_fraction)],
-      ["동료 초과수익", percent(row.sector_excess_return)],
-      ["준비 판정 반납 · 오늘 이전 베이스", percent(row.setup_retracement)],
-      ["오늘 저가 포함 반납", percent(row.setup_retracement_today)],
-      ["거래량 수축비", number(row.setup_volume_ratio, 2)],
-      ["변동성 수축비", number(row.setup_range_ratio, 2)],
-      ["셋업 저항", number(row.setup_resistance)],
+      [
+        "동료 초과수익",
+        row.sector_excess_return == null
+          ? "산업 수익률 자료 없음"
+          : percent(row.sector_excess_return),
+      ],
+      [
+        "준비 판정 반납 · 오늘 이전 베이스",
+        setupValue(row.setup_retracement, percent),
+      ],
+      ["오늘 저가 포함 반납", setupValue(row.setup_retracement_today, percent)],
+      [
+        "거래량 수축비",
+        setupValue(row.setup_volume_ratio, (value) => number(value, 2)),
+      ],
+      [
+        "변동성 수축비",
+        setupValue(row.setup_range_ratio, (value) => number(value, 2)),
+      ],
+      ["셋업 저항", setupValue(row.setup_resistance, number)],
       ["직전 252거래일 최고가", number(row.prior_52w_high)],
       [
         "52주 신고가 돌파",
@@ -1660,9 +1801,21 @@ if (typeof document !== "undefined") {
       ],
       ["최종 신호 경로", row.signal_entry_path || "해당 없음"],
       ["손절 폭", percent(row.stop_fraction)],
-      ["배분 사유", row.allocation_reason || "수량 계획 미계산"],
-      ["산업 자료 범위", row.sector_action_scope || "미적용"],
+      [
+        "배분 사유",
+        row.allocation_reason ||
+          (candidateView?.analysis?.mode === "market_candidate_research"
+            ? "시장 후보 분석에서는 수량 미계산"
+            : "수량 계획 미계산"),
+      ],
+      [
+        "산업 자료 범위",
+        scopeLabels[row.sector_action_scope] ||
+          row.sector_action_scope ||
+          "미적용",
+      ],
     ]);
+    renderDetailHelp(snapshot.rules);
     renderSetupDetail(row);
     try {
       const p = await api(
