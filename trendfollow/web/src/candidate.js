@@ -24,33 +24,27 @@ function approxTurnover(value) {
   return `${number(amount)}원가량`;
 }
 
-function candidateStage(row, rules) {
+function candidateStage(row) {
   const close =
     row.close == null && row.reference_price == null
       ? NaN
       : Number(row.close ?? row.reference_price);
   const high = row.high == null ? NaN : Number(row.high);
-  const levels = [row.setup_resistance];
-  if (rules.setup_52w_enabled || rules.entry_method === "breakout")
-    levels.push(row.prior_52w_high);
-  const resistance = levels
+  // The market board describes observed price action, independent of whether
+  // this account enables the 52-week breakout as an entry route.
+  const levels = [row.setup_resistance, row.prior_52w_high];
+  const validLevels = levels
     .filter((value) => Number.isFinite(Number(value)) && Number(value) > 0)
-    .map(Number)
-    .sort((a, b) => a - b)[0];
+    .map(Number);
+  const resistance = Math.min(...validLevels);
+  if (row.setup_trigger === true || row.high52_breakout === true)
+    return "breakout";
   if (
-    Number.isFinite(resistance) &&
     Number.isFinite(high) &&
-    high >= resistance &&
-    close <= resistance
+    Number.isFinite(close) &&
+    validLevels.some((level) => high >= level && close < level)
   )
     return "faded";
-  if (
-    row.setup_trigger === true ||
-    ((rules.setup_52w_enabled ||
-      (rules.entry_method === "breakout" && rules.breakout_days === 252)) &&
-      row.high52_breakout === true)
-  )
-    return "breakout";
   if (
     Number.isFinite(resistance) &&
     Number.isFinite(close) &&
@@ -87,7 +81,7 @@ function liveCandidateStage(row, run) {
   if (resistance - quote.price <= Number(row.atr))
     return { stage: "near", reason: "장중 저항선 접근" };
   return {
-    stage: candidateStage(row, snapshot.rules),
+    stage: candidateStage(row),
     reason: "전일 준비 기준",
   };
 }
@@ -141,7 +135,7 @@ function renderCandidateBoard() {
     const live = run ? liveCandidateStage(row, run) : null;
     const stage = row.candidate_unanalysed
       ? "unknown"
-      : live?.stage || candidateStage(row, snapshot.rules);
+      : live?.stage || candidateStage(row);
     groups[stage].push({ ...row, candidate_reason: live?.reason });
   }
   const descriptions = [
@@ -156,14 +150,14 @@ function renderCandidateBoard() {
       run ? "돌파 중 · 장중 잠정" : "돌파 확인 · 종가",
       run
         ? "최근 KIS 체결가가 저항선 위입니다. 확정 종가가 아닙니다."
-        : "저장된 종가 자료에서 셋업 또는 52주 돌파가 관측됐습니다.",
+        : "종가가 셋업 저항선 또는 직전 52주 고가를 넘었습니다. 계좌 매수 신호와는 별개입니다.",
     ],
     [
       "faded",
       run ? "접촉 후 후퇴 · 장중 잠정" : "고가 접촉·종가 하회",
       run
         ? "관측 중 저항선 위 체결 후 최근 가격이 아래로 돌아왔습니다."
-        : "당일 고가가 저항선에 닿았지만 종가는 아래에서 끝났습니다.",
+        : "당일 고가가 셋업 저항선 또는 직전 52주 고가에 닿았지만 종가는 아래에서 끝났습니다.",
     ],
   ];
   if (groups.unknown.length)

@@ -144,6 +144,31 @@ test("candidate stages distinguish confirmed close from live quote evidence", ()
   assert.equal(context.liveCandidateStage(row, run).reason, "최근 체결 없음");
 });
 
+test("market stages count 52-week breakouts and failed touches even when account route is off", () => {
+  const context = { $: () => ({}) };
+  runInNewContext(
+    readFileSync(join(__dirname, "../trendfollow/web/src/candidate.js"), "utf8"),
+    context,
+  );
+  const rules = { entry_method: "setup", setup_52w_enabled: false };
+  assert.equal(context.candidateStage({
+    high: 4950, close: 4950, prior_52w_high: 4270,
+    high52_breakout: true, setup_trigger: false,
+  }, rules), "breakout");
+  assert.equal(context.candidateStage({
+    high: 109900, close: 106100, prior_52w_high: 108000,
+    setup_resistance: 100000, high52_breakout: false,
+  }, rules), "faded");
+  assert.equal(context.candidateStage({
+    high: 108000, close: 106100, prior_52w_high: 108000,
+    high52_breakout: false,
+  }, rules), "faded");
+  assert.notEqual(context.candidateStage({
+    high: 108000, close: 108000, prior_52w_high: 108000,
+    high52_breakout: false,
+  }, rules), "faded");
+});
+
 test("52-week gap uses a fresh live quote with the live resistance, then falls back to close", () => {
   const context = {
     $: () => ({}),
