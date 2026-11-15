@@ -15,6 +15,9 @@ from .candidate_universe import available_selections, read_selection, selection_
 from .config import Rules
 from .market import NaverResearchSource
 from .research_store import require_published_research
+from .relative_strength import multi_period_daily_rs
+
+MULTI_RS_VERSION = 1
 
 
 def analysis_home(root, workspace):
@@ -66,7 +69,9 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
         prior = latest_analysis(context.root, workspace["id"], day)
         if prior:
             meta = json.loads((prior / "analysis.json").read_text(encoding="utf-8"))
-            if meta.get("config_sha256") == config_hash and meta.get("selection_sha256") == selection_hash:
+            if (meta.get("config_sha256") == config_hash
+                    and meta.get("selection_sha256") == selection_hash
+                    and meta.get("multi_rs_version") == MULTI_RS_VERSION):
                 continue
         pending.append((day, selection_hash))
     if not pending:
@@ -83,6 +88,7 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
                   for day, _ in pending}
     required_symbols = set().union(*(set(frame.symbol) | set(frame.benchmark)
                                      for frame in selections.values()))
+    required_symbols.add("KOSPI")
     if rules.mansfield_benchmark == "market_index":
         required_symbols |= {"KOSPI", "KOSDAQ"}
     base = pd.read_csv(prices_path, dtype={"symbol": str, "date": str})
@@ -125,6 +131,9 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
                 temporary.unlink(missing_ok=True)
             prices = pd.concat([prices, fresh], ignore_index=True).drop_duplicates(["date", "symbol"], keep="first")
     existing = set(zip(prices.date, prices.symbol))
+    kospi_prices = prices[prices.symbol.eq("KOSPI")].copy()
+    kospi_prices["date"] = pd.to_datetime(kospi_prices.date)
+    kospi_close = kospi_prices.set_index("date").close
     for day, frame in selections.items():
         missing = sorted(symbol for symbol in frame.symbol if (day, symbol) not in existing)
         if missing:
@@ -139,6 +148,12 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
             symbols |= {"KOSPI", "KOSDAQ"}
         frame, invalid = features(prices[prices.date.le(day) & prices.symbol.isin(symbols)], universe, rules)
         today = frame[frame.date.eq(pd.Timestamp(day))].copy()
+        daily = prices[prices.date.le(day) & prices.symbol.isin(set(today.symbol))].copy()
+        daily["date"] = pd.to_datetime(daily.date)
+        by_symbol = {symbol: multi_period_daily_rs(group.set_index("date").close, kospi_close.loc[:day])
+                     for symbol, group in daily.groupby("symbol")}
+        for key in ["multi_rs", "multi_rs_raw", "multi_rs_windows", "multi_rs_as_of"]:
+            today[key] = today.symbol.map({symbol: value[key] for symbol, value in by_symbol.items()})
         if set(universe.symbol) - set(today.symbol):
             raise ValueError(f"{day} 후보 조건 계산 결과에 종목이 빠졌습니다. 저장하지 않았습니다.")
         folder = analysis_home(context.root, workspace["id"]) / day
@@ -151,6 +166,7 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
                         industry_membership_observed_at=membership_day, unclassified_industries=unclassified,
                         price_source="saved account prices + Naver initial history for missing symbols",
                         config_sha256=config_hash, selection_sha256=selection_hash,
+                        multi_rs_version=MULTI_RS_VERSION,
                         generated_at=context.now().isoformat())
             (stage / "analysis.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
             stage.rename(folder / run_id)

@@ -1,9 +1,37 @@
 """Mansfield relative strength on completed weekly bars, expressed with a x100 scale."""
 import numpy as np
 import pandas as pd
+import math
 
 
 MARKET_INDICES = {'KOSPI': 'KOSPI', 'KOSDAQ': 'KOSDAQ'}
+
+
+def multi_period_daily_rs(stock_close: pd.Series, kospi_close: pd.Series):
+    """Documented 60/120/250-session relative strength, for display only."""
+    aligned = pd.concat([stock_close.rename('stock'), kospi_close.rename('kospi')], axis=1, join='inner')
+    aligned = aligned[(aligned.stock > 0) & (aligned.kospi > 0)].replace([np.inf, -np.inf], np.nan).dropna().sort_index()
+    relative = aligned.stock / aligned.kospi
+    values = []
+    dates = []
+    windows = []
+    for period, required in [(60, 60), (120, 90), (250, 187)]:
+        if len(relative) < required:
+            continue
+        average = relative.rolling(period, min_periods=math.floor(period * .75)).mean()
+        rs = ((relative / average) - 1) * 100
+        valid = rs.replace([np.inf, -np.inf], np.nan).dropna()
+        if valid.empty:
+            continue
+        values.append(float(valid.iloc[-1]))
+        dates.append(valid.index[-1])
+        windows.append(str(period))
+    if not values:
+        return dict(multi_rs=None, multi_rs_raw=None, multi_rs_windows='', multi_rs_as_of=None)
+    raw = round(sum(round(value, 2) for value in values) / len(values), 2)
+    normalized = round(100 / (1 + math.exp(-raw / 12)), 2)
+    return dict(multi_rs=normalized, multi_rs_raw=raw,
+                multi_rs_windows='/'.join(windows), multi_rs_as_of=min(dates))
 
 
 def mansfield_benchmark_symbol(item, rules):

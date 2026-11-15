@@ -269,7 +269,8 @@ function renderStocks() {
         { sortValue: (r) => high52Gap(r)?.percent },
       ],
       ["RS 순위", (r) => number(r.rs_percentile, 1)],
-      ["Mansfield", (r) => number(r.mansfield_rs, 2)],
+      ["주간 Mansfield", (r) => number(r.mansfield_rs, 2)],
+      ["다기간 Mansfield", (r) => r.multi_rs == null ? "자료 없음" : number(r.multi_rs, 2)],
       ["RS 조건", (r) => flag(r.rs_pass)],
       [
         "산업 액션",
@@ -524,8 +525,12 @@ function renderDetailHelp(rules) {
           `완료 주봉 종가가 ${rules.weekly_ma}주 평균보다 높고 평균도 상승 중인지 확인합니다. 최종 진입의 공통 조건입니다.`,
         ],
         [
-          "RS 순위 / Mansfield",
-          "시장 또는 기준 종목보다 강한 정도를 두 방식으로 보여줍니다. 계좌에서 선택한 RS 방식만 최종 진입에 사용합니다.",
+          "RS 순위 / 주간 Mansfield",
+          "RS 순위는 직전 126거래일 수익률을 해당 날짜의 분석 후보군 안에서 순위화한 백분위입니다. 기준 지수 대비 초과수익은 매수 조건에서 별도로 확인합니다. 주간 Mansfield는 52주 상대가격의 이동평균 대비 강도입니다. 계좌에서 선택한 방식만 최종 진입에 사용합니다.",
+        ],
+        [
+          "다기간 Mansfield",
+          "KOSPI 대비 일별 상대가격의 60·120·250거래일 Mansfield 값 중 계산 가능한 기간을 평균해 0~100으로 변환한 참고 점수입니다. 종목 간 백분위가 아닙니다. 기간과 계산 기준일을 함께 표시하며 계좌 매수·청산에는 사용하지 않습니다.",
         ],
         [
           "산업 동료 수",
@@ -834,9 +839,11 @@ async function detail(row) {
   facts("detail-facts", [
     ["주봉 추세", row.weekly_trend ? "통과" : "미통과·자료 부족"],
     [
-      "RS 순위 / Mansfield",
+      "RS 순위 / 주간 Mansfield",
       number(row.rs_percentile, 1) + " / " + number(row.mansfield_rs, 2),
     ],
+    ["다기간 Mansfield", row.multi_rs == null ? "자료 없음" :
+      `${number(row.multi_rs, 2)} (원점수 ${number(row.multi_rs_raw, 2)}) · ${row.multi_rs_windows || "기간 확인 불가"}일 · ${String(row.multi_rs_as_of || "날짜 확인 불가").slice(0, 10)}`],
     ["산업 동료 수", number(row.sector_peer_count)],
     ["자기 제외 동료 상승 비율", percent(row.sector_up_fraction)],
     [

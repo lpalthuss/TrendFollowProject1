@@ -7,7 +7,37 @@ import pytest
 
 from trendfollow.backtest import features
 from trendfollow.cli import main
-from trendfollow.relative_strength import decision_rule_settings, mansfield_weekly
+from trendfollow.relative_strength import decision_rule_settings, mansfield_weekly, multi_period_daily_rs
+from trendfollow.operations.queries import _saved_multi_rs
+
+
+def test_multi_period_daily_rs_is_display_only_and_reports_available_windows():
+    days = pd.bdate_range('2026-01-01', periods=250)
+    kospi = pd.Series(100., index=days)
+    stock = pd.Series(np.linspace(100., 150., len(days)), index=days)
+    result = multi_period_daily_rs(stock, kospi)
+    assert result['multi_rs_windows'] == '60/120/250'
+    assert result['multi_rs'] > 50
+    assert result['multi_rs_as_of'] == days[-1]
+    short = multi_period_daily_rs(stock.iloc[:80], kospi.iloc[:80])
+    assert short['multi_rs_windows'] == '60'
+    assert multi_period_daily_rs(stock.iloc[:50], kospi.iloc[:50])['multi_rs'] is None
+
+
+def test_saved_multi_rs_uses_only_prices_through_selected_day(tmp_path):
+    days = pd.bdate_range('2026-01-01', periods=62)
+    prices = pd.DataFrame([
+        {'date': day.date().isoformat(), 'symbol': symbol, 'close': value}
+        for day in days for symbol, value in [('KOSPI', 100), ('000001', 100 if day != days[-1] else 200)]
+    ])
+    path = tmp_path / 'prices.csv'
+    prices.to_csv(path, index=False)
+    stat = path.stat()
+    earlier = _saved_multi_rs(str(path), stat.st_mtime_ns, stat.st_size, days[-2].date().isoformat())
+    later = _saved_multi_rs(str(path), stat.st_mtime_ns, stat.st_size, days[-1].date().isoformat())
+    assert earlier['000001']['multi_rs'] == 50
+    assert later['000001']['multi_rs'] > 50
+    assert earlier['000001']['multi_rs_as_of'] == days[-2].date().isoformat()
 from trendfollow.strategy import Rules, screen
 
 

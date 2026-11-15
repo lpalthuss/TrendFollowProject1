@@ -9,8 +9,34 @@ import re
 import pandas as pd
 from .common import read_csv, json_rows
 from ..indicators import wilder_atr_series
+from ..relative_strength import multi_period_daily_rs
 
-SIGNAL_FIELDS = "symbol name sector industry_name benchmark date open high low close reference_price rs_percentile excess_return mansfield_rs allocation_score weekly_trend eligible_history volume_ratio avg_turnover atr stop_price stop_fraction signal signal_rs signal_mansfield signal_entry_path prior_52w_high high52_breakout setup_phase setup_ready setup_trigger setup_entry setup_invalidated setup_resistance setup_retracement setup_retracement_today setup_base_bars setup_volume_ratio setup_range_ratio sector_action sector_peer_count sector_up_fraction sector_excess_return sector_action_scope quantity planned_risk cash_required allocation_reason market_unit_regime market_unit_cap rs_exit_weak rs_exit_value".split()
+SIGNAL_FIELDS = "symbol name sector industry_name benchmark date open high low close reference_price rs_percentile excess_return mansfield_rs multi_rs multi_rs_raw multi_rs_windows multi_rs_as_of allocation_score weekly_trend eligible_history volume_ratio avg_turnover atr stop_price stop_fraction signal signal_rs signal_mansfield signal_entry_path prior_52w_high high52_breakout setup_phase setup_ready setup_trigger setup_entry setup_invalidated setup_resistance setup_retracement setup_retracement_today setup_base_bars setup_volume_ratio setup_range_ratio sector_action sector_peer_count sector_up_fraction sector_excess_return sector_action_scope quantity planned_risk cash_required allocation_reason market_unit_regime market_unit_cap rs_exit_weak rs_exit_value".split()
+
+
+@lru_cache(maxsize=8)
+def _saved_multi_rs(prices_path, _modified_ns, _size, as_of):
+    try:
+        prices = pd.read_csv(prices_path, usecols=["date", "symbol", "close"],
+                             dtype={"date": str, "symbol": str})
+    except ValueError:
+        return {}  # Older display-only price fixtures may have no close column.
+    prices = prices[prices.date.le(as_of)].copy()
+    prices["date"] = pd.to_datetime(prices.date)
+    kospi = prices[prices.symbol.eq("KOSPI")].set_index("date").close
+    if kospi.empty:
+        return {}
+    values = {}
+    for symbol, group in prices.groupby("symbol"):
+        if symbol == "KOSPI":
+            continue
+        result = multi_period_daily_rs(group.set_index("date").close, kospi)
+        result["multi_rs_as_of"] = (
+            result["multi_rs_as_of"].date().isoformat()
+            if result["multi_rs_as_of"] is not None else None
+        )
+        values[symbol] = result
+    return values
 
 
 @lru_cache(maxsize=8)
@@ -240,6 +266,16 @@ class OperationsQueries:
         frame = read_csv(signal) if signal else pd.DataFrame()
         fields = [c for c in SIGNAL_FIELDS if c in frame]
         rows = json_rows(frame[fields])
+        if rows and "multi_rs" not in fields:
+            prices_path = self.context.path(w["data_dir"]) / "prices.csv"
+            if prices_path.is_file():
+                stat = prices_path.stat()
+                as_of = str(frame.date.iloc[0])[:10]
+                extra_rs = _saved_multi_rs(
+                    str(prices_path), stat.st_mtime_ns, stat.st_size, as_of
+                )
+                for row in rows:
+                    row.update(extra_rs.get(row.get("symbol"), {}))
         universe = read_csv(self.context.path(w["universe"]))
         industry_names = {
             str(r["symbol"]): r["industry_name"]
