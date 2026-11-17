@@ -11,3 +11,4 @@ outputs/
 node_modules/
 dist/
 build/
+.streamlit/secrets.toml

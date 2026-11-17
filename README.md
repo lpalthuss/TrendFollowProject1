@@ -4,6 +4,12 @@
 
 ## 시작
 
+### Streamlit · 종목 탐색 작업대
+
+Paper Blue 테마의 Streamlit 화면을 추가했다. `pip install -e ".[streamlit]"` 후
+`streamlit run streamlit_app.py`로 실행한다. 기존 로컬 UI는 그대로 사용할 수 있다.
+실행 권한·Community Cloud 설정과 저장소 제약은 [UI.md](docs/UI.md#streamlit--종목-탐색-작업대)를 참고한다.
+
 ### 로컬 운용 화면
 
 `python -m trendfollow ui` 실행 후 `http://127.0.0.1:8765`에 접속한다. 첫 화면의 운용 순서에서 계좌·설정 → 종가 처리 → 결과 확인 → 선택적 장중 관측을 진행한다. 종목·산업·보유·체결 상세도 확인할 수 있다. 예약 실행과 증권사 주문은 연결하지 않았다. 상세 방법은 [UI.md](docs/UI.md)에 있다.
