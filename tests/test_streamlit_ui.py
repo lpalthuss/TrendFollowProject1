@@ -4,9 +4,90 @@ from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
-from trendfollow.streamlit_ui import filter_candidates
+from trendfollow.streamlit_ui import (auth_key, candidate_stage, candidate_table_rows, filter_candidates,
+                                     high52_distance, issue_auth_token, valid_auth_token)
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_auth_cookie_is_signed_expires_and_changes_with_password():
+    key = auth_key('test-password')
+    token = issue_auth_token(key, now=1000)
+    assert valid_auth_token(token, key, now=1001)
+    assert not valid_auth_token(token, key, now=1001 + 12 * 60 * 60)
+    assert not valid_auth_token(token, auth_key('changed-password'), now=1001)
+    assert not valid_auth_token(token + 'bad', key, now=1001)
+
+
+def test_running_operations_source_version_matches_files_and_detects_edits(tmp_path):
+    from trendfollow.runtime_guard import source_fingerprint
+    from trendfollow.streamlit_ui import CODE_ROOT
+    from trendfollow.operations import Operations
+
+    assert Operations.source_fingerprint == source_fingerprint(CODE_ROOT)
+    package = tmp_path / 'trendfollow'
+    package.mkdir()
+    source = package / 'sample.py'
+    source.write_text('VALUE = 1\n', encoding='utf-8')
+    before = source_fingerprint(tmp_path)
+    source.write_text('VALUE = 2\n', encoding='utf-8')
+    assert source_fingerprint(tmp_path) != before
+
+
+def test_streamlit_stops_before_using_stale_operations():
+    class StaleOperations:
+        jobs = {}
+        def refresh_jobs(self):
+            pass
+
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), \
+         patch('trendfollow.streamlit_ui.operations', return_value=StaleOperations()):
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+    assert any('코드가 변경' in error.value for error in app.error)
+    assert not app.radio
+
+
+def test_candidate_table_uses_display_names_and_hides_internal_fields():
+    rows = candidate_table_rows([dict(symbol='009270', name='종목', market='KOSPI',
+                                      sector='UNCLASSIFIED:009270', benchmark='069500',
+                                      recent_turnover_proxy=1_165_242_606,
+                                      reason_display='거래대금 기준 미만')],
+                                'KRX Open API', include_reason=True)
+    assert rows[0]['산업'] == '산업 분류 없음'
+    assert rows[0]['당일 거래대금'] == '12억원가량'
+    assert rows[0]['제외 사유'] == '거래대금 기준 미만'
+    assert 'sector' not in rows[0] and 'benchmark' not in rows[0]
+
+
+def test_auth_cookie_survives_module_secret_reload(tmp_path, monkeypatch):
+    import trendfollow.streamlit_ui as ui
+    monkeypatch.setattr(ui, 'ROOT', tmp_path)
+    ui.auth_server_secret.cache_clear()
+    key = ui.auth_key('test-password')
+    token = ui.issue_auth_token(key, now=1000)
+    ui.auth_server_secret.cache_clear()
+    assert ui.valid_auth_token(token, ui.auth_key('test-password'), now=1001)
+    assert not ui.valid_auth_token(token, ui.auth_key('changed-password'), now=1001)
+
+
+def test_new_streamlit_session_recovers_login_from_cookie(monkeypatch):
+    monkeypatch.setenv('UI_PASSWORD', 'test-password')
+    token = issue_auth_token(auth_key('test-password'))
+    with patch('trendfollow.streamlit_ui.read_auth_cookie', return_value=token), patch('trendfollow.streamlit_ui.job_status'):
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        assert not app.exception and not app.error
+        assert app.radio(key='page-picker')
+        assert not any(field.label == '운용 비밀번호' for field in app.text_input)
+
+
+def test_local_env_password_and_environment_override(tmp_path, monkeypatch):
+    import trendfollow.streamlit_ui as ui
+    (tmp_path / '.env').write_text('UI_PASSWORD=local-password\n', encoding='utf-8')
+    monkeypatch.setattr(ui, 'ROOT', tmp_path)
+    monkeypatch.delenv('UI_PASSWORD', raising=False)
+    assert ui.setting('UI_PASSWORD') == 'local-password'
+    monkeypatch.setenv('UI_PASSWORD', 'process-password')
+    assert ui.setting('UI_PASSWORD') == 'process-password'
 
 
 def test_filters_keep_unknown_separate_from_false():
@@ -19,13 +100,31 @@ def test_filters_keep_unknown_separate_from_false():
     assert filter_candidates(rows,search='없는 종목') == []
 
 
+def test_52week_and_setup_filters_use_saved_analysis_values():
+    rows = [dict(symbol='000001',high52_breakout=True,setup_ready=True,setup_trigger=False),
+            dict(symbol='000002',high52_breakout=False,setup_ready=False,setup_trigger=False),
+            dict(symbol='000003',high52_breakout=None,setup_ready=None,setup_trigger=None)]
+    assert [r['symbol'] for r in filter_candidates(rows,high52='돌파')] == ['000001']
+    assert [r['symbol'] for r in filter_candidates(rows,high52='자료 부족')] == ['000003']
+    assert [r['symbol'] for r in filter_candidates(rows,setup_condition='준비 미충족')] == ['000002']
+
+
+def test_market_stage_and_52week_distance_do_not_depend_on_buy_route():
+    breakout = dict(close=4950,high=4950,prior_52w_high=4270,high52_breakout=True)
+    faded = dict(close=106100,high=109900,prior_52w_high=108000,high52_breakout=False)
+    assert candidate_stage(breakout) == '종가 돌파'
+    assert high52_distance(breakout) == '15.9% 돌파'
+    assert candidate_stage(faded) == '고가 접촉·종가 하회'
+    assert high52_distance(faded) == '1.8% 남음'
+
+
 def test_readonly_navigation_never_submits_jobs(monkeypatch):
     monkeypatch.delenv('UI_PASSWORD',raising=False)
-    with patch('trendfollow.ui_service.Operations.submit') as submit:
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch('trendfollow.ui_service.Operations.submit') as submit:
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         assert not app.exception
-        for page in ['오늘의 운용','보유·체결','장중 관측','전략·설정','종목 탐색']:
-            app.radio[0].set_value(page).run(timeout=30)
+        for page in ['오늘의 운용','날짜별 시장 후보','보유·체결','장중 관측','정정·검증','전략·설정','종목 탐색']:
+            app.radio(key='page-picker').set_value(page).run(timeout=30)
             assert not app.exception
             assert not app.error
         submit.assert_not_called()
@@ -45,7 +144,9 @@ def test_password_gate_and_account_save(tmp_path, monkeypatch):
     app.text_input[0].set_value('test-only-password')
     app.button[0].click().run()
     assert not app.exception
-    app.radio[0].set_value('전략·설정').run()
+    assert not any(field.label == '운용 비밀번호' for field in app.text_input)
+    assert not any(button.label == '로그인' for button in app.button)
+    app.radio(key='page-picker').set_value('전략·설정').run()
     next(b for b in app.button if b.label=='별도 계좌 저장').click().run()
     assert not app.exception
     assert not app.error
@@ -69,7 +170,7 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
             setup_phase='base',volume_ratio=None)]
         return result
     monkeypatch.delenv('UI_PASSWORD',raising=False)
-    with patch.object(Operations,'snapshot',snapshot), patch.object(Operations,'prices',return_value=[
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch.object(Operations,'snapshot',snapshot), patch.object(Operations,'prices',return_value=[
             dict(date='2026-11-13',close=9900),dict(date='2026-11-16',close=10000)]):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         assert not app.exception and not app.error
@@ -80,3 +181,40 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
         next(b for b in app.button if b.label=='관측 목록에 추가').click().run()
         key=app.selectbox(key='account-picker').value
         assert app.session_state[f'watch-{key}']==['000002']
+
+
+def test_daily_action_accepts_missing_industry_and_selected_price_source(monkeypatch):
+    from trendfollow.ui_service import Operations
+    original = Operations.guidance
+    def guidance(self,key,as_of=None):
+        result = original(self,key,as_of)
+        if as_of:
+            result.update(blocked=None,processed=False,requires_industry=True,industry_ready=False)
+        return result
+    monkeypatch.setenv('UI_PASSWORD','test-only-password')
+    with patch.object(Operations,'guidance',guidance), patch.object(Operations,'submit',return_value={'id':'test-job'}) as submit:
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        app.text_input[0].set_value('test-only-password')
+        app.button[0].click().run(timeout=30)
+        app.selectbox(key='price-source').set_value('pykrx').run(timeout=30)
+        app.radio(key='page-picker').set_value('오늘의 운용').run(timeout=30)
+        next(button for button in app.button if button.label=='② 가격 갱신 + 종가 모의 처리').click().run(timeout=30)
+        assert submit.call_args.args[0]['action'] == 'daily'
+        assert submit.call_args.args[0]['price_source'] == 'pykrx'
+
+
+def test_market_candidate_page_handles_stale_cached_date_query():
+    from trendfollow.ui_service import Operations
+    original = Operations.candidate_dates
+    def old_dates(self, key):
+        dates = original(self, key)
+        for field in ('suggested_capture_start', 'capture_window_start',
+                      'missing_selection_count', 'missing_selection_dates'):
+            dates.pop(field, None)
+        return dates
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch.object(Operations, 'candidate_dates', old_dates):
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        app.radio(key='page-picker').set_value('날짜별 시장 후보').run(timeout=30)
+        next(widget for widget in app.selectbox if widget.label == '후보군 자료 원천').set_value('krx_open_api').run(timeout=30)
+        assert not app.exception and not app.error
+        assert any('서버를 다시 시작' in notice.value for notice in app.warning)

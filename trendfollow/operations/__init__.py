@@ -9,9 +9,14 @@ from .queries import OperationsQueries
 from .intraday import IntradayService
 from .actions import ActionRunner
 from .jobs import JobManager
+from ..runtime_guard import source_fingerprint
+
+
+LOADED_SOURCE_FINGERPRINT = source_fingerprint(Path(__file__).resolve().parents[2])
 
 
 class Operations:
+    source_fingerprint = LOADED_SOURCE_FINGERPRINT
     def __init__(self, root, clock=None):
         self.root = Path(root).resolve()
         self.home = self.root / "outputs/ui"
