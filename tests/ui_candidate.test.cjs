@@ -224,6 +224,9 @@ test("KRX historical source can fill missing dates after the session day", () =>
     "candidate-krx-start": { value: "2026-11-10" },
     "candidate-date": {},
     "candidate-source-account": {},
+    "candidate-krx-range": {},
+    "candidate-refresh": {},
+    "candidate-capture-note": {},
   };
   const context = {
     $: (id) => controls[id] || {},
@@ -233,6 +236,10 @@ test("KRX historical source can fill missing dates after the session day", () =>
       capture_as_of: "2026-11-13",
       capture_available: false,
       candidate_sources: ["kis", "krx_open_api", "pykrx"],
+      missing_selection_dates: ["2026-11-10", "2026-11-12"],
+      missing_selection_count: 2,
+      suggested_capture_start: "2026-11-10",
+      capture_window_start: "2026-11-10",
     },
   };
   runInNewContext(
@@ -243,6 +250,8 @@ test("KRX historical source can fill missing dates after the session day", () =>
     context,
   );
   assert.equal(context.candidateCaptureEnabled(), true);
+  context.renderCandidateCaptureControls();
+  assert.match(controls["candidate-capture-note"].textContent, /누락 2거래일, 첫 누락일 2026-11-10/);
   context.candidateDates.candidate_sources = ["kis"];
   assert.equal(context.candidateCaptureEnabled(), false);
   context.candidateDates.candidate_sources = ["kis", "krx_open_api"];

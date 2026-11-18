@@ -1,6 +1,7 @@
 """Immutable, dated market candidate selections for the operations UI."""
 
 from datetime import date, time, timedelta
+import time as clock_time
 import hashlib
 import json
 import os
@@ -30,6 +31,18 @@ def latest_completed_session(now):
 
 def selection_home(root):
     return Path(root) / "outputs" / "ui" / "candidate-universes"
+
+
+def _publish_directory(stage, target):
+    """Retry transient Windows file locks while publishing an immutable snapshot."""
+    for attempt in range(10):
+        try:
+            stage.rename(target)
+            return
+        except PermissionError:
+            if attempt == 9 or target.exists():
+                raise
+            clock_time.sleep(0.05 * (attempt + 1))
 
 
 def policy_path(root, workspace):
@@ -171,9 +184,15 @@ def read_selection(root, as_of):
     return dict(summary=summary, members=members, added=added, removed=removed)
 
 
-def display_selection(root, as_of):
+def display_selection(root, as_of, include_excluded=False):
     """Attach previously observed industry names for display without changing the saved selection."""
     result = read_selection(root, as_of)
+    if include_excluded:
+        excluded_path = selection_home(root) / as_of / "excluded.csv"
+        result["excluded"] = (pd.read_csv(excluded_path, dtype={"symbol": str, "benchmark": str})
+                              .to_dict("records") if excluded_path.is_file() else [])
+        for row in result["excluded"]:
+            row["reason_display"] = _reason_label(row.get("reasons"))
     snapshots = Path(root) / "data" / "industries" / "snapshots"
     observed = sorted((path for path in snapshots.glob("????-??-??")
                        if path.name <= as_of and (path / "memberships.csv").is_file()),
@@ -188,12 +207,14 @@ def display_selection(root, as_of):
         raise ValueError(f"{source.name} 산업 구성의 필드나 종목 중복을 확인하세요.")
     by_symbol = labels.set_index("symbol")[["sector", "industry_name"]].to_dict("index")
     classified = 0
-    for row in result["members"]:
-        label = by_symbol.get(row["symbol"])
-        if label and label["sector"] and label["industry_name"]:
-            row["sector"] = label["sector"]
-            row["industry_name"] = label["industry_name"]
-            classified += 1
+    for group in ("members", "added", "removed", "excluded"):
+        for row in result.get(group, []):
+            label = by_symbol.get(row["symbol"])
+            if label and label["sector"] and label["industry_name"]:
+                row["sector"] = label["sector"]
+                row["industry_name"] = label["industry_name"]
+                if group == "members":
+                    classified += 1
     result["summary"]["industry_classification_as_of"] = source.name
     result["summary"]["industry_classified"] = classified
     return result
@@ -346,7 +367,7 @@ def capture_selection(root, as_of, now, progress=None):
                        min_recent_turnover_proxy=threshold,
                        comparison_available=bool(previous))
         (stage / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        stage.rename(target)
+        _publish_directory(stage, target)
     return summary
 
 
@@ -410,7 +431,7 @@ def capture_krx_selection(root, as_of, now, progress=None, source="krx_open_api"
             note=note,
         )
         (stage / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        stage.rename(target)
+        _publish_directory(stage, target)
     return summary
 
 

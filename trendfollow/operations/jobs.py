@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import os
+import traceback
 import uuid
 from ..ui_jobs import acquire_lease, load_jobs, save_job
 
@@ -162,10 +163,15 @@ class JobManager:
             job.update(status="failed", error=str(error))
             if hasattr(error, "report"):
                 job["revision_id"] = error.report["id"]
-        except Exception:
+        except Exception as error:
+            diagnostic = self.context.home / "jobs" / f"{key}.traceback.txt"
+            try:
+                diagnostic.write_text("".join(traceback.format_exception(error)), encoding="utf-8")
+            except OSError:
+                pass
             job.update(
                 status="failed",
-                error="작업 처리에 실패했습니다. 데이터·설정·출력 경로를 확인하세요.",
+                error=f"예상하지 못한 {type(error).__name__} 오류입니다. 작업 ID {key}의 서버 진단 기록을 확인하세요.",
             )
         finally:
             job["finished_at"] = self.context.now().isoformat()

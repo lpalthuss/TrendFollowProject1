@@ -1,7 +1,7 @@
 """Queries responsibilities for the local operations UI."""
 
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from functools import lru_cache
 import hashlib
 import json
@@ -148,19 +148,28 @@ class OperationsQueries:
         reference_dates = [completed]
         for _ in range(4):
             reference_dates.append(exchange.previous_session(reference_dates[-1]).date().isoformat())
+        cutoff = (date.fromisoformat(completed) - timedelta(days=180)).isoformat()
+        supported = [day.date().isoformat() for day in exchange.sessions_in_range(cutoff, completed)][-120:]
+        scope_start = max(min([*reference_dates, *account_dates, *market_dates, *selections]),
+                          supported[0])
+        missing = [day for day in supported if day >= scope_start and day not in selections]
         return dict(signal_dates=sorted(set(processed), reverse=True),
                     account_analysis_dates=account_dates,
                     market_analysis_dates=sorted(set(market_dates), reverse=True),
                     selection_dates=selections,
                     reference_dates=reference_dates,
+                    missing_selection_dates=missing,
+                    missing_selection_count=len(missing),
+                    suggested_capture_start=missing[0] if missing else None,
+                    capture_window_start=scope_start,
                     candidate_sources=["kis", "krx_open_api", "pykrx"],
                     capture_as_of=completed,
                     capture_available=now.date().isoformat() == completed and completed not in selections)
 
-    def candidate_selection(self, as_of):
+    def candidate_selection(self, as_of, include_excluded=False):
         from ..candidate_universe import display_selection
 
-        return display_selection(self.context.root, as_of)
+        return display_selection(self.context.root, as_of, include_excluded=include_excluded)
 
     def guidance(self, key, as_of=None):
         w = self.context.workspace(key)

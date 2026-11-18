@@ -1,5 +1,6 @@
 from datetime import datetime
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 import pandas as pd
 import pytest
@@ -10,6 +11,26 @@ from trendfollow import pykrx_universe
 from trendfollow.operations import Operations
 from trendfollow.config import Rules
 from dataclasses import asdict
+
+
+def test_snapshot_publish_retries_transient_windows_lock(tmp_path, monkeypatch):
+    stage = tmp_path / 'staged'
+    target = tmp_path / 'published'
+    stage.mkdir()
+    original = Path.rename
+    attempts = []
+
+    def once_locked(path, destination):
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise PermissionError('temporary file lock')
+        return original(path, destination)
+
+    monkeypatch.setattr(Path, 'rename', once_locked)
+    monkeypatch.setattr(candidates.clock_time, 'sleep', lambda _seconds: None)
+    candidates._publish_directory(stage, target)
+    assert target.is_dir()
+    assert len(attempts) == 2
 
 
 def test_daily_candidate_snapshots_are_immutable_and_record_removed_reasons(tmp_path, monkeypatch):
@@ -61,19 +82,26 @@ def test_display_selection_uses_only_industry_membership_saved_by_that_date(tmp_
     pd.DataFrame([dict(symbol='000001', name='A', sector='UNCLASSIFIED:000001', benchmark='069500'),
                   dict(symbol='000002', name='B', sector='UNCLASSIFIED:000002', benchmark='069500')]).to_csv(
                       folder / 'universe.csv', index=False)
-    pd.DataFrame(columns=['symbol', 'reason']).to_csv(folder / 'added.csv', index=False)
+    pd.DataFrame([dict(symbol='000001', name='A', sector='UNCLASSIFIED:000001',
+                       benchmark='069500', recent_turnover_proxy=2_000_000_000,
+                       reason='신규 편입')]).to_csv(folder / 'added.csv', index=False)
     pd.DataFrame(columns=['symbol', 'reason']).to_csv(folder / 'removed.csv', index=False)
+    pd.DataFrame([dict(symbol='000002', name='B', sector='UNCLASSIFIED:000002',
+                       benchmark='069500', recent_turnover_proxy=500_000_000,
+                       reasons='daily_turnover_below_threshold')]).to_csv(folder / 'excluded.csv', index=False)
     (folder / 'summary.json').write_text('{"as_of":"2026-11-11","count":2}', encoding='utf-8')
     for day, name in [('2026-11-10', '이전 산업'), ('2026-11-12', '미래 산업')]:
         target = tmp_path / 'data' / 'industries' / 'snapshots' / day
         target.mkdir(parents=True)
         pd.DataFrame([dict(symbol='000001', sector='KOSPI:1', industry_name=name)]).to_csv(
             target / 'memberships.csv', index=False)
-    displayed = candidates.display_selection(tmp_path, '2026-11-11')
+    displayed = candidates.display_selection(tmp_path, '2026-11-11', include_excluded=True)
     assert displayed['summary']['industry_classification_as_of'] == '2026-11-10'
     assert displayed['summary']['industry_classified'] == 1
     assert displayed['members'][0]['industry_name'] == '이전 산업'
     assert displayed['members'][1]['sector'] == 'UNCLASSIFIED:000002'
+    assert displayed['added'][0]['industry_name'] == '이전 산업'
+    assert displayed['excluded'][0]['reason_display'] == '거래대금 기준 미만'
     assert candidates.read_selection(tmp_path, '2026-11-11')['members'][0]['sector'] == 'UNCLASSIFIED:000001'
 
 
@@ -116,6 +144,14 @@ def test_weekend_date_list_marks_historical_capture_unavailable(tmp_path):
         assert dates['capture_available'] is False
         assert dates['candidate_sources']==['kis','krx_open_api','pykrx']
         assert dates['reference_dates'][:4] == ['2026-11-13', '2026-11-12', '2026-11-11', '2026-11-10']
+        assert dates['missing_selection_count'] == len(dates['reference_dates'])
+        assert dates['suggested_capture_start'] == dates['reference_dates'][-1]
+        saved = candidates.selection_home(tmp_path) / '2026-11-11'
+        saved.mkdir(parents=True)
+        (saved / 'summary.json').write_text('{}', encoding='utf-8')
+        updated = ops.candidate_dates(w['id'])
+        assert '2026-11-11' not in updated['missing_selection_dates']
+        assert updated['missing_selection_count'] == dates['missing_selection_count'] - 1
     finally:
         ops.close()
 

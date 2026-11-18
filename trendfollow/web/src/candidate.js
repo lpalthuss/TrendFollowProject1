@@ -192,7 +192,7 @@ function renderCandidateBoard() {
     }),
   );
   $("candidate-selection-note").textContent = candidateSelection
-    ? `${candidateView?.as_of || snapshot.as_of} · ${candidateSelection.summary.source === "KRX Open API" ? "KRX Open API" : candidateSelection.summary.source === "pykrx" ? "pykrx" : "KIS"}로 ${number(candidateSelection.summary.count)}종목 선정 · 전회 대비 편입 ${number(candidateSelection.summary.added)} / 제외 ${number(candidateSelection.summary.removed)}. ${candidateView?.analysis?.mode === "market_candidate_research" ? "선택 계좌의 전략 조건 계산 완료 · 계좌 매매 기록에는 미반영." : "전략 조건 계산 전."} ${candidateSelection.summary.comparison_available && candidateSelection.summary.comparison_same_source === false ? "전회와 자료 원천이 달라 편입·제외 수치에 기준 차이가 있습니다." : ""} ${run ? "감시 종목만 KIS 장중 잠정 시세를 표시합니다." : "가격 판정은 저장된 종가 기준입니다."}`
+    ? `${candidateView?.as_of || snapshot.as_of} · ${candidateSelection.summary.source === "KRX Open API" ? "KRX Open API" : candidateSelection.summary.source === "pykrx" ? "pykrx" : "KIS"}로 ${number(candidateSelection.summary.count)}종목 선정 · 전회 대비 편입 ${number(candidateSelection.summary.added)} / 제외 ${number(candidateSelection.summary.removed)}. ${candidateView?.analysis?.mode === "market_candidate_research" ? "선택 계좌의 전략 조건 계산 완료 · 계좌 매매 기록에는 미반영." : "전략 조건 계산 전."} ${candidateView?.analysis?.industry_membership_reconstructed ? `${candidateView.as_of} 산업 구성은 ${candidateView.analysis.industry_membership_observed_at} 저장본으로 재구성해 당시 실제 구성과 다를 수 있습니다.` : ""} ${candidateSelection.summary.comparison_available && candidateSelection.summary.comparison_same_source === false ? "전회와 자료 원천이 달라 편입·제외 수치에 기준 차이가 있습니다." : ""} ${run ? "감시 종목만 KIS 장중 잠정 시세를 표시합니다." : "가격 판정은 저장된 종가 기준입니다."}`
     : `${candidateView?.as_of || snapshot.as_of || "선택한 날짜"}의 시장 후보군 선정 기록은 없습니다. 아래는 저장된 계좌 분석 결과이며 당시 시장 전체 목록의 편입·제외는 확인할 수 없습니다.${snapshot.workspace.source_workspace ? " 원계좌의 저장된 날짜를 보려면 위 원계좌 버튼을 누르세요." : ""}`;
   const criteria = $("candidate-criteria-note");
   const selectionSummary = candidateSelection?.summary;
@@ -299,8 +299,14 @@ function renderCandidateCaptureControls() {
         ? `${$("candidate-krx-start").value}부터 ${candidateDates.capture_as_of}까지 누락된 거래일을 날짜순으로 채웁니다. ${source === "pykrx" ? "pykrx는 날짜별 종목 목록·당일 거래대금 기준이며, 종목명은 조회 시점의 이름일 수 있습니다." : "KRX Open API는 보통주·당일 거래대금 기준입니다."} KIS 마스터 선정 결과와 다를 수 있습니다. 이미 저장된 날짜는 바꾸지 않습니다.`
         : "누락 시작일을 완료된 거래일로 지정하세요. 한 번에 최대 120거래일입니다."
     : canCapture
-      ? "KIS 현재 마스터는 오늘 장 마감 날짜로만 저장합니다. 위의 후보 기준일 선택과 별개입니다."
+      ? "KIS 현재 마스터는 위에서 고른 조회 날짜와 관계없이 오늘 완료된 거래일의 목록만 저장합니다. 과거 날짜의 목록은 날짜별 원천을 선택하세요."
       : "KIS 현재 마스터로 과거 날짜의 후보군을 저장할 수 없습니다. 과거 누락 날짜는 KRX Open API 또는 pykrx를 선택해 채울 수 있습니다.";
+  if (historical && supported && candidateDates.missing_selection_dates) {
+    const count = candidateDates.missing_selection_count;
+    $("candidate-capture-note").textContent += count
+      ? ` 자동 확인 범위 ${candidateDates.capture_window_start}~${candidateDates.capture_as_of}: 누락 ${count}거래일, 첫 누락일 ${candidateDates.suggested_capture_start}.`
+      : ` 자동 확인 범위 ${candidateDates.capture_window_start}~${candidateDates.capture_as_of}에는 누락이 없습니다.`;
+  }
 }
 
 async function loadCandidateDate(date) {
@@ -344,7 +350,7 @@ async function loadCandidateDates() {
   if (selected !== workspace) return;
   candidateDates = datesResult;
   if (!$("candidate-krx-start").value)
-    $("candidate-krx-start").value = candidateDates.reference_dates.at(-1);
+    $("candidate-krx-start").value = candidateDates.suggested_capture_start || candidateDates.capture_window_start || candidateDates.reference_dates.at(-1);
   renderCandidateCaptureControls();
   const source = snapshot.workspace.source_workspace;
   $("candidate-source-account").hidden = !source;

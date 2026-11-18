@@ -87,6 +87,18 @@ def wait_job(ops,job):
     pytest.fail('UI job timed out')
 
 
+def test_unexpected_job_error_keeps_local_diagnostic(ops, monkeypatch):
+    w = create(ops)
+    def fail(*_args):
+        raise RuntimeError('test failure')
+    monkeypatch.setattr(ops.actions, 'run', fail)
+    result = wait_job(ops, ops.submit(dict(workspace=w['id'], action='analyze', as_of='2026-11-06')))
+    assert result['status'] == 'failed'
+    assert 'RuntimeError' in result['error'] and result['id'] in result['error']
+    diagnostic = ops.home / 'jobs' / f'{result["id"]}.traceback.txt'
+    assert 'RuntimeError: test failure' in diagnostic.read_text(encoding='utf-8')
+
+
 def test_watch_job_collects_missing_close_and_saves_plan_without_account_processing(ops, monkeypatch):
     import trendfollow.market as market
 

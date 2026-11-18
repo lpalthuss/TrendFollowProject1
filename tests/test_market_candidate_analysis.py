@@ -79,3 +79,19 @@ def test_market_analysis_job_is_allowed_on_frozen_comparison_account(tmp_path, m
         assert captured == ['2026-11-13']
     finally:
         ops.close()
+
+
+def test_first_later_industry_snapshot_is_marked_as_reconstructed(tmp_path):
+    snapshot = tmp_path / 'data' / 'industries' / 'snapshots' / '2026-11-08'
+    snapshot.mkdir(parents=True)
+    pd.DataFrame([dict(symbol='000001', sector='KOSPI:1', industry_name='테스트')]).to_csv(
+        snapshot / 'memberships.csv', index=False)
+    peer = snapshot.parent.parent / 'peer-returns.csv'
+    peer.write_text('date,symbol,sector,day_return,benchmark_day_return,quote_eligible\n')
+    members = pd.DataFrame([dict(symbol='000001', benchmark='069500')])
+    universe, observed, missing = market_analysis._industry_universe(tmp_path, '2026-11-06', members)
+    assert observed == '2026-11-08'
+    assert observed > '2026-11-06'
+    assert missing == 0
+    assert universe.iloc[0].sector == 'KOSPI:1'
+    assert universe.iloc[0].industry_peer_history == str(peer.resolve())

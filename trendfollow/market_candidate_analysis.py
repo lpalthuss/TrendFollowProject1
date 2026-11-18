@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import time
 
 import pandas as pd
 import requests
@@ -34,11 +35,13 @@ def latest_analysis(root, workspace, as_of):
 def _industry_universe(root, as_of, members):
     snapshots = Path(root) / "data" / "industries" / "snapshots"
     available = sorted((p for p in snapshots.glob("????-??-??")
-                        if p.name <= as_of and (p / "memberships.csv").is_file()),
-                       key=lambda p: p.name)
+                        if (p / "memberships.csv").is_file()), key=lambda p: p.name)
     if not available:
-        raise ValueError(f"{as_of} 이전 산업 구성 기록이 없어 시장 후보를 계산할 수 없습니다.")
-    observed = available[-1]
+        raise ValueError("산업 구성 기록이 없습니다. 산업 자료 갱신을 먼저 실행하세요.")
+    prior = [p for p in available if p.name <= as_of]
+    # The first archived membership may have been captured after the trading day.
+    # Use it as an explicit historical proxy, never as an observed same-day list.
+    observed = prior[-1] if prior else available[0]
     labels = pd.read_csv(observed / "memberships.csv", dtype={"symbol": str}, keep_default_na=False)
     if labels.symbol.duplicated().any() or "sector" not in labels:
         raise ValueError(f"{observed.name} 산업 구성에 중복 또는 필드 누락이 있습니다.")
@@ -86,6 +89,9 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
         progress("시장 후보군의 기존 일봉 확인 중", 0, len(pending))
     selections = {day: pd.DataFrame(read_selection(context.root, day)["members"])
                   for day, _ in pending}
+    # Validate industry inputs before fetching hundreds of historical price series.
+    industry_inputs = {day: _industry_universe(context.root, day, members)
+                       for day, members in selections.items()}
     required_symbols = set().union(*(set(frame.symbol) | set(frame.benchmark)
                                      for frame in selections.values()))
     required_symbols.add("KOSPI")
@@ -142,7 +148,7 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
     for index, (day, selection_hash) in enumerate(pending, 1):
         if progress:
             progress(f"{day} 시장 후보 조건 계산 중", index - 1, len(pending))
-        universe, membership_day, unclassified = _industry_universe(context.root, day, selections[day])
+        universe, membership_day, unclassified = industry_inputs[day]
         symbols = set(universe.symbol) | set(universe.benchmark)
         if rules.mansfield_benchmark == "market_index":
             symbols |= {"KOSPI", "KOSDAQ"}
@@ -163,13 +169,22 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
             today.to_csv(stage / "signals.csv", index=False, encoding="utf-8-sig")
             meta = dict(as_of=day, mode="market_candidate_research", source=read_selection(context.root, day)["summary"]["source"],
                         count=len(today), signals=int(today.signal.sum()), invalid_bars=len(invalid),
-                        industry_membership_observed_at=membership_day, unclassified_industries=unclassified,
+                        industry_membership_observed_at=membership_day,
+                        industry_membership_reconstructed=membership_day > day,
+                        unclassified_industries=unclassified,
                         price_source="saved account prices + Naver initial history for missing symbols",
                         config_sha256=config_hash, selection_sha256=selection_hash,
                         multi_rs_version=MULTI_RS_VERSION,
                         generated_at=context.now().isoformat())
             (stage / "analysis.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-            stage.rename(folder / run_id)
+            for attempt in range(5):
+                try:
+                    stage.rename(folder / run_id)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.2 * (attempt + 1))
         completed.append(day)
         if progress:
             progress(f"{day} 시장 후보 분석 저장 완료", index, len(pending))

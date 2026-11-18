@@ -27,9 +27,9 @@ function renderMarketActions() {
   const accountAlreadyProcessed = !!accountDate && !!date && date <= accountDate;
   $("candidate-analysis").textContent = savedMarket
     ? marketCalculated
-      ? `${date}까지 조건 계산 갱신`
-      : `${date}까지 시장 후보 조건 계산`
-    : "먼저 시장 후보군을 저장하세요";
+      ? `${date}까지 전략 조건 다시 계산`
+      : `${date}까지 전략 조건 계산`
+    : "먼저 해당 날짜의 종목 목록을 저장하세요";
   for (const button of document.querySelectorAll(
     '#market [data-action="market_analyze"], #market [data-action="analyze"], #market [data-action="paper"], #market [data-action="daily"]',
   )) {
@@ -44,7 +44,7 @@ function renderMarketActions() {
     button.disabled = busy || blocked;
     button.title = blocked
       ? action === "market_analyze"
-        ? `${date || "선택 날짜"}의 시장 후보군을 먼저 저장하세요.`
+        ? `${date || "선택 날짜"}의 종목 목록을 먼저 저장하세요.`
         : action === "daily" && accountAlreadyProcessed && !frozen
         ? `${date}은 이미 계좌 처리 완료일 ${accountDate}까지 포함됩니다. 다음 미처리 거래일을 선택하세요.`
         : action === "analyze" && analysisBlocked
@@ -53,7 +53,7 @@ function renderMarketActions() {
           : `계좌 처리일은 ${accountDate}입니다. ${date} 후보 분석은 해당 날짜의 계좌 처리 후 가능합니다.`
         : frozen
           ? `정정 계좌는 ${accountDate}까지만 저장돼 있습니다. 원계좌에서 계속하세요.`
-          : `계좌 처리일 ${accountDate || "미시작"}과 후보 기준일 ${date || "미선택"}을 확인하세요.`
+          : `계좌 처리일 ${accountDate || "미시작"}과 화면에서 선택한 거래일 ${date || "미선택"}을 확인하세요.`
       : "";
   }
   $("candidate-policy").disabled = busy || !accountDate || snapshot.status !== "ready" || frozen || Boolean(snapshot.workspace.builtin) || Boolean(snapshot.candidate_policy);
