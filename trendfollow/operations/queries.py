@@ -188,18 +188,35 @@ class OperationsQueries:
             raise ValueError("기준일을 YYYY-MM-DD로 입력하세요.")
         needs_industry = rules.entry_method == "setup"
         dates = []
+        industry_observed_at = None
+        industry_classification_observed_at = None
+        industry_reconstructed = False
         u = read_csv(self.context.path(w["universe"]))
         if needs_industry and "industry_peer_history" in u:
             files = set(u.industry_peer_history.dropna().astype(str)) - {""}
             if len(files) == 1:
                 peer = self.context.path(next(iter(files)))
                 if peer.exists():
-                    dates = sorted(
-                        pd.read_csv(peer, usecols=["date"])
-                        .date.astype(str)
-                        .unique()
-                        .tolist()
+                    history = pd.read_csv(
+                        peer,
+                        usecols=lambda field: field in {"date", "snapshot_observed_at",
+                                                         "classification_observed_at", "source"},
+                        dtype=str,
                     )
+                    dates = sorted(history.date.dropna().unique().tolist())
+                    selected = history.loc[history.date.eq(target)]
+                    if not selected.empty:
+                        for field, key in (("snapshot_observed_at", "industry_observed_at"),
+                                           ("classification_observed_at", "industry_classification_observed_at")):
+                            if field in selected:
+                                values = selected[field].dropna().astype(str)
+                                if not values.empty:
+                                    if key == "industry_observed_at":
+                                        industry_observed_at = max(values)
+                                    else:
+                                        industry_classification_observed_at = max(values)
+                        industry_reconstructed = ("source" in selected and
+                                                  selected.source.eq("HISTORICAL_BAR_RECONSTRUCTION").any())
         blocked = None
         if day.date() > now.date():
             blocked = "미래 날짜는 처리할 수 없습니다. 완료된 거래일을 선택하세요."
@@ -209,6 +226,17 @@ class OperationsQueries:
             blocked = "주말입니다. 완료된 거래일을 선택하세요."
         elif state and target < state["last_date"]:
             blocked = "계좌 처리일보다 과거로 되돌릴 수 없습니다."
+        pending_sessions = []
+        if not blocked:
+            if state and target > state["last_date"]:
+                from exchange_calendars import get_calendar
+
+                pending_sessions = [session.date().isoformat() for session in get_calendar(
+                    "XKRX", start=state["last_date"], end=target
+                ).sessions_in_range(state["last_date"], target)
+                    if session.date().isoformat() > state["last_date"]]
+            elif not state:
+                pending_sessions = [target]
         return dict(
             today=str(now.date()),
             now=now.isoformat(),
@@ -217,7 +245,12 @@ class OperationsQueries:
             requires_industry=needs_industry,
             industry_ready=not needs_industry or target in dates,
             industry_latest=dates[-1] if dates else None,
+            industry_observed_at=industry_observed_at,
+            industry_classification_observed_at=industry_classification_observed_at,
+            industry_reconstructed=industry_reconstructed,
             processed=bool(state and state["last_date"] == target),
+            last_processed_date=state["last_date"] if state else None,
+            pending_sessions=pending_sessions,
             blocked=blocked,
         )
 
@@ -479,17 +512,24 @@ class OperationsQueries:
             return []
         period = self.context.configuration(w)[0].atr_days
         atr = wilder_atr_series(pd.DataFrame(valid), period)
+        volumes = pd.to_numeric(pd.DataFrame(valid)["volume"], errors="coerce")
+        prior_20_volume = volumes.shift().rolling(20).mean()
         chart_start = (pd.Timestamp(date) - pd.DateOffset(months=15)).date().isoformat()
         chart = []
         for index, row in enumerate(valid):
             if row["date"] < chart_start:
                 continue
             daily_atr = atr.iloc[index]
+            volume_base = prior_20_volume.iloc[index]
+            volume_ratio = (float(volumes.iloc[index]) / float(volume_base)
+                            if pd.notna(volumes.iloc[index]) and pd.notna(volume_base) and volume_base > 0
+                            else None)
             previous_close = float(valid[index - 1]["close"]) if index else None
             multiples_available = previous_close is not None and pd.notna(daily_atr) and daily_atr > 0
             chart.append({
                 **row,
                 "atr": None if pd.isna(daily_atr) else float(daily_atr),
+                "volume_ratio": volume_ratio,
                 "atr_up_multiple": max(0.0, float(row["high"]) - previous_close) / daily_atr if multiples_available else None,
                 "atr_down_multiple": max(0.0, previous_close - float(row["low"])) / daily_atr if multiples_available else None,
             })

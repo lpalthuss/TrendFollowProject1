@@ -27,11 +27,13 @@ def test_guidance_distinguishes_missing_industry_processed_day_and_date_gates(op
     w=create(ops)
     g=ops.guidance(w['id'])
     assert g['as_of']=='2026-11-09' and g['industry_ready'] and not g['processed']
+    assert g['last_processed_date'] is None and g['pending_sessions']==['2026-11-09']
     assert ops.guidance(w['id'],'2026-11-10')['blocked']
     assert ops.guidance(w['id'],'2026-11-08')['blocked']
     job=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
     assert job['status']=='completed'
     assert ops.guidance(w['id'],'2026-11-06')['processed']
+    assert ops.guidance(w['id'],'2026-11-09')['pending_sessions']==['2026-11-09']
     assert ops.guidance(w['id'],'2026-11-05')['blocked']
     directory=project/'data/industries';directory.mkdir()
     u=pd.read_csv(project/'data/market/universe.csv')
@@ -43,6 +45,20 @@ def test_guidance_distinguishes_missing_industry_processed_day_and_date_gates(op
     assert not ops.guidance(setup['id'])['industry_ready']
     pd.DataFrame({'date':['2026-11-09']}).to_csv(peer,index=False)
     assert ops.guidance(setup['id'])['industry_ready']
+    pd.DataFrame({'date':['2026-11-09'],
+                  'snapshot_observed_at':['2026-11-09T21:16:52+09:00'],
+                  'classification_observed_at':['2026-11-09T20:00:00+09:00']}).to_csv(peer,index=False)
+    assert ops.guidance(setup['id'])['industry_observed_at']=='2026-11-09T21:16:52+09:00'
+
+
+def test_guidance_lists_all_unprocessed_exchange_sessions_before_daily_run(ops, monkeypatch):
+    w=create(ops)
+    first=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
+    assert first['status']=='completed', first.get('error')
+    monkeypatch.setattr(ops,'clock',lambda:datetime.fromisoformat('2026-11-11T18:00:00+09:00'))
+    guidance=ops.guidance(w['id'],'2026-11-11')
+    assert guidance['last_processed_date']=='2026-11-06'
+    assert guidance['pending_sessions']==['2026-11-09','2026-11-10','2026-11-11']
 
 
 def test_before_close_guidance_defaults_to_previous_completed_weekday(ops,monkeypatch):
@@ -428,6 +444,7 @@ def test_price_chart_daily_atr_uses_account_wilder_period_and_full_history(ops):
     previous_close=history.close.iloc[-2]
     assert rows[-1]['atr_up_multiple']==pytest.approx(max(0,history.high.iloc[-1]-previous_close)/expected)
     assert rows[-1]['atr_down_multiple']==pytest.approx(max(0,previous_close-history.low.iloc[-1])/expected)
+    assert rows[-1]['volume_ratio']==pytest.approx(history.volume.iloc[-1]/history.volume.iloc[-21:-1].mean())
     assert all(row['atr'] is None or row['atr']>0 for row in rows)
 
 

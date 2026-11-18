@@ -23,7 +23,7 @@ trendfollow = "trendfollow.cli:main"
 include = ["trendfollow*"]
 
 [tool.setuptools.package-data]
-trendfollow = ["web/*.html", "web/*.js", "web/*.css", "web/manifest.json", "web/src/*.js"]
+trendfollow = ["web/*.html", "web/*.js", "web/*.css", "web/manifest.json", "web/src/*.js", "price_chart.html", "vendor/*.js", "vendor/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

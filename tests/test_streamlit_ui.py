@@ -1,13 +1,27 @@
 """Exercise reruns, empty state, authorization and unknown-value filtering."""
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
 from trendfollow.streamlit_ui import (auth_key, candidate_stage, candidate_table_rows, filter_candidates,
-                                     high52_distance, issue_auth_token, valid_auth_token)
+                                     high52_distance, issue_auth_token, missing_candidate_sessions,
+                                     observed_time_label, valid_auth_token)
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_industry_observation_time_is_labelled_in_kst_without_inventing_missing_time():
+    assert observed_time_label('2026-11-18T16:26:03+09:00') == '2026-11-18 16:26 KST'
+    assert observed_time_label('2026-11-10') == '2026-11-10 · 시각 기록 없음'
+
+
+def test_candidate_capture_needs_an_unsaved_session_in_selected_range():
+    end = date(2026, 11, 18)
+    saved = {'2026-11-16', '2026-11-17', '2026-11-18'}
+    assert missing_candidate_sessions(date(2026, 11, 16), end, saved) == []
+    assert missing_candidate_sessions(date(2026, 11, 13), end, saved) == ['2026-11-13']
 
 
 def test_auth_cookie_is_signed_expires_and_changes_with_password():
@@ -45,6 +59,20 @@ def test_streamlit_stops_before_using_stale_operations():
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
     assert any('코드가 변경' in error.value for error in app.error)
     assert not app.radio
+
+
+def test_stale_server_shows_running_job_instead_of_claiming_it_stopped():
+    class StaleOperations:
+        jobs = {'job': {'id': 'job', 'workspace': 'account', 'status': 'running'}}
+        def refresh_jobs(self):
+            pass
+
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), \
+         patch('trendfollow.streamlit_ui.operations', return_value=StaleOperations()), \
+         patch('trendfollow.streamlit_ui.job_status') as status:
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+    assert any('기존 코드로 계속 실행' in warning.value for warning in app.warning)
+    status.assert_called_once()
 
 
 def test_candidate_table_uses_display_names_and_hides_internal_fields():
@@ -198,7 +226,7 @@ def test_daily_action_accepts_missing_industry_and_selected_price_source(monkeyp
         app.button[0].click().run(timeout=30)
         app.selectbox(key='price-source').set_value('pykrx').run(timeout=30)
         app.radio(key='page-picker').set_value('오늘의 운용').run(timeout=30)
-        next(button for button in app.button if button.label=='② 가격 갱신 + 종가 모의 처리').click().run(timeout=30)
+        next(button for button in app.button if button.label=='② 일봉 수집 + 미처리 거래일 모의 처리').click().run(timeout=30)
         assert submit.call_args.args[0]['action'] == 'daily'
         assert submit.call_args.args[0]['price_source'] == 'pykrx'
 
