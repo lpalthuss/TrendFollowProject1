@@ -33,6 +33,22 @@ def selection_home(root):
     return Path(root) / "outputs" / "ui" / "candidate-universes"
 
 
+def industry_membership_snapshot(root, as_of):
+    """Use the latest observed classification no later than the decision date."""
+    snapshots = Path(root) / "data" / "industries" / "snapshots"
+    candidates = sorted(
+        (path for path in snapshots.glob("????-??-??/memberships.csv")
+         if path.parent.name <= as_of),
+        key=lambda path: path.parent.name,
+    )
+    if not candidates:
+        raise ValueError(
+            f"{as_of} 이전에 저장된 산업 구성 기록이 없어 후보군을 분류할 수 없습니다. "
+            "계좌는 보존되었습니다."
+        )
+    return candidates[-1]
+
+
 def _publish_directory(stage, target):
     """Retry transient Windows file locks while publishing an immutable snapshot."""
     for attempt in range(10):
@@ -232,18 +248,20 @@ def account_universe(context, workspace, as_of, state):
         raise ValueError("날짜별 후보군이 비어 있습니다.")
     rules, _ = context.configuration(workspace)
     if rules.entry_method == "setup":
-        memberships = Path(context.root) / "data" / "industries" / "snapshots" / as_of / "memberships.csv"
+        memberships = industry_membership_snapshot(context.root, as_of)
         peer = Path(context.root) / "data" / "industries" / "peer-returns.csv"
-        if not memberships.is_file() or not peer.is_file():
-            raise ValueError(f"{as_of} 산업 구성과 동료 기록을 먼저 수집하세요.")
+        if not peer.is_file():
+            raise ValueError(f"{as_of} 산업 동료 기록을 먼저 수집하세요.")
         labels = pd.read_csv(memberships, dtype={"symbol": str}, keep_default_na=False)
         labels = labels.drop_duplicates("symbol")
         members = members.rename(columns={"sector": "sector_original"})
-        members = members.merge(labels.drop(columns=["name", "market", "benchmark"], errors="ignore"),
+        members = members.merge(labels.drop(columns=["name", "market", "benchmark",
+                                                    "day_return", "quote_eligible", "quote_volume"], errors="ignore"),
                                 on="symbol", how="left", validate="one_to_one")
         missing = members.sector.isna()
         members.loc[missing, "sector"] = "UNCLASSIFIED:" + members.loc[missing, "symbol"]
         members["industry_peer_history"] = str(peer.resolve())
+        members["industry_membership_observed_on"] = memberships.parent.name
     members["candidate_active"] = True
     held = set((state or {}).get("positions", {})) | {
         row["symbol"] for row in (state or {}).get("pending", []) if row.get("symbol")

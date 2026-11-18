@@ -188,6 +188,39 @@ def test_setup_account_universe_keeps_removed_holding_for_exit_management(tmp_pa
         ops.close()
 
 
+def test_setup_account_universe_uses_prior_observed_membership_for_missing_day(tmp_path):
+    industry=tmp_path/'data'/'industries'
+    prior=industry/'snapshots'/'2026-11-13'
+    future=industry/'snapshots'/'2026-11-17'
+    prior.mkdir(parents=True)
+    future.mkdir(parents=True)
+    pd.DataFrame([dict(symbol='000002',sector='PRIOR',industry_name='prior')]).to_csv(
+        prior/'memberships.csv',index=False)
+    pd.DataFrame([dict(symbol='000002',sector='FUTURE',industry_name='future')]).to_csv(
+        future/'memberships.csv',index=False)
+    (industry/'peer-returns.csv').write_text(
+        'date,symbol,sector,day_return,benchmark_day_return,quote_eligible\n',encoding='utf-8')
+    folder=candidates.selection_home(tmp_path)/'2026-11-16'
+    folder.mkdir(parents=True)
+    pd.DataFrame([dict(symbol='000002',name='selected',market='KOSPI',sector='KOSPI:1',
+                       benchmark='069500',recent_turnover_proxy=2e9)]).to_csv(
+        folder/'universe.csv',index=False)
+    pd.DataFrame(columns=['symbol','reason']).to_csv(folder/'added.csv',index=False)
+    pd.DataFrame(columns=['symbol','reason']).to_csv(folder/'removed.csv',index=False)
+    (folder/'summary.json').write_text('{"as_of":"2026-11-16","count":1}',encoding='utf-8')
+    ops=Operations(tmp_path)
+    try:
+        w=ops.create_workspace({'name':'과거 산업 구성','rules':asdict(Rules(entry_method='setup')),'limits':{}})
+        path=candidates.account_universe(ops,w,'2026-11-16',None)
+        row=pd.read_csv(path,dtype={'symbol':str}).iloc[0]
+        assert row.sector=='PRIOR'
+        assert row.industry_membership_observed_on=='2026-11-13'
+        assert 'day_return' not in row.index
+        assert not (industry/'snapshots'/'2026-11-16').exists()
+    finally:
+        ops.close()
+
+
 def test_krx_historical_universe_uses_dated_basic_info_and_daily_turnover(tmp_path, monkeypatch):
     monkeypatch.setenv('KRX_OPEN_API_KEY', 'test-key')
     calls = []

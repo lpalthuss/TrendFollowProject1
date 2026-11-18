@@ -169,10 +169,14 @@ class JobManager:
                 diagnostic.write_text("".join(traceback.format_exception(error)), encoding="utf-8")
             except OSError:
                 pass
-            job.update(
-                status="failed",
-                error=f"예상하지 못한 {type(error).__name__} 오류입니다. 작업 ID {key}의 서버 진단 기록을 확인하세요.",
-            )
+            if isinstance(error, RuntimeError) and "cannot schedule new futures after interpreter shutdown" in str(error):
+                job.update(status="interrupted", error="UI 서버 종료로 작업이 중단됐습니다. "
+                           "완료된 거래일은 계좌에 보존됐으며, 서버 재시작 후 남은 날짜를 이어 처리할 수 있습니다.")
+            else:
+                job.update(
+                    status="failed",
+                    error=f"예상하지 못한 {type(error).__name__} 오류입니다. 작업 ID {key}의 서버 진단 기록을 확인하세요.",
+                )
         finally:
             job["finished_at"] = self.context.now().isoformat()
             with self.context.lock:

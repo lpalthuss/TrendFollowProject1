@@ -293,7 +293,8 @@ class ActionRunner:
                 from exchange_calendars import get_calendar
                 from ..candidate_universe import (
                     account_universe, acquisition_universe, available_selections,
-                    backfill_added_history, capture_selection, latest_completed_session,
+                    backfill_added_history, capture_selection, industry_membership_snapshot,
+                    latest_completed_session,
                 )
 
                 last = self.context.state(w)["last_date"]
@@ -305,7 +306,7 @@ class ActionRunner:
                 available = set(available_selections(self.context.root))
                 missing = [day for day in sessions if day not in available]
                 latest = latest_completed_session(self.context.now())
-                if missing == [latest]:
+                if missing == [latest] and latest == self.context.now().date().isoformat():
                     progress(f"{latest} 시장 후보군 선정 중")
                     capture_selection(self.context.root, latest, self.context.now(), progress)
                     available.add(latest)
@@ -314,12 +315,10 @@ class ActionRunner:
                     raise ValueError("과거 날짜의 후보군 선정 기록이 없습니다: " + ", ".join(missing) +
                                      ". 현재 종목 마스터로 과거 목록을 소급하지 않습니다. 계좌는 보존되었습니다.")
                 if rules.entry_method == "setup":
-                    absent = [day for day in sessions if not (
-                        self.context.root / "data" / "industries" / "snapshots" / day / "memberships.csv"
-                    ).is_file()]
-                    if absent:
-                        raise ValueError("날짜별 산업 구성 기록이 없습니다: " + ", ".join(absent) +
-                                         ". 계좌는 보존되었습니다.")
+                    for day in sessions:
+                        snapshot = industry_membership_snapshot(self.context.root, day)
+                        if snapshot.parent.name != day:
+                            progress(f"{day} 산업 분류에 {snapshot.parent.name} 저장 구성 사용")
                 completed = []
                 for day in sessions:
                     progress(f"{day} 후보군·보유 종목 준비 중", len(completed), len(sessions))
@@ -328,16 +327,26 @@ class ActionRunner:
                     decision = account_universe(self.context, current, day, state)
                     acquisition = acquisition_universe(self.context, current, decision)
                     backfill_added_history(self.context.path(current["data_dir"]), decision, day, progress)
+
+                    def day_progress(message, current=None, total=None):
+                        detail = (f" · 현재 단계 {current}/{total}" if isinstance(current, int)
+                                  and isinstance(total, int) and total > 0
+                                  and "종가 처리 중" not in message else "")
+                        progress(f"전체 {len(completed)}/{len(sessions)}거래일 완료 · {message}{detail}",
+                                 len(completed), len(sessions))
+
                     result = daily_run(
                         current["universe"], self.context.path(current["data_dir"]), state_path,
                         day, current["capital"], config, self.context.root / ".env", "kiwoom",
-                        catch_up=True, reconstruct_missing_peers=True, progress=progress,
+                        catch_up=True, reconstruct_missing_peers=True, progress=day_progress,
                         price_source=payload.get("price_source", "naver"),
                         universe_by_session={day: decision},
                         fingerprint_universe_path=current["universe"],
                         acquisition_universe_path=acquisition,
                     )
                     completed.append(day)
+                    progress(f"전체 {len(completed)}/{len(sessions)}거래일 완료 · {day} 처리 완료",
+                             len(completed), len(sessions))
                 result["processed_dates"] = completed
                 result["candidate_universe_mode"] = "daily"
             else:
