@@ -186,13 +186,26 @@ def test_market_stage_and_52week_distance_do_not_depend_on_buy_route():
     assert high52_distance(faded) == '1.8% 남음'
 
 
+def navigate(app, page):
+    if page == '날짜별 시장 후보':
+        app.radio(key='page-picker').set_value('시장 후보').run(timeout=30)
+        return
+    section = '운용 기록' if page in ('종목 탐색','날짜별 시장 후보','운용 기록') else '오늘의 운용'
+    back = next((button for button in app.button if button.label.endswith('으로 돌아가기')), None)
+    if back:
+        back.click().run(timeout=30)
+    app.radio(key='page-picker').set_value(section).run(timeout=30)
+    if page != section:
+        app.button(key=f'nav-{page}').click().run(timeout=30)
+
+
 def test_readonly_navigation_never_submits_jobs(monkeypatch):
     monkeypatch.delenv('UI_PASSWORD',raising=False)
     with patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch('trendfollow.ui_service.Operations.submit') as submit:
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         assert not app.exception
-        for page in ['오늘의 운용','날짜별 시장 후보','보유·체결','장중 관측','정정·검증','전략·설정','종목 탐색']:
-            app.radio(key='page-picker').set_value(page).run(timeout=30)
+        for page in ['오늘의 운용','날짜별 시장 후보','운용 기록','장중 관측','정정·검증','전략·설정','종목 탐색']:
+            navigate(app, page)
             assert not app.exception
             assert not app.error
         submit.assert_not_called()
@@ -203,7 +216,7 @@ def test_account_change_returns_to_primary_workflow(monkeypatch):
     with patch('trendfollow.streamlit_ui.setting', return_value=''), \
          patch('trendfollow.streamlit_ui.job_status'):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
-        app.radio(key='page-picker').set_value('종목 탐색').run(timeout=30)
+        navigate(app, '종목 탐색')
         current = app.selectbox(key='account-picker').value
         other = 'setup-rs' if current != 'setup-rs' else 'baseline'
         app.selectbox(key='account-picker').set_value(other).run(timeout=30)
@@ -217,7 +230,7 @@ def test_observation_selects_account_stock_by_name(monkeypatch):
     with patch('trendfollow.streamlit_ui.setting', return_value=''), \
          patch('trendfollow.streamlit_ui.job_status'):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
-        app.radio(key='page-picker').set_value('장중 관측').run(timeout=30)
+        navigate(app, '장중 관측')
         chooser = next(widget for widget in app.multiselect if widget.label == '감시 종목명·코드 검색')
         assert any('000080' in label and '·' in label for label in chooser.options)
         chooser.set_value(['000080']).run(timeout=30)
@@ -250,7 +263,7 @@ def test_observation_shows_selected_stock_run_instead_of_previous_stock(monkeypa
          patch.object(IntradayService, 'plan_basis', return_value=dict(as_of='2026-11-18', industry_ready=True)), \
          patch.object(IntradayService, 'subscription_preview', return_value=dict(count=1, industries=[])):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
-        app.radio(key='page-picker').set_value('장중 관측').run(timeout=30)
+        navigate(app, '장중 관측')
         next(widget for widget in app.multiselect if widget.label == '감시 종목명·코드 검색').set_value(['009150']).run(timeout=30)
         assert not app.exception
         assert any('OPSP0008' in item.value for item in app.error)
@@ -278,7 +291,7 @@ def test_revision_name_search_passes_exact_stock_code(monkeypatch):
          patch('trendfollow.streamlit_ui.job_status'), \
          patch.object(Operations, 'revision_view', revision_view):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
-        app.radio(key='page-picker').set_value('정정·검증').run(timeout=30)
+        navigate(app, '정정·검증')
         next(field for field in app.text_input if field.label == '변경 종목명·코드 검색').set_value('삼성전자').run(timeout=30)
         assert not app.exception and not app.error
         assert seen[-1] == ['005930']
@@ -319,7 +332,7 @@ def test_password_gate_and_account_save(tmp_path, monkeypatch):
     assert not app.exception
     assert not any(field.label == '운용 비밀번호' for field in app.text_input)
     assert not any(button.label == '로그인' for button in app.button)
-    app.radio(key='page-picker').set_value('전략·설정').run()
+    navigate(app, '전략·설정')
     next(b for b in app.button if b.label=='별도 계좌 저장').click().run()
     assert not app.exception
     assert not app.error
@@ -347,7 +360,7 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
             dict(date='2026-11-13',close=9900),dict(date='2026-11-16',close=10000)]):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         assert not app.exception and not app.error
-        app.radio(key='page-picker').set_value('종목 탐색').run(timeout=30)
+        navigate(app, '종목 탐색')
         assert any(s.value=='테스트 상승' for s in app.subheader)
         next(t for t in app.text_input if t.label=='종목명·코드·산업 검색').set_value('대기').run()
         assert not app.exception and not app.error
@@ -355,7 +368,7 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
         next(b for b in app.button if b.label=='관측 목록에 추가').click().run()
         key=app.selectbox(key='account-picker').value
         assert app.session_state[f'watch-{key}']==['000210']
-        app.radio(key='page-picker').set_value('장중 관측').run(timeout=30)
+        navigate(app, '장중 관측')
         assert app.multiselect(key=f'watch-{key}').value == ['000210']
 
 
@@ -391,7 +404,7 @@ def test_market_candidate_page_handles_stale_cached_date_query():
         return dates
     with patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch.object(Operations, 'candidate_dates', old_dates):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
-        app.radio(key='page-picker').set_value('날짜별 시장 후보').run(timeout=30)
+        navigate(app, '날짜별 시장 후보')
         next(widget for widget in app.selectbox if widget.label == '후보군 자료 원천').set_value('krx_open_api').run(timeout=30)
         assert not app.exception and not app.error
         assert any('서버를 다시 시작' in notice.value for notice in app.warning)
@@ -415,3 +428,28 @@ def test_close_plan_shows_account_risk_at_close(monkeypatch):
     assert '삼성전자' in row['종목']
     assert 0 < row['예상 수량(주)'] <= 20
     assert 0 < row['계획 위험(원)'] <= 2000
+
+
+def test_history_uses_selected_checkpoint_and_next_day_orders(tmp_path):
+    import json
+
+    for day, symbol in [('2026-11-16','005930'), ('2026-11-17','000080')]:
+        folder = tmp_path / day
+        folder.mkdir()
+        (folder / 'state.json').write_text(json.dumps(dict(cash=1000, positions={},
+            pending=[dict(symbol=symbol, reference_price=200)])), encoding='utf8')
+    (folder / 'orders.csv').write_text('date,symbol,status\n2026-11-17,005930,filled\n2026-11-17,000080,rejected\n',
+                                       encoding='utf8')
+
+    with patch('trendfollow.streamlit_ui.stored_symbol_names', return_value={}):
+        app = AppTest.from_string(
+            'from trendfollow.streamlit_ui import account_history\n'
+            'from types import SimpleNamespace\nfrom pathlib import Path\n'
+            f'ops=SimpleNamespace(path=lambda _:Path({str(tmp_path / "state.json")!r}))\n'
+            'account_history(ops,"demo",dict(workspace={"state":"state.json"},account_as_of="2026-11-17"))'
+        ).run()
+        app.selectbox(key='history-day-demo').set_value('2026-11-16').run()
+        assert not app.exception
+        assert list(app.dataframe[0].value['종목코드']) == ['005930']
+        assert list(app.dataframe[1].value['종목코드']) == ['005930']
+        assert list(app.dataframe[1].value['status']) == ['filled']

@@ -246,8 +246,7 @@ def submit(ops, key, action, as_of, **extra):
         job = ops.submit(dict(workspace=key, action=action, as_of=as_of, **extra))
         st.session_state[f'job-status-seen-{key}'] = (job['id'],'queued')
         st.session_state[f'job-submitted-{key}'] = job['id']
-        st.info(f'{ACTIONS[action]} 요청 접수 · {job["as_of"]}. 작업 상태 영역에서 진행·완료를 확인하세요. '
-                f'작업 ID: {job["id"]}')
+        st.info(f'{ACTIONS[action]} 요청 접수 · {job["as_of"]}. 작업 상태 영역에서 진행·완료를 확인하세요.')
     except (ValueError, TypeError, KeyError, OSError) as error:
         st.error(str(error))
 
@@ -343,11 +342,15 @@ def observed_time_label(value):
 
 
 def open_page(page):
-    st.session_state['page-picker'] = page
+    if page == '날짜별 시장 후보':
+        page = '시장 후보'
+    section = page if page == '시장 후보' else '운용 기록' if page in ('운용 기록', '보유·체결', '종목 탐색', '날짜별 시장 후보') else '오늘의 운용'
+    st.session_state['page-picker'] = section
+    st.session_state['detail-page'] = None if page in (section, '보유·체결') else page
 
 
 def account_changed():
-    st.session_state['page-picker'] = '오늘의 운용'
+    open_page('오늘의 운용')
 
 
 def suggested_watch_symbols(snapshot, plans, selected=()):
@@ -524,12 +527,20 @@ def workflow(ops, key, snapshot, as_of, can_write):
             if not can_write:
                 st.caption('실행하려면 운용 비밀번호로 로그인하세요.')
             elif snapshot['status'] == 'configuration_mismatch':
-                st.caption('계좌 설정과 저장 자료가 달라 실행할 수 없습니다. 정정·검증에서 상태를 확인하세요.')
+                st.button('계좌 설정 불일치 확인', on_click=open_page, args=('정정·검증',))
         else:
             st.info('선택한 날짜에 처리할 거래일이 없습니다. 목표일을 확인하세요.')
     if priority_job:
         job_status(ops, key, show_next=False)
     close_plan_summary(ops, key, snapshot)
+    if g['processed']:
+        orders = snapshot['logs'].get('orders', [])
+        fills = [row for row in orders if row.get('status') == 'filled']
+        st.write(f'계좌 현금 {snapshot["cash"]:,.0f}원 · 보유 {len(snapshot["positions"])}종목')
+        if fills:
+            with st.expander(f'{as_of} 모의 체결 내역'):
+                table(fills, stored_symbol_names(ops, key))
+
     with st.expander('처리 날짜·자료 상태 확인'):
         a, b, c = st.columns(3)
         a.metric('마지막 종가 처리', g.get('last_processed_date') or '미시작')
@@ -541,6 +552,8 @@ def workflow(ops, key, snapshot, as_of, can_write):
             if len(pending) > 8:
                 st.write(', '.join(pending))
     with st.expander('자료 상태와 수동 작업'):
+        for col, page in zip(st.columns(2), ('장중 관측', '정정·검증')):
+            col.button(page, key=f'nav-{page}', on_click=open_page, args=(page,))
         if g['requires_industry']:
             status = '준비됨' if g['industry_ready'] else '미수집'
             st.write(f'{as_of} 산업 동료 수익률: {status}')
@@ -596,111 +609,75 @@ def market_candidates(ops, key, snapshot, can_write):
     analyzed = selected in dates['market_analysis_dates']
     st.write('선정 기록:', '있음' if selection_saved else '없음', '· 시장 조건 계산:', '완료' if analyzed else '미완료')
 
-    st.markdown('#### ① 날짜별 종목 목록 저장')
-    st.caption('거래일별로 매수 검토 대상이 될 종목 목록을 저장합니다. 모의계좌 판단에 필요한 '
-               '각 종목의 일봉은 「오늘의 운용」에서 가격 갱신·종가 처리할 때 채웁니다.')
-    source = st.selectbox('후보군 자료 원천', ['kis','krx_open_api','pykrx'],
-                          format_func=lambda value: {'kis':'KIS 현재 마스터','krx_open_api':'KRX Open API 날짜별','pykrx':'pykrx 날짜별'}[value])
-    if source == 'kis':
-        st.caption('조회 시점의 현재 KIS 목록만 저장합니다. 과거 날짜 목록은 가져올 수 없습니다.')
-    else:
-        st.caption('완료 거래일의 종목·거래 자료로 누락 목록을 만들고, 직전 저장일과 편입·제외를 비교합니다. KIS 선정 결과와 다를 수 있습니다.')
-    suggested = dates.get('suggested_capture_start') or dates.get('capture_window_start') or dates['reference_dates'][-1]
-    start = None
-    missing = []
-    valid_range = False
-    if source != 'kis':
-        with st.expander('수집 시작일 직접 바꾸기 · 고급'):
-            start = st.date_input('누락 자료 수집 시작일', value=date.fromisoformat(suggested),
-                                  key=f'candidate-start-{key}',
-                                  help='기본값은 자동으로 찾은 첫 누락일입니다. 이 날짜부터 최근 완료 거래일까지 저장되지 않은 목록을 채웁니다.')
-        if not selection_saved and start.isoformat() > selected:
-            st.warning(f'{selected}의 종목 목록이 없습니다. 현재 수집 시작일 {start}은 더 늦어 이 날짜를 채우지 않습니다.')
-        if 'missing_selection_count' not in dates:
-            st.warning('실행 중인 UI 서버의 후보 날짜 조회가 이전 버전입니다. 서버를 다시 시작하고 화면을 새로고침하세요.')
-        end = date.fromisoformat(dates['capture_as_of'])
-        try:
-            missing = missing_candidate_sessions(start, end, dates['selection_dates'])
-            valid_range = True
-        except ValueError as error:
-            st.warning(str(error))
-        if valid_range and missing:
-            st.info(f'{start}~{dates["capture_as_of"]}에서 저장되지 않은 거래일 목록을 채웁니다. '
-                    f'누락 {len(missing)}거래일 · 이미 저장된 날짜는 건너뜁니다.')
-        elif valid_range:
-            st.success(f'{start}~{end}에 누락된 종목 목록이 없습니다.')
-    can_capture = (can_write and (dates['capture_available'] if source == 'kis'
-                   else source in dates.get('candidate_sources', []) and valid_range and bool(missing)))
-    capture_label = ('저장할 누락 목록 없음' if source != 'kis' and valid_range and not missing
-                     else '누락된 날짜의 종목 목록 저장')
-    if st.button(capture_label, disabled=not can_capture):
-        submit(ops,key,'candidate_universe',dates['capture_as_of'],candidate_source=source,
-               **({'from_as_of':start.isoformat()} if start else {}))
-    st.markdown('#### ② 선택한 거래일의 전략 조건 확인')
-    st.caption('화면에서 선택한 거래일의 종목별 RS·진입 조건 판정 결과를 보여줍니다. '
-               '계산·조회만으로 ③의 설정이나 계좌의 현금·보유 종목·모의 체결 내역은 바뀌지 않습니다.')
-    if analyzed:
-        st.caption(f'{selected} 기준 결과가 아래에 표시됩니다. 입력이 같으면 재계산 없이 저장된 결과를 사용합니다.')
-    button_label = ('저장된 결과 표시 중 · 재계산 가능' if analyzed else '선택한 거래일까지 전략 조건 계산')
-    if st.button(button_label, disabled=not can_write or not selection_saved):
-        submit(ops,key,'market_analyze',selected)
-    if selection_saved:
-        selection = ops.candidate_selection(selected, include_excluded=True)
-        st.caption(f'{selected} 기준 선정 종목 {len(selection["members"])}개 · 자료 원천 {selection["summary"]["source"]}')
-        with st.expander(f'{selected} 선정 종목과 편입·제외 기록'):
-            st.caption('전일 대비 제외는 이전 저장일에는 선정됐지만 이날 빠진 종목입니다. '
-                       '당일 선정 제외는 이날 시장 자료에서 확인했으나 선정 기준을 충족하지 못한 종목입니다.')
-            with st.popover('표 항목 설명'):
-                st.write('거래대금: KRX Open API·pykrx는 해당 거래일의 거래대금, KIS는 최근 거래대금 추정액입니다. '
-                         '선정 기준은 요약에 표시된 금액입니다.')
-                st.write('산업: 저장된 산업 구성으로 표시한 이름입니다. 해당 종목의 산업 정보가 없으면 산업 분류 없음으로 표시합니다.')
-                st.write('내부 저장값 benchmark는 상대강도 비교에 쓰는 대표 종목 코드입니다. '
-                         '코스피 069500, 코스닥 229200이며 계좌 설정이 시장지수 기준이면 지수를 사용합니다. '
-                         '산업 코드는 산업별 계산을 위한 내부 식별자입니다.')
-            groups = [('선정', 'members', False), ('새 편입', 'added', False),
-                      ('전일 대비 제외', 'removed', True), ('당일 선정 제외', 'excluded', True)]
-            tabs = st.tabs([f'{label} {len(selection.get(group, []))}개' for label, group, _ in groups])
-            for tab, (_, group, show_reason) in zip(tabs, groups):
-                with tab:
-                    table(candidate_table_rows(selection.get(group, []),
-                                               selection['summary']['source'], show_reason))
-
-    st.markdown('#### ③ 날짜별 선정 종목을 이 계좌의 신규 매수 후보로 사용')
-    st.caption('장 마감 후 「오늘의 운용」에서 새 거래일의 종가 모의 처리를 실행할 때 사용합니다. '
-               '처리하는 거래일에 저장된 선정 종목만 신규 매수 대상으로 검토하며, 계좌의 RS·진입 조건도 충족해야 합니다. '
-               '선정 목록에서 빠진 기존 보유 종목은 계속 관리합니다.')
-    policy = snapshot.get('candidate_policy')
-    workspace = snapshot['workspace']
-    if policy:
-        st.success(f'이 계좌에 이미 적용된 설정 · {policy["enabled_after"]}까지는 기존 방식, '
-                   '다음 처리 거래일부터 날짜별 선정 종목 사용')
-        st.caption('② 전략 조건 계산을 실행해서 켜진 설정은 아닙니다.')
-        button_label = '이미 적용됨'
-    elif workspace.get('builtin'):
-        st.info('기본 계좌에는 적용할 수 없습니다. 일반 계좌를 선택하세요.')
-        button_label = '기본 계좌에는 적용 불가'
-    elif workspace.get('mode') == 'recalculation':
-        st.info('정정 비교 계좌에는 적용할 수 없습니다. 원계좌를 선택하세요.')
-        button_label = '정정 비교 계좌에는 적용 불가'
-    elif not snapshot['account_as_of']:
-        st.info('첫 종가 처리 전입니다. 사이드바의 「오늘의 운용」에서 기준일을 정하고 '
-                '「일봉 수집 + 미처리 거래일 모의 처리」를 완료한 뒤 적용할 수 있습니다.')
-        button_label = '첫 종가 처리 후 사용 가능'
-    elif snapshot['status'] != 'ready':
-        st.warning('계좌 설정과 저장 자료 상태를 확인한 뒤 적용할 수 있습니다.')
-        button_label = '계좌 상태 확인 필요'
-    elif not can_write:
-        st.info('운용 비밀번호로 로그인한 뒤 적용할 수 있습니다.')
-        button_label = '로그인 후 사용 가능'
-    else:
-        st.caption(f'현재 계좌 처리일 {snapshot["account_as_of"]}까지의 기록은 유지합니다. '
-                   '적용 후 다음 미처리 거래일부터 사용합니다.')
-        button_label = '이 계좌에 날짜별 후보군 적용'
-    can_apply = (can_write and not policy and bool(snapshot['account_as_of'])
-                 and not workspace.get('builtin') and workspace.get('mode') != 'recalculation'
-                 and snapshot['status'] == 'ready')
-    if st.button(button_label, disabled=not can_apply):
-        submit(ops,key,'candidate_policy',snapshot['account_as_of'])
+    with st.expander('종목 목록·전략 조건 준비', expanded=not (analyzed or selected in dates['account_analysis_dates'])):
+        st.markdown('#### ① 날짜별 종목 목록 저장')
+        st.caption('거래일별로 매수 검토 대상이 될 종목 목록을 저장합니다. 모의계좌 판단에 필요한 '
+                   '각 종목의 일봉은 「오늘의 운용」에서 가격 갱신·종가 처리할 때 채웁니다.')
+        source = st.selectbox('후보군 자료 원천', ['kis','krx_open_api','pykrx'],
+                              format_func=lambda value: {'kis':'KIS 현재 마스터','krx_open_api':'KRX Open API 날짜별','pykrx':'pykrx 날짜별'}[value])
+        if source == 'kis':
+            st.caption('조회 시점의 현재 KIS 목록만 저장합니다. 과거 날짜 목록은 가져올 수 없습니다.')
+        else:
+            st.caption('완료 거래일의 종목·거래 자료로 누락 목록을 만들고, 직전 저장일과 편입·제외를 비교합니다. KIS 선정 결과와 다를 수 있습니다.')
+        suggested = dates.get('suggested_capture_start') or dates.get('capture_window_start') or dates['reference_dates'][-1]
+        start = None
+        missing = []
+        valid_range = False
+        if source != 'kis':
+            with st.expander('수집 시작일 직접 바꾸기 · 고급'):
+                start = st.date_input('누락 자료 수집 시작일', value=date.fromisoformat(suggested),
+                                      key=f'candidate-start-{key}',
+                                      help='기본값은 자동으로 찾은 첫 누락일입니다. 이 날짜부터 최근 완료 거래일까지 저장되지 않은 목록을 채웁니다.')
+            if not selection_saved and start.isoformat() > selected:
+                st.warning(f'{selected}의 종목 목록이 없습니다. 현재 수집 시작일 {start}은 더 늦어 이 날짜를 채우지 않습니다.')
+            if 'missing_selection_count' not in dates:
+                st.warning('실행 중인 UI 서버의 후보 날짜 조회가 이전 버전입니다. 서버를 다시 시작하고 화면을 새로고침하세요.')
+            end = date.fromisoformat(dates['capture_as_of'])
+            try:
+                missing = missing_candidate_sessions(start, end, dates['selection_dates'])
+                valid_range = True
+            except ValueError as error:
+                st.warning(str(error))
+            if valid_range and missing:
+                st.info(f'{start}~{dates["capture_as_of"]}에서 저장되지 않은 거래일 목록을 채웁니다. '
+                        f'누락 {len(missing)}거래일 · 이미 저장된 날짜는 건너뜁니다.')
+            elif valid_range:
+                st.success(f'{start}~{end}에 누락된 종목 목록이 없습니다.')
+        can_capture = (can_write and (dates['capture_available'] if source == 'kis'
+                       else source in dates.get('candidate_sources', []) and valid_range and bool(missing)))
+        capture_label = ('저장할 누락 목록 없음' if source != 'kis' and valid_range and not missing
+                         else '누락된 날짜의 종목 목록 저장')
+        if st.button(capture_label, disabled=not can_capture):
+            submit(ops,key,'candidate_universe',dates['capture_as_of'],candidate_source=source,
+                   **({'from_as_of':start.isoformat()} if start else {}))
+        st.markdown('#### ② 선택한 거래일의 전략 조건 확인')
+        st.caption('화면에서 선택한 거래일의 종목별 RS·진입 조건 판정 결과를 보여줍니다. '
+                   '계산·조회만으로 계좌 설정이나 계좌의 현금·보유 종목·모의 체결 내역은 바뀌지 않습니다.')
+        if analyzed:
+            st.caption(f'{selected} 기준 결과가 아래에 표시됩니다. 입력이 같으면 재계산 없이 저장된 결과를 사용합니다.')
+        button_label = ('저장된 결과 표시 중 · 재계산 가능' if analyzed else '선택한 거래일까지 전략 조건 계산')
+        if st.button(button_label, disabled=not can_write or not selection_saved):
+            submit(ops,key,'market_analyze',selected)
+        if selection_saved:
+            selection = ops.candidate_selection(selected, include_excluded=True)
+            st.caption(f'{selected} 기준 선정 종목 {len(selection["members"])}개 · 자료 원천 {selection["summary"]["source"]}')
+            with st.expander(f'{selected} 선정 종목과 편입·제외 기록'):
+                st.caption('전일 대비 제외는 이전 저장일에는 선정됐지만 이날 빠진 종목입니다. '
+                           '당일 선정 제외는 이날 시장 자료에서 확인했으나 선정 기준을 충족하지 못한 종목입니다.')
+                with st.popover('표 항목 설명'):
+                    st.write('거래대금: KRX Open API·pykrx는 해당 거래일의 거래대금, KIS는 최근 거래대금 추정액입니다. '
+                             '선정 기준은 요약에 표시된 금액입니다.')
+                    st.write('산업: 저장된 산업 구성으로 표시한 이름입니다. 해당 종목의 산업 정보가 없으면 산업 분류 없음으로 표시합니다.')
+                    st.write('내부 저장값 benchmark는 상대강도 비교에 쓰는 대표 종목 코드입니다. '
+                             '코스피 069500, 코스닥 229200이며 계좌 설정이 시장지수 기준이면 지수를 사용합니다. '
+                             '산업 코드는 산업별 계산을 위한 내부 식별자입니다.')
+                groups = [('선정', 'members', False), ('새 편입', 'added', False),
+                          ('전일 대비 제외', 'removed', True), ('당일 선정 제외', 'excluded', True)]
+                tabs = st.tabs([f'{label} {len(selection.get(group, []))}개' for label, group, _ in groups])
+                for tab, (_, group, show_reason) in zip(tabs, groups):
+                    with tab:
+                        table(candidate_table_rows(selection.get(group, []),
+                                                   selection['summary']['source'], show_reason))
 
     if analyzed or selected in dates['account_analysis_dates']:
         detail = ops.snapshot(key, selected)
@@ -714,29 +691,57 @@ def market_candidates(ops, key, snapshot, can_write):
         st.info('선정 목록은 저장됐습니다. ② 시장 후보 계산 후 조건별 결과를 볼 수 있습니다.')
 
 
-def holdings(snapshot, names):
-    st.subheader('보유·체결 결과')
-    st.caption(f'모의계좌 마지막 처리일: {snapshot["account_as_of"] or "미시작"} · 실제 증권사 주문은 없습니다.')
-    with st.container(border=True):
-        a,b,c = st.columns(3)
-        a.metric('가용 현금',f'{snapshot["cash"]:,.0f}원')
-        b.metric('보유 종목',len(snapshot['positions']))
-        c.metric('다음 거래일 계획',len(snapshot['pending']))
-        if snapshot['pending']:
-            st.caption('아래 계획은 다음 거래일의 모의 처리에서 다시 확인합니다. 지금 실제 주문을 넣지 않습니다.')
-        else:
-            st.caption('다음 거래일 진입·추가매수 계획은 없습니다. 신호가 없는 날에도 정상적인 결과일 수 있습니다.')
-    st.markdown('#### 다음 거래일 계획')
-    table(snapshot['pending'], names)
-    st.markdown('#### 현재 보유 종목')
-    table(snapshot['positions'], names)
-    a,b = st.columns(2)
-    a.button('종목 조건 살펴보기', on_click=open_page, args=('종목 탐색',))
-    b.button('장중 관측 준비하기', on_click=open_page, args=('장중 관측',))
-    st.markdown('#### 상세 기록')
-    for name, label in [('orders','모의 주문·체결'),('trades','청산 손익'),('events','청산·운용 이벤트'),('campaign-risk','위험 검토'),('pyramiding-review','추가매수 검토')]:
-        with st.expander(label):
-            table(snapshot['logs'].get(name, []), names)
+def account_history(ops, key, snapshot):
+    from .operations.common import read_csv
+
+    st.subheader('운용 기록')
+    for col, page in zip(st.columns(2), ('종목 탐색', '날짜별 시장 후보')):
+        col.button(page, key=f'nav-{page}', on_click=open_page, args=(page,))
+    root = ops.path(snapshot['workspace']['state']).parent
+    dates = sorted((path.parent.name for path in root.glob('????-??-??/state.json')
+                    if path.parent.name <= (snapshot['account_as_of'] or '')), reverse=True)
+    if not dates:
+        st.info('저장된 일별 계좌 기록이 없습니다. 오늘의 운용에서 첫 종가 처리를 실행하세요.')
+        return
+    day = st.selectbox('계좌 처리 거래일', dates, key=f'history-day-{key}')
+    record = json.loads((root / day / 'state.json').read_text(encoding='utf-8'))
+    names = stored_symbol_names(ops, key)
+    positions = record['positions']
+    st.write(f'종가 처리 후 현금 {record["cash"]:,.0f}원 · 보유 {len(positions)}종목')
+    st.markdown('#### 이 종가로 세운 다음 거래일 계획')
+    plans = record['pending']
+    if plans:
+        table([{k: row.get(k) for k in ('symbol','reference_price','stop_price','volume_ratio')}
+               for row in plans], names)
+    else:
+        st.write('진입 후보 없음')
+    symbols = sorted(set(positions) | {row['symbol'] for row in plans})
+    if symbols:
+        symbol = st.selectbox('종목별 가격 차트', symbols, index=None,
+                              format_func=lambda code: symbol_label(code, names),
+                              key=f'history-symbol-{key}-{day}', placeholder='종목 선택')
+        if symbol:
+            bars = ops.prices(key, symbol, day)
+            if bars:
+                st.components.v1.html(chart_html(bars), height=550, scrolling=False)
+            else:
+                st.info('선택 거래일까지 저장된 가격이 없습니다.')
+    if plans and dates.index(day) > 0:
+        execution_day = dates[dates.index(day)-1]
+        orders = read_csv(root / execution_day / 'orders.csv')
+        codes = {row['symbol'] for row in plans}
+        if not orders.empty:
+            orders = orders.loc[orders.symbol.isin(codes) & orders.date.astype(str).str[:10].eq(execution_day)]
+        st.markdown(f'#### 다음 처리일({execution_day}) 후보 종목의 모의 주문 기록')
+        table(orders.to_dict('records'), names)
+    elif plans:
+        st.caption('다음 거래일 모의 처리 후 체결 결과가 표시됩니다.')
+    with st.expander('이날 보유 종목'):
+        table([dict(pos, symbol=symbol) for symbol,pos in positions.items()], names)
+    for filename, label in [('orders','모의 주문·체결'),('trades','청산 손익'),('events','운용 이벤트'),
+                            ('campaign-risk','위험 검토'),('pyramiding-review','추가매수 검토')]:
+        with st.expander(f'{day} {label}'):
+            table(read_csv(root / day / f'{filename}.csv').to_dict('records'), names)
 
 
 def recovery(ops, key, snapshot, as_of, can_write):
@@ -971,6 +976,42 @@ def settings(ops, snapshot, can_write):
     st.subheader('적용 전략')
     st.json(dict(rules=snapshot['rules'],limits=snapshot['limits']),expanded=False)
     workspace = snapshot['workspace']
+    st.markdown('#### 날짜별 선정 종목을 이 계좌의 신규 매수 후보로 사용')
+    st.caption('장 마감 후 「오늘의 운용」에서 새 거래일의 종가 모의 처리를 실행할 때 사용합니다. '
+               '처리하는 거래일에 저장된 선정 종목만 신규 매수 대상으로 검토하며, 계좌의 RS·진입 조건도 충족해야 합니다. '
+               '선정 목록에서 빠진 기존 보유 종목은 계속 관리합니다.')
+    policy = snapshot.get('candidate_policy')
+    workspace = snapshot['workspace']
+    if policy:
+        st.success(f'이 계좌에 이미 적용된 설정 · {policy["enabled_after"]}까지는 기존 방식, '
+                   '다음 처리 거래일부터 날짜별 선정 종목 사용')
+        button_label = '이미 적용됨'
+    elif workspace.get('builtin'):
+        st.info('기본 계좌에는 적용할 수 없습니다. 일반 계좌를 선택하세요.')
+        button_label = '기본 계좌에는 적용 불가'
+    elif workspace.get('mode') == 'recalculation':
+        st.info('정정 비교 계좌에는 적용할 수 없습니다. 원계좌를 선택하세요.')
+        button_label = '정정 비교 계좌에는 적용 불가'
+    elif not snapshot['account_as_of']:
+        st.info('첫 종가 처리 전입니다. 사이드바의 「오늘의 운용」에서 기준일을 정하고 '
+                '「일봉 수집 + 미처리 거래일 모의 처리」를 완료한 뒤 적용할 수 있습니다.')
+        button_label = '첫 종가 처리 후 사용 가능'
+    elif snapshot['status'] != 'ready':
+        st.warning('계좌 설정과 저장 자료 상태를 확인한 뒤 적용할 수 있습니다.')
+        button_label = '계좌 상태 확인 필요'
+    elif not can_write:
+        st.info('운용 비밀번호로 로그인한 뒤 적용할 수 있습니다.')
+        button_label = '로그인 후 사용 가능'
+    else:
+        st.caption(f'현재 계좌 처리일 {snapshot["account_as_of"]}까지의 기록은 유지합니다. '
+                   '적용 후 다음 미처리 거래일부터 사용합니다.')
+        button_label = '이 계좌에 날짜별 후보군 적용'
+    can_apply = (can_write and not policy and bool(snapshot['account_as_of'])
+                 and not workspace.get('builtin') and workspace.get('mode') != 'recalculation'
+                 and snapshot['status'] == 'ready')
+    if st.button(button_label, disabled=not can_apply):
+        submit(ops,workspace['id'],'candidate_policy',snapshot['account_as_of'])
+
     st.subheader('계좌 관리')
     st.write(f'계좌 유형: {"정정 비교" if workspace.get("mode") == "recalculation" else "일반"} · 처리일: {snapshot["account_as_of"] or "미시작"} · 상태: {"보관" if workspace.get("archived_at") else "사용 중"}')
     if not workspace.get('builtin'):
@@ -1060,26 +1101,27 @@ def job_status(ops, key, show_next=True):
         if last:
             st.caption(f'계좌에 반영된 마지막 거래일: {last} · 선택한 목표일: {as_of}')
         if status == 'completed' and last == as_of:
-            st.success('다음 단계: 「보유·체결」에서 현금·보유 종목·다음 거래일 계획을 확인하세요. '
+            st.success('다음 단계: 「운용 기록」에서 현금·보유 종목·다음 거래일 계획을 확인하세요. '
                        '장중 관측이 필요하면 그다음 「장중 관측」으로 이동하세요.')
-            st.button('보유·체결 결과 보기', key=f'job-holdings-{job["id"]}',
-                      on_click=lambda: st.session_state.update({'page-picker':'보유·체결'}))
+            st.button('운용 기록 보기', key=f'job-holdings-{job["id"]}',
+                      on_click=open_page, args=('운용 기록',))
         elif last and last < as_of:
             st.info(f'{last}까지 보존됐습니다. 서버를 다시 시작한 뒤 「오늘의 운용」에서 ②를 실행하면 '
                     f'{as_of}까지 남은 거래일을 이어 처리합니다.')
             st.button('오늘의 운용으로 이동', key=f'job-workflow-{job["id"]}',
-                      on_click=lambda: st.session_state.update({'page-picker':'오늘의 운용'}))
+                      on_click=open_page, args=('오늘의 운용',))
     if status not in {'queued','running'}:
         with st.expander(f'작업 기록 보기{f" · 이전 {len(jobs)-1}건" if len(jobs) > 1 else ""}'):
-            st.caption(f'최근 작업 · {label} · {as_of} · {statuses.get(status,status)} · {job["id"]}')
+            st.caption(f'최근 작업 · {label} · {as_of} · {statuses.get(status,status)}')
             if status in {'failed', 'interrupted'}:
                 st.write(error or '작업 기록을 확인하세요.')
             if job.get('result') is not None:
                 st.json(job['result'], expanded=False)
             if len(jobs) > 1:
                 for old in reversed(jobs[:-1]):
-                    st.caption(f'{old.get("created_at", "")} · {ACTIONS.get(old["action"],old["action"])} · '
-                               f'{statuses.get(old["status"],old["status"])} · {old["id"]}')
+                    created = observed_time_label(old.get('created_at')).removesuffix(' KST')
+                    st.caption(f'{created} · {ACTIONS.get(old["action"],old["action"])} · '
+                               f'{statuses.get(old["status"],old["status"])}')
     seen_key = f'job-status-seen-{key}'
     previous = st.session_state.get(seen_key)
     st.session_state[seen_key] = (job['id'],status)
@@ -1121,12 +1163,19 @@ def main():
         preferred = st.session_state.pop('account', None)
         if preferred in ids:
             st.session_state['account-picker'] = preferred
-        key = st.selectbox('계좌 선택',ids,format_func=names.get,key='account-picker',
-                           on_change=account_changed)
-        st.caption('계좌 선택 → 「오늘의 운용」 안내 버튼 → 결과 확인')
-        with st.expander('다른 화면 보기'):
-            page = st.radio('화면',['오늘의 운용','보유·체결','날짜별 시장 후보','종목 탐색',
-                                  '장중 관측','정정·검증','전략·설정'],key='page-picker')
+        account_col, settings_col = st.columns([3, 1], vertical_alignment='bottom')
+        key = account_col.selectbox('계좌 선택', ids, format_func=names.get, key='account-picker',
+                                    on_change=account_changed)
+        settings_col.button('설정', key='nav-전략·설정', help='계좌·전략 설정',
+                            on_click=open_page, args=('전략·설정',))
+        sections = ['오늘의 운용', '시장 후보', '운용 기록']
+        if st.session_state.get('page-picker') not in sections:
+            account_changed()
+        section = st.radio('화면', sections, horizontal=True, key='page-picker',
+                           on_change=lambda: st.session_state.pop('detail-page', None))
+        page = st.session_state.get('detail-page') or section
+        if page != section:
+            st.button(f'{section}으로 돌아가기', on_click=open_page, args=(section,))
         recommended = ops.guidance(key)['recommended_as_of']
         st.caption(f'자동 기준일: {recommended}')
         with st.expander('날짜·자료 원천 직접 변경'):
@@ -1152,9 +1201,9 @@ def main():
         if not snapshot['files_ready']:
             st.warning('시세 또는 유니버스 자료가 준비되지 않았습니다. 저장된 실제 데이터 없이 가상 결과를 표시하지 않습니다.')
         if page=='종목 탐색': workbench(ops,key,snapshot)
-        elif page=='날짜별 시장 후보': market_candidates(ops,key,snapshot,can_write)
+        elif page=='시장 후보': market_candidates(ops,key,snapshot,can_write)
         elif page=='오늘의 운용': workflow(ops,key,snapshot,as_of,can_write)
-        elif page=='보유·체결': holdings(snapshot, stored_symbol_names(ops, key))
+        elif page=='운용 기록': account_history(ops,key,snapshot)
         elif page=='장중 관측': observation(ops,key,as_of,can_write)
         elif page=='정정·검증': recovery(ops,key,snapshot,as_of,can_write)
         else: settings(ops,snapshot,can_write)
