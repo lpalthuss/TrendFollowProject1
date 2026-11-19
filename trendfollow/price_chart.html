@@ -6,23 +6,28 @@
   <style>
     :root { color-scheme: light; font: 13px system-ui, sans-serif; color: #24334a; }
     * { box-sizing: border-box; }
-    body { margin: 0; background: #fff; }
-    .frame { border: 1px solid #d4deeb; border-radius: 8px; overflow: hidden; }
-    .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 8px 10px; border-bottom: 1px solid #e2e9f2; }
-    .tools span { color: #66768c; margin: 0 5px 0 7px; }
-    button { border: 1px solid #cad6e5; border-radius: 5px; padding: 4px 8px; background: #fff; color: #254266; cursor: pointer; font: inherit; }
-    button:hover { border-color: #2962b8; }
-    button[aria-pressed="true"] { background: #e7f0ff; border-color: #3468bd; color: #174a97; font-weight: 600; }
-    #plot-wrap { position: relative; height: 470px; }
-    #plot { width: 100%; height: 100%; }
-    #legend { position: absolute; left: 10px; top: 8px; z-index: 2; max-width: calc(100% - 115px); padding: 5px 8px; border-radius: 4px; background: rgba(255,255,255,.91); color: #233750; pointer-events: none; font-size: 12px; line-height: 1.45; }
-    .foot { padding: 5px 10px; color: #697b91; font-size: 11px; border-top: 1px solid #e2e9f2; }
-    .foot a { color: #466da4; }
+    body { margin:0; background:#fff; font-variant-numeric:tabular-nums; }
+    .frame { display:flex; flex-direction:column; height:100vh; max-height:550px; border:1px solid #d6e1de; border-radius:9px; overflow:hidden; }
+    .tools { display:flex; flex-wrap:wrap; align-items:center; gap:3px; padding:7px 12px; background:#f5f8f7; }
+    .tools span { color:#51655f; margin:0 5px 0 12px; }
+    button { border:0; border-radius:4px; padding:4px 8px; background:transparent; color:#465d56; cursor:pointer; font:inherit; }
+    button:hover { background:#e0ece7; }
+    button[aria-pressed="true"] { background:#146956; color:white; font-weight:600; }
+    #legend { padding:9px 14px 6px; color:#344a43; font-size:12px; line-height:1.65; }
+    #legend strong { font-size:14px; }
+    #legend .secondary { color:#586c65; }
+    #plot-wrap { flex:1; min-height:0; }
+    #plot { width:100%; height:100%; }
+    .foot { padding:5px 12px; color:#60736c; font-size:11px; }
+    .foot a { color:#346759; }
   </style>
 </head>
 <body>
   <div class="frame">
     <div class="tools" aria-label="차트 보기 설정">
+      <button type="button" data-period="day" aria-pressed="true">일봉</button>
+      <button type="button" data-period="week" aria-pressed="false">주봉</button>
+      <button type="button" data-period="month" aria-pressed="false">월봉</button>
       <button type="button" data-kind="candle" aria-pressed="true">캔들</button>
       <button type="button" data-kind="line" aria-pressed="false">종가 선</button>
       <span>기간</span>
@@ -32,58 +37,103 @@
       <button type="button" data-months="12" aria-pressed="false">12개월</button>
       <button type="button" data-months="15" aria-pressed="false">15개월</button>
       <button type="button" data-months="all" aria-pressed="false">전체</button>
+      <span>종가 이동평균</span>
+      <button type="button" data-ma="10" aria-pressed="true" style="border-bottom:3px solid #d69418">10일</button>
+      <button type="button" data-ma="20" aria-pressed="true" style="border-bottom:3px solid #9057ad">20일</button>
+      <button type="button" data-ma="60" aria-pressed="true" style="border-bottom:3px solid #3978bd">60일</button>
+      <button type="button" data-ma="120" aria-pressed="true" style="border-bottom:3px solid #776452">120일</button>
     </div>
-    <div id="plot-wrap"><div id="plot"></div><div id="legend" aria-live="off"></div></div>
-    <div class="foot">저장된 완료 일봉 · 차트에서 드래그해 이동하고 마우스 휠로 확대·축소 · Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></div>
+    <div id="legend"><div id="quote"></div><div class="secondary" id="activity"></div><div id="ma-values"></div></div>
+    <div id="plot-wrap"><div id="plot"></div></div>
+    <div class="foot">차트에서 드래그해 이동하고 마우스 휠로 확대·축소 · Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></div>
   </div>
   <script>/*__LIGHTWEIGHT_CHARTS__*/</script>
   <script>
   (() => {
-    const rows = /*__CHART_DATA__*/;
+    const periods = /*__CHART_DATA__*/;
+    let period = 'day', rows = periods.day, range = '6';
     if (!rows.length) return;
-    const byDate = new Map(rows.map(row => [row.time, row]));
+    let byDate;
     const plot = document.getElementById('plot');
-    const legend = document.getElementById('legend');
+    const quote = document.getElementById('quote');
+    const activity = document.getElementById('activity');
+    const closeValue = document.createElement('strong');
     const chart = LightweightCharts.createChart(plot, {
       autoSize: true,
       layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#64748b', attributionLogo: true },
-      grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
+      grid: { vertLines: { visible: false }, horzLines: { color: '#edf1ef' } },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
       timeScale: {
-        borderColor: '#d4deeb', timeVisible: false, rightOffset: 2,
+        borderVisible: false, timeVisible: false, rightOffset: 2,
         tickMarkFormatter: time => {
           const day = typeof time === 'string' ? time :
             `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
           return day.slice(5).replace('-', '/');
         },
       },
-      rightPriceScale: { borderColor: '#d4deeb', scaleMargins: { top: 0.16, bottom: 0.06 } },
+      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.06 } },
       localization: { locale: 'ko-KR' },
     });
     const candles = chart.addSeries(LightweightCharts.CandlestickSeries, {
       upColor: '#b33f38', downColor: '#276eaa', borderVisible: false,
       wickUpColor: '#b33f38', wickDownColor: '#276eaa',
     });
-    const line = chart.addSeries(LightweightCharts.LineSeries, { color: '#255bc1', lineWidth: 2, visible: false });
+    const line = chart.addSeries(LightweightCharts.LineSeries, { color: '#147660', lineWidth: 2, visible: false });
     const volume = chart.addSeries(LightweightCharts.HistogramSeries, {
       priceFormat: { type: 'volume' }, color: '#a8bfd8',
     }, 1);
     chart.panes()[0].setStretchFactor(3);
     chart.panes()[1].setStretchFactor(1);
-    candles.setData(rows.map(r => ({ time: r.time, open: r.open, high: r.high, low: r.low, close: r.close })));
-    line.setData(rows.map(r => ({ time: r.time, value: r.close })));
-    volume.setData(rows.filter(r => r.volume !== null).map(r => ({
-      time: r.time, value: r.volume, color: r.close >= r.open ? '#e1aaa5' : '#a8bfd8'
-    })));
+    const averages = [...document.querySelectorAll('[data-ma]')].map(button => {
+      const series = chart.addSeries(LightweightCharts.LineSeries, {
+        color: button.style.borderBottomColor, lineWidth: 1, priceLineVisible: false,
+        lastValueVisible: false, crosshairMarkerVisible: false,
+      });
+      button.onclick = () => {
+        const visible = button.getAttribute('aria-pressed') !== 'true';
+        button.setAttribute('aria-pressed', String(visible));
+        series.applyOptions({ visible });
+      };
+      return [series, 'ma' + button.dataset.ma];
+    });
+    const units = { day: '일', week: '주', month: '개월' };
+    const buttons = [...document.querySelectorAll('[data-ma]')];
+    const values = buttons.map(button => {
+      const span = document.createElement('span');
+      span.style.cssText = 'display:inline-block;margin-right:12px;border-bottom:2px solid ' + button.style.borderBottomColor;
+      document.getElementById('ma-values').append(span);
+      return span;
+    });
+    function draw() {
+      buttons.forEach(b => b.textContent = b.dataset.ma + units[period]);
+      rows = periods[period];
+      byDate = new Map(rows.map(row => [row.time, row]));
+      candles.setData(rows.map(r => ({ time: r.time, open: r.open, high: r.high, low: r.low, close: r.close })));
+      line.setData(rows.map(r => ({ time: r.time, value: r.close })));
+      volume.setData(rows.filter(r => r.volume !== null).map(r => ({
+        time: r.time, value: r.volume, color: r.close >= r.open ? '#e1aaa5' : '#a8bfd8'
+      })));
+      for (const [series, field] of averages) {
+        series.setData(rows.filter(r => r[field] != null).map(r => ({time:r.time, value:r[field]})));
+      }
+      setRange(range);
+      show(rows[rows.length - 1]);
+    }
     const number = value => value === null || value === undefined ? '자료 없음' :
       Number(value).toLocaleString('ko-KR', { maximumFractionDigits: 2 });
     const multiple = value => value === null || value === undefined ? '자료 없음' : `${Number(value).toFixed(2)}배`;
     function show(row) {
-      legend.textContent = `${row.time}  시 ${number(row.open)}  고 ${number(row.high)}  저 ${number(row.low)}  종 ${number(row.close)}원` +
-        `  ·  거래량 ${number(row.volume)} (직전 20일 평균 대비 ${multiple(row.volume_ratio)})  ·  ATR ${number(row.atr)}` +
-        `  ·  상승변동 ${multiple(row.atr_up_multiple)} / 하락변동 ${multiple(row.atr_down_multiple)}`;
+      buttons.forEach((button, i) => {
+        const value = row['ma' + button.dataset.ma];
+        values[i].textContent = button.textContent + ' ' + (value == null ? '자료 부족' : number(value) + '원');
+      });
+      closeValue.textContent = `${row.provisional ? "장중 잠정 · 현재가" : "종가"} ${number(row.close)}원`;
+      closeValue.style.color = row.close >= row.open ? '#ab3934' : '#235f99';
+      quote.replaceChildren(closeValue, `　${row.first && row.first !== row.time ? row.first + " ~ " : ""}${row.time}　 시가 ${number(row.open)}　 고가 ${number(row.high)}　 저가 ${number(row.low)}`);
+      activity.textContent = period !== "day" ? `기간 누적 거래량 ${number(row.volume)}주` : `거래량 ${number(row.volume)}주 · 직전 20일 평균 대비 ${multiple(row.volume_ratio)}　 ATR ${number(row.atr)}원 · 상승변동 ${multiple(row.atr_up_multiple)} / 하락변동 ${multiple(row.atr_down_multiple)}`;
+
     }
-    show(rows[rows.length - 1]);
+    draw();
     chart.subscribeCrosshairMove(param => {
       const time = param.time;
       const day = typeof time === 'string' ? time : time &&
@@ -100,7 +150,8 @@
     }
     document.querySelectorAll('[data-months]').forEach(button => button.addEventListener('click', () => {
       document.querySelectorAll('[data-months]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
-      setRange(button.dataset.months);
+      range = button.dataset.months;
+      setRange(range);
     }));
     document.querySelectorAll('[data-kind]').forEach(button => button.addEventListener('click', () => {
       const candle = button.dataset.kind === 'candle';
@@ -108,7 +159,11 @@
       line.applyOptions({ visible: !candle });
       document.querySelectorAll('[data-kind]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
     }));
-    requestAnimationFrame(() => setRange(6));
+    document.querySelectorAll('[data-period]').forEach(button => button.onclick = () => {
+      period = button.dataset.period;
+      document.querySelectorAll('[data-period]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+      draw();
+    });
   })();
   </script>
 </body>

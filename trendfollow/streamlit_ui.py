@@ -283,6 +283,20 @@ def choose_wave(widget, phase, condition):
                                    (current != '셋업 돌파' or previous != '전체') else '전체')
 
 
+@st.cache_resource(ttl=3600)
+def chart_quote_client(root):
+    from threading import Lock
+    from .brokers import Credentials, QuoteClient
+    return QuoteClient(Credentials.load('kis', Path(root) / '.env')), Lock()
+
+
+@st.cache_data(ttl=60, max_entries=512, show_spinner=False)
+def chart_session_prices(root, symbol, previous, today):
+    client, lock = chart_quote_client(root)
+    with lock:
+        return client.daily(symbol, previous, today)
+
+
 def workbench(ops, key, snapshot, as_of=None):
     st.subheader('종목 탐색')
     rows = snapshot['rows']
@@ -389,8 +403,22 @@ def workbench(ops, key, snapshot, as_of=None):
         st.caption(row['symbol'])
         st.metric('저장된 종가', '—' if row.get('reference_price') is None else f'{row["reference_price"]:,.0f}원')
         try:
-            prices = ops.prices(key, row['symbol'], as_of)
+            prices = ops.prices(key, row['symbol'], as_of, include_warmup=True)
             if prices:
+                from .brokers import BrokerError
+                from .krx_sessions import observation_market, previous_close_date
+                from .price_chart import provisional_bar
+                now = ops.now()
+                today = now.date().isoformat()
+                if (observation_market(now) == 'krx' and snapshot['workspace'].get('mode') != 'recalculation'
+                        and prices[-1]['date'] == (as_of or snapshot.get('as_of')) == previous_close_date(today)):
+                    try:
+                        quotes = chart_session_prices(str(ops.root), row['symbol'], prices[-1]['date'], today)
+                        bar = provisional_bar(prices, quotes, today, snapshot['rules']['atr_days'])
+                        prices = [*prices, bar]
+                        st.caption(f'{today} 마지막 봉은 KIS 정규장 잠정 일봉입니다. 화면을 다시 읽으면 갱신됩니다(조회 간격 1분).')
+                    except (ValueError, BrokerError) as error:
+                        st.caption(f'오늘 잠정봉 미표시 · {error}')
                 st.components.v1.html(chart_html(prices), height=550, scrolling=False)
                 st.caption('선택일 이전 최대 15개월 저장 일봉 · 봉을 가리키면 좌측 상단에 OHLCV·ATR 표시')
             else:
@@ -822,7 +850,7 @@ def account_history(ops, key, snapshot):
                               format_func=lambda code: symbol_label(code, names),
                               key=f'history-symbol-{key}-{day}', placeholder='종목 선택')
         if symbol:
-            bars = ops.prices(key, symbol, day)
+            bars = ops.prices(key, symbol, day, include_warmup=True)
             if bars:
                 st.components.v1.html(chart_html(bars), height=550, scrolling=False)
             else:

@@ -489,7 +489,7 @@ class OperationsQueries:
             )
         return value
 
-    def prices(self, key, symbol, as_of=None):
+    def prices(self, key, symbol, as_of=None, *, include_warmup=False):
         w = self.context.workspace(key)
         if not re.fullmatch("[0-9A-Z]{6}", symbol):
             raise ValueError("종목코드를 확인하세요.")
@@ -528,10 +528,14 @@ class OperationsQueries:
         atr = wilder_atr_series(pd.DataFrame(valid), period)
         volumes = pd.to_numeric(pd.DataFrame(valid)["volume"], errors="coerce")
         prior_20_volume = volumes.shift().rolling(20).mean()
+        closes = pd.Series([r["close"] for r in valid])
+        averages = {n: closes.rolling(n).mean() for n in (10, 20, 60, 120)}
         chart_start = (pd.Timestamp(date) - pd.DateOffset(months=15)).date().isoformat()
         chart = []
         for index, row in enumerate(valid):
             if row["date"] < chart_start:
+                if include_warmup:
+                    chart.append(dict(row, warmup=True))
                 continue
             daily_atr = atr.iloc[index]
             volume_base = prior_20_volume.iloc[index]
@@ -542,6 +546,8 @@ class OperationsQueries:
             multiples_available = previous_close is not None and pd.notna(daily_atr) and daily_atr > 0
             chart.append({
                 **row,
+                **{f"ma{n}": float(values.iloc[index]) if pd.notna(values.iloc[index]) else None
+                   for n, values in averages.items()},
                 "atr": None if pd.isna(daily_atr) else float(daily_atr),
                 "volume_ratio": volume_ratio,
                 "atr_up_multiple": max(0.0, float(row["high"]) - previous_close) / daily_atr if multiples_available else None,
