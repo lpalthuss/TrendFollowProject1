@@ -395,3 +395,23 @@ def test_market_candidate_page_handles_stale_cached_date_query():
         next(widget for widget in app.selectbox if widget.label == '후보군 자료 원천').set_value('krx_open_api').run(timeout=30)
         assert not app.exception and not app.error
         assert any('서버를 다시 시작' in notice.value for notice in app.warning)
+
+def test_close_plan_shows_account_risk_at_close(monkeypatch):
+    from dataclasses import asdict
+    from unittest.mock import Mock
+    import trendfollow.streamlit_ui as ui
+    from trendfollow.risk import Limits
+
+    ops = Mock()
+    ops.state.return_value = dict(last_date='2026-11-18', cash=1_000_000, positions={}, units=1)
+    snapshot = dict(account_as_of='2026-11-18', status='ready', limits=asdict(Limits()),
+                    pending=[dict(symbol='005930', sector='반도체', reference_price=1000,
+                                  stop_price=900, signal=True, avg_turnover=1e9, rs_percentile=99)])
+    view = Mock()
+    monkeypatch.setattr(ui, 'st', view)
+    monkeypatch.setattr(ui, 'stored_symbol_names', lambda *_: {'005930': '삼성전자'})
+    ui.close_plan_summary(ops, 'account', snapshot)
+    row = view.dataframe.call_args.args[0].iloc[0]
+    assert '삼성전자' in row['종목']
+    assert 0 < row['예상 수량(주)'] <= 20
+    assert 0 < row['계획 위험(원)'] <= 2000

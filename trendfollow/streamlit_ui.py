@@ -363,6 +363,68 @@ def suggested_watch_symbols(snapshot, plans, selected=()):
     return sorted(symbols), '계좌의 보유·다음 거래일 계획'
 
 
+@st.fragment(run_every='5s')
+def home_watch_status(ops, key, as_of, automatic_date):
+    from .candidate_universe import latest_completed_session
+
+    if automatic_date and latest_completed_session(ops.now()) != as_of:
+        st.rerun(scope='app')
+    watch = ops.intraday(key)
+    if not watch['control']['active_or_unconfirmed']:
+        st.rerun(scope='app')
+    run = next((item for item in watch['runs'] if item['session'] == watch['today']), None)
+    if not run:
+        st.info('이 계좌의 오늘 관측 기록을 기다리고 있습니다.')
+        return
+    summary = run['summary']
+    if summary.get('connection_state') == 'failed':
+        st.error(f'연결 실패 · {summary.get("failure_reason") or summary.get("kis_error_code") or "연결 상태를 확인하세요."}')
+    st.write(f'{run["session"]} 최근 관측 · 구독 승인 {summary.get("subscription_acks", 0)}'
+             f' / 요청 {summary.get("subscriptions_requested", 0)} · 수신 체결 {summary.get("quote_ticks", 0)}건')
+    quotes = summary.get('latest_target_quotes') or {}
+    if quotes:
+        names = account_symbol_names(ops, key)
+        st.dataframe([{'종목': symbol_label(symbol, names), '마지막 체결 시각': observed_time_label(q.get('timestamp')),
+                       '마지막 체결가': q.get('price'), '누적 거래량': q.get('cumulative_volume')}
+                      for symbol, q in quotes.items()], hide_index=True, width='stretch')
+    st.caption('정규장 종가가 준비되면 이 화면에서 당일 모의 처리를 진행하세요.')
+
+
+def close_plan_summary(ops, key, snapshot):
+    day = snapshot['account_as_of']
+    if not day or snapshot['status'] != 'ready':
+        return
+    st.markdown(f'#### {day} 종가 기준 · 다음 거래일 진입 계획')
+    pending = snapshot['pending']
+    if not pending:
+        st.write('진입 후보 0종목 · 신규 진입에 배정할 위험 0원')
+        st.caption('다음 거래일 종가가 준비되면 다시 처리하세요. 기존 보유 종목은 계속 관리합니다.')
+        return
+
+    from .risk import Account, Limits, allocate
+
+    state = ops.state(ops.workspace(key))
+    if not state or state['last_date'] != day:
+        st.info('계좌 처리일이 바뀌었습니다. 자료를 다시 읽어 주세요.')
+        return
+    positions = [dict(position, symbol=symbol, current_price=position['last_price'])
+                 for symbol, position in state['positions'].items()]
+    cash = state['cash']
+    equity = cash + sum(pos['quantity'] * pos['current_price'] for pos in positions)
+    limits = Limits(**{**snapshot['limits'], 'units': state['units']})
+    plans = allocate(pd.DataFrame(pending), Account(equity, cash, positions), limits)
+    names = stored_symbol_names(ops, key)
+    st.write(f'진입 후보 {plans.symbol.nunique()}종목 · 예상 배정 {int(plans.quantity.gt(0).sum())}건'
+             f' · 합산 계획 위험 {plans.planned_risk.sum():,.0f}원')
+    st.dataframe(pd.DataFrame([{
+        '종목': symbol_label(row['symbol'], names),
+        '진입 구분': '추가 매수' if row.get('order_intent') == 'add' else '신규 매수',
+        '종가 기준가(원)': row['reference_price'], '손절 기준(원)': row.get('stop_price'),
+        '예상 수량(주)': row['quantity'], '계획 위험(원)': round(row['planned_risk']),
+    } for row in plans.to_dict('records')]), hide_index=True, width='stretch')
+    st.caption('종가와 계좌 잔액으로 추정한 계획입니다. 다음 거래일 모의 처리에서 시가와 가용 현금을 반영해 체결 여부와 수량을 결정합니다.')
+
+
 def workflow(ops, key, snapshot, as_of, can_write):
     st.subheader('오늘의 운용 · 다음 단계')
     g = ops.guidance(key, as_of)
@@ -377,7 +439,7 @@ def workflow(ops, key, snapshot, as_of, can_write):
         and recent['status'] in {'failed', 'interrupted'} and recent.get('as_of') == as_of)
     missing = g.get('candidate_missing_sessions', [])
     from .candidate_universe import historical_candidate_source
-    from .krx_sessions import observation_market
+    from .krx_sessions import observation_market, previous_close_date
 
     historical = [day for day in missing if day != g['today']]
     candidate_source = st.session_state.get('historical-source', 'auto')
@@ -388,12 +450,14 @@ def workflow(ops, key, snapshot, as_of, can_write):
             selected_source = historical_candidate_source(ops.root, candidate_source)
         except ValueError as error:
             source_error = str(error)
-    market_open = observation_market(ops.now()) is not None
-    watch = (ops.intraday(key) if market_open and g['processed'] and as_of == g['recommended_as_of']
+    market = observation_market(ops.now())
+    market_open = market is not None
+    watch = (ops.intraday(key) if market_open and (g['processed'] or market == 'krx') and as_of == g['recommended_as_of']
              and snapshot['rules'].get('entry_method') == 'setup'
              and not snapshot['rules'].get('market_units_enabled') else None)
     with st.container(border=True):
         st.markdown(f'**선택 계좌: {snapshot["workspace"]["name"]} · 자동 기준일: {as_of}**')
+        st.caption({'krx': '정규장 · 장중 관측 시간', 'nxt_after': '정규장 마감 · 애프터마켓 관측 시간'}.get(market, '관측 시간 외 · 최근 완료 거래일 기준'))
         if g['blocked']:
             st.warning(g['blocked'])
         elif active:
@@ -402,10 +466,11 @@ def workflow(ops, key, snapshot, as_of, can_write):
             else:
                 st.info('다른 계좌의 작업이 진행 중입니다. 해당 계좌를 선택해 진행 상태를 확인하세요.')
         elif watch:
+            basis = previous_close_date(watch['today'])
             today_plan = next((plan for plan in reversed(watch['plans'])
-                               if plan['session'] == watch['today'] and plan['as_of'] == as_of), None)
+                               if plan['session'] == watch['today'] and plan['as_of'] == basis), None)
             if watch['control']['active_or_unconfirmed']:
-                st.success('장중 관측이 실행 중이거나 연결 상태를 확인 중입니다.')
+                home_watch_status(ops, key, as_of, as_of == g['recommended_as_of'])
                 st.button('장중 관측 결과 보기', on_click=open_page, args=('장중 관측',))
             elif today_plan:
                 st.write(f'{watch["today"]} 감시 계획이 준비됐습니다 · 종목 {len(today_plan["targets"])}개')
@@ -413,27 +478,32 @@ def workflow(ops, key, snapshot, as_of, can_write):
                     try:
                         seconds = max(1, int((ops.now().replace(hour=20, minute=0, second=0, microsecond=0)
                                                - ops.now()).total_seconds()))
-                        started = ops.start_watch(dict(workspace=key, plan_id=today_plan['id'],
+                        ops.start_watch(dict(workspace=key, plan_id=today_plan['id'],
                                                        seconds=min(seconds, 39600)))
                         st.session_state.pop(f'job-submitted-{key}', None)
-                        st.info(f'관측 시작 요청 접수 · 실행 ID {started["run_id"]} · KIS 연결 확인 중')
+                        st.rerun()
                     except (ValueError, OSError) as error:
                         st.error(str(error))
             else:
                 symbols, origin = suggested_watch_symbols(snapshot, watch['plans'],
                                                            st.session_state.get(f'watch-{key}', []))
+                if not symbols:
+                    names = account_symbol_names(ops, key)
+                    symbols = st.multiselect('오늘 관측할 종목', sorted(names), format_func=lambda code: symbol_label(code, names),
+                                             key=f'home-watch-{key}')
+                    origin = '선택한 종목'
                 if symbols:
                     st.write(f'장중 관측 대상 {len(symbols)}종목 · {origin}')
                     st.caption(', '.join(symbols[:12]) + (' 외' if len(symbols) > 12 else ''))
                     if st.button('자료 준비 후 장중 관측 시작', type='primary', disabled=not can_write):
-                        submit(ops, key, 'watch_auto', as_of, session=watch['today'],
+                        submit(ops, key, 'watch_auto', basis, session=watch['today'],
                                symbols=symbols, watch_mode='symbols')
                 else:
                     st.info('장중 관측 대상이 없습니다. 처음 한 번은 종목을 선택해야 합니다.')
-                    st.button('관측 대상 선택하기', on_click=open_page, args=('장중 관측',))
+
         elif g['processed']:
             st.success(f'{as_of}까지 종가 처리가 완료됐습니다.')
-            st.button('보유·체결 결과 보기', on_click=open_page, args=('보유·체결',))
+            st.caption('다음 거래일에는 새 종가가 준비된 뒤 이 화면에서 모의 처리를 실행하세요.')
         elif pending:
             st.write('빠진 시장 종목 목록·산업 자료·일봉을 준비하고, 거래일 순서대로 모의계좌에 반영합니다.')
             if missing:
@@ -459,6 +529,7 @@ def workflow(ops, key, snapshot, as_of, can_write):
             st.info('선택한 날짜에 처리할 거래일이 없습니다. 목표일을 확인하세요.')
     if priority_job:
         job_status(ops, key, show_next=False)
+    close_plan_summary(ops, key, snapshot)
     with st.expander('처리 날짜·자료 상태 확인'):
         a, b, c = st.columns(3)
         a.metric('마지막 종가 처리', g.get('last_processed_date') or '미시작')
