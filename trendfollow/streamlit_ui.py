@@ -724,7 +724,43 @@ def missing_candidate_sessions(start, end, saved_dates):
     return [day for day in sessions if day not in saved]
 
 
+@st.fragment(run_every='5s')
+def complete_candidate_analysis(ops, key, day, inputs):
+    from .market_candidate_analysis import saved_analysis_current
+
+    attempt_key = '|'.join(('candidate-repair', key, day, *inputs))
+    if saved_analysis_current(ops.root, key, day, *inputs):
+        st.session_state.pop(attempt_key, None)
+        st.rerun(scope='app')
+    ops.refresh_jobs()
+    with ops.lock:
+        jobs = [dict(job) for job in ops.jobs.values()]
+    active = next((job for job in jobs if job['status'] in {'queued', 'running'}), None)
+    if active:
+        if (active['workspace'], active['action'], active['as_of']) == (key, 'market_analyze', day):
+            st.session_state[attempt_key] = active['id']
+            st.info(f'{day} 후보 분석 자동 보완 중 · {active.get("progress") or "자료 확인 중"}')
+        else:
+            st.info(f'진행 중인 작업이 끝나면 {day} 후보 분석을 자동으로 보완합니다.')
+        return
+    previous = next((job for job in jobs if job['id'] == st.session_state.get(attempt_key)), None)
+    if previous and previous['status'] != 'completed':
+        st.warning(previous.get('error') or '후보 분석 보완 결과를 확인할 수 없습니다.')
+        if st.button('자동 보완 다시 시도', key=f'retry-{key}-{day}'):
+            del st.session_state[attempt_key]
+            st.rerun()
+        return
+    try:
+        job = ops.submit(dict(workspace=key, action='market_analyze', as_of=day, selected_only=True))
+    except ValueError as error:
+        st.warning(str(error))
+        return
+    st.session_state[attempt_key] = job['id']
+    st.info(f'{day} 후보 분석에 필요한 자료를 확인하고 있습니다.')
+
+
 def market_candidates(ops, key, snapshot, can_write):
+    from .market_candidate_analysis import saved_analysis_current, selection_inputs
     st.subheader('날짜별 시장 후보')
     dates = ops.candidate_dates(key)
     available = sorted(set(dates['reference_dates'] + dates['signal_dates'] + dates['selection_dates']), reverse=True)
@@ -735,8 +771,15 @@ def market_candidates(ops, key, snapshot, can_write):
     st.caption(f'{selected}에 저장된 종목 목록·편입/제외·전략 조건 결과를 조회합니다. '
                '그날 목록이 없으면 ①에서 날짜별 자료 원천을 선택해 저장하세요.')
     selection_saved = selected in dates['selection_dates']
-    analyzed = selected in dates['market_analysis_dates']
+    inputs = selection_inputs(ops, snapshot['workspace'], selected) if selection_saved else ()
+    analyzed = selection_saved and saved_analysis_current(ops.root, key, selected, *inputs)
+    needs_analysis = selection_saved and not analyzed
     st.write('선정 기록:', '있음' if selection_saved else '없음', '· 시장 조건 계산:', '완료' if analyzed else '미완료')
+    if needs_analysis:
+        if can_write:
+            complete_candidate_analysis(ops, key, selected, inputs)
+        else:
+            st.info('후보 분석 보완이 필요합니다. 쓰기 가능한 환경에서 자동으로 진행합니다.')
 
     with st.expander('종목 목록·전략 조건 준비', expanded=not (analyzed or selected in dates['account_analysis_dates'])):
         st.markdown('#### ① 날짜별 종목 목록 저장')
@@ -785,7 +828,7 @@ def market_candidates(ops, key, snapshot, can_write):
         if analyzed:
             st.caption(f'{selected} 기준 결과가 아래에 표시됩니다. 입력이 같으면 재계산 없이 저장된 결과를 사용합니다.')
         button_label = ('저장된 결과 표시 중 · 재계산 가능' if analyzed else '선택한 거래일까지 전략 조건 계산')
-        if st.button(button_label, disabled=not can_write or not selection_saved):
+        if st.button(button_label, disabled=not can_write or not analyzed):
             submit(ops,key,'market_analyze',selected)
         if selection_saved:
             selection = ops.candidate_selection(selected, include_excluded=True)
@@ -808,7 +851,7 @@ def market_candidates(ops, key, snapshot, can_write):
                         table(candidate_table_rows(selection.get(group, []),
                                                    selection['summary']['source'], show_reason))
 
-    if analyzed or selected in dates['account_analysis_dates']:
+    if analyzed or (not needs_analysis and selected in dates['account_analysis_dates']):
         detail = ops.snapshot(key, selected)
         analysis = detail.get('analysis') or {}
         if analysis.get('industry_membership_reconstructed'):
@@ -816,8 +859,6 @@ def market_candidates(ops, key, snapshot, can_write):
                        f'{analysis["industry_membership_observed_at"]} 저장본으로 재구성했습니다. '
                        '당시 실제 구성과 다를 수 있으며 모의계좌 매매 기록에는 반영되지 않습니다.')
         workbench(ops,key,detail,selected)
-    elif selection_saved:
-        st.info('선정 목록은 저장됐습니다. ② 시장 후보 계산 후 조건별 결과를 볼 수 있습니다.')
 
 
 def account_history(ops, key, snapshot):

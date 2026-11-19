@@ -18,7 +18,7 @@ from .market import NaverResearchSource
 from .research_store import require_published_research
 from .relative_strength import multi_period_daily_rs
 
-MULTI_RS_VERSION = 1
+MULTI_RS_VERSION = 2
 
 
 def analysis_home(root, workspace):
@@ -28,7 +28,7 @@ def analysis_home(root, workspace):
 def latest_analysis(root, workspace, as_of):
     folder = analysis_home(root, workspace) / as_of
     runs = [p for p in folder.iterdir() if (p / "signals.csv").is_file()
-            and (p / "analysis.json").is_file()] if folder.exists() else []
+            and not p.name.startswith(".") and (p / "analysis.json").is_file()] if folder.exists() else []
     return max(runs, key=lambda p: p.stat().st_mtime_ns) if runs else None
 
 
@@ -56,11 +56,32 @@ def _industry_universe(root, as_of, members):
     return universe, observed.name, int(missing.sum())
 
 
-def analyze_saved_selections(context, workspace, through, run_id, progress=None):
+def saved_analysis_current(root, workspace, day, config_hash, selection_hash):
+    prior = latest_analysis(root, workspace, day)
+    if prior is None:
+        return False
+    try:
+        meta = json.loads((prior / "analysis.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return False
+    return (meta.get("config_sha256") == config_hash
+            and meta.get("selection_sha256") == selection_hash
+            and meta.get("multi_rs_version") == MULTI_RS_VERSION
+            and meta.get("signals_sha256") == hashlib.sha256((prior / "signals.csv").read_bytes()).hexdigest())
+
+
+def selection_inputs(context, workspace, day):
+    return (hashlib.sha256(context.path(workspace["config"]).read_bytes()).hexdigest(),
+            hashlib.sha256((selection_home(context.root) / day / "universe.csv").read_bytes()).hexdigest())
+
+
+def analyze_saved_selections(context, workspace, through, run_id, progress=None, *, selected_only=False):
     """Analyze every saved selection through `through` using one account's rules, without changing that account."""
     dates = sorted(day for day in available_selections(context.root) if day <= through)
     if through not in dates:
         raise ValueError(f"{through} 날짜별 시장 후보군이 없습니다. 후보군을 먼저 저장하세요.")
+    if selected_only:
+        dates = [through]
     config_path = context.path(workspace["config"])
     config_hash = hashlib.sha256(config_path.read_bytes()).hexdigest()
     rules = Rules(**json.loads(config_path.read_text(encoding="utf-8-sig")).get("rules", {}))
@@ -69,13 +90,8 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
     for day in dates:
         selection_path = selection_home(context.root) / day / "universe.csv"
         selection_hash = hashlib.sha256(selection_path.read_bytes()).hexdigest()
-        prior = latest_analysis(context.root, workspace["id"], day)
-        if prior:
-            meta = json.loads((prior / "analysis.json").read_text(encoding="utf-8"))
-            if (meta.get("config_sha256") == config_hash
-                    and meta.get("selection_sha256") == selection_hash
-                    and meta.get("multi_rs_version") == MULTI_RS_VERSION):
-                continue
+        if saved_analysis_current(context.root, workspace["id"], day, config_hash, selection_hash):
+            continue
         pending.append((day, selection_hash))
     if not pending:
         return dict(status="already_present", checked_dates=dates, analyzed_dates=[])
@@ -104,7 +120,13 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
     extra = extra[extra.date.between(start, through) & extra.symbol.isin(required_symbols)]
     prices = pd.concat([base, extra], ignore_index=True).drop_duplicates(["date", "symbol"], keep="first")
     existing = set(zip(prices.date, prices.symbol))
-    fetch_symbols = sorted({symbol for day, frame in selections.items() for symbol in frame.symbol
+    required_by_day = {}
+    for day, frame in selections.items():
+        symbols = set(frame.symbol) | set(frame.benchmark) | {"KOSPI"}
+        if rules.mansfield_benchmark == "market_index":
+            symbols.update(frame.market.str.upper())
+        required_by_day[day] = symbols
+    fetch_symbols = sorted({symbol for day, symbols in required_by_day.items() for symbol in symbols
                             if (day, symbol) not in existing})
     if fetch_symbols:
         source = NaverResearchSource(extra_path.parent / "raw")
@@ -140,10 +162,10 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
     kospi_prices = prices[prices.symbol.eq("KOSPI")].copy()
     kospi_prices["date"] = pd.to_datetime(kospi_prices.date)
     kospi_close = kospi_prices.set_index("date").close
-    for day, frame in selections.items():
-        missing = sorted(symbol for symbol in frame.symbol if (day, symbol) not in existing)
+    for day, symbols in required_by_day.items():
+        missing = sorted(symbol for symbol in symbols if (day, symbol) not in existing)
         if missing:
-            raise ValueError(f"{day} 시장 후보 {len(missing)}종목의 일봉이 없습니다 ({', '.join(missing[:5])}). 계좌는 변경되지 않았습니다.")
+            raise ValueError(f"{day} 시장 후보·RS 비교 대상 일봉이 없습니다 ({', '.join(missing[:5])}). 계좌는 변경되지 않았습니다.")
     completed = []
     for index, (day, selection_hash) in enumerate(pending, 1):
         if progress:
@@ -174,6 +196,7 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None)
                         unclassified_industries=unclassified,
                         price_source="saved account prices + Naver initial history for missing symbols",
                         config_sha256=config_hash, selection_sha256=selection_hash,
+                        signals_sha256=hashlib.sha256((stage / "signals.csv").read_bytes()).hexdigest(),
                         multi_rs_version=MULTI_RS_VERSION,
                         generated_at=context.now().isoformat())
             (stage / "analysis.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")

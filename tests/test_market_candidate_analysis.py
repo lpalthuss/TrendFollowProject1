@@ -15,7 +15,8 @@ def test_saved_market_dates_are_analyzed_without_changing_account(tmp_path, monk
     source.mkdir()
     original = pd.DataFrame([
         dict(date=day, symbol=symbol, open=100, high=110, low=90, close=100, volume=1000)
-        for day in ('2026-11-11', '2026-11-12') for symbol in ('000001', '069500')
+        for day in ('2026-11-11', '2026-11-12') for symbol in ('000001', '069500', 'KOSPI')
+        if day == '2026-11-11' or symbol == '000001'
     ])
     original.to_csv(source / 'prices.csv', index=False)
     original_bytes = (source / 'prices.csv').read_bytes()
@@ -44,6 +45,7 @@ def test_saved_market_dates_are_analyzed_without_changing_account(tmp_path, monk
     monkeypatch.setattr(market_analysis, 'NaverResearchSource', FakeSource)
     def fake_features(prices, universe, _rules):
         day = prices.date.max()
+        assert '069500' in set(prices.loc[prices.date.eq(day), 'symbol'])
         return pd.DataFrame([dict(date=pd.Timestamp(day), symbol=s, signal=False, close=100)
                              for s in universe.symbol]), pd.DataFrame()
     monkeypatch.setattr(market_analysis, 'features', fake_features)
@@ -54,12 +56,19 @@ def test_saved_market_dates_are_analyzed_without_changing_account(tmp_path, monk
     result = market_analysis.analyze_saved_selections(context, workspace, '2026-11-12', 'run1')
     assert result['analyzed_dates'] == ['2026-11-11', '2026-11-12']
     assert result['account_unchanged'] is True
-    assert fetched == ['000002']
+    assert sorted(fetched) == ['000002', '069500', 'KOSPI']
     assert read_selection(tmp_path, '2026-11-12')['members'][0]['benchmark'] == '069500'
     assert (source / 'prices.csv').read_bytes() == original_bytes
     assert pd.read_csv(market_analysis.latest_analysis(tmp_path, 'account', '2026-11-12') / 'signals.csv',
                        dtype={'symbol': str}).symbol.tolist() == ['000001', '000002']
     assert market_analysis.analyze_saved_selections(context, workspace, '2026-11-12', 'run2')['status'] == 'already_present'
+    signals = market_analysis.latest_analysis(tmp_path, 'account', '2026-11-12') / 'signals.csv'
+    pd.read_csv(signals).iloc[:1].to_csv(signals, index=False)
+    inputs = market_analysis.selection_inputs(context, workspace, '2026-11-12')
+    assert not market_analysis.saved_analysis_current(tmp_path, 'account', '2026-11-12', *inputs)
+    repaired = market_analysis.analyze_saved_selections(context, workspace, '2026-11-12', 'repair', selected_only=True)
+    assert repaired['analyzed_dates'] == ['2026-11-12']
+    assert market_analysis.saved_analysis_current(tmp_path, 'account', '2026-11-12', *inputs)
 
 
 def test_market_analysis_job_is_allowed_on_frozen_comparison_account(tmp_path, monkeypatch):

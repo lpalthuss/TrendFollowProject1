@@ -13,6 +13,27 @@ from trendfollow.symbol_lookup import matching_symbols, named_rows, symbol_names
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_partial_market_result_queues_once_without_clicking():
+    from types import SimpleNamespace
+    from threading import RLock
+    from unittest.mock import Mock
+
+    job = dict(id='repair', action='market_analyze', status='queued', workspace='a', as_of='2026-11-17')
+    ops = SimpleNamespace(root=ROOT, lock=RLock(), jobs={}, refresh_jobs=Mock(), submit=Mock(return_value=job))
+    app = AppTest.from_string("""
+import streamlit as st
+from trendfollow.streamlit_ui import complete_candidate_analysis
+complete_candidate_analysis(st.session_state.ops, 'a', '2026-11-17', ('config', 'selection'))
+""")
+    app.session_state['ops'] = ops
+    with patch('trendfollow.market_candidate_analysis.saved_analysis_current', return_value=False):
+        app.run()
+        ops.jobs[job['id']] = job
+        app.run()
+    assert not app.exception
+    ops.submit.assert_called_once_with(dict(workspace='a', action='market_analyze', as_of='2026-11-17', selected_only=True))
+
+
 def test_saved_master_resolves_name_and_preserves_duplicate_choices(tmp_path):
     master = tmp_path / 'master.csv'
     master.write_text('symbol,name\n005930,삼성전자\n005935,삼성전자우\n123456,동명이인\n654321,동명이인\n',

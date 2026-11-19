@@ -146,7 +146,8 @@ class ActionRunner:
         if action == "market_analyze":
             from ..market_candidate_analysis import analyze_saved_selections
 
-            result = analyze_saved_selections(self.context, w, as_of, key, progress)
+            options = {"selected_only": True} if payload.get("selected_only") is True else {}
+            result = analyze_saved_selections(self.context, w, as_of, key, progress, **options)
         elif action == "analyze":
             from ..backtest import features
             from ..research_store import require_published_research
