@@ -266,7 +266,8 @@ class OperationsQueries:
         )
 
     def revision_view(
-        self, key, report_id=None, offset=0, symbol="", source="", date="", preview=True
+        self, key, report_id=None, offset=0, symbol="", source="", date="", preview=True,
+        symbols=None,
     ):
         from ..revisions import read_policy, report_path, sha
 
@@ -300,6 +301,8 @@ class OperationsQueries:
                 frame = frame[
                     frame.symbol.str.contains(symbol, case=False, regex=False, na=False)
                 ]
+            if symbols is not None:
+                frame = frame[frame.symbol.isin(symbols)]
             if source:
                 frame = frame[frame.source.eq(source)]
             if date:

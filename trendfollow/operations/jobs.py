@@ -1,6 +1,7 @@
 """Jobs responsibilities for the local operations UI."""
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import os
 import traceback
 import uuid
@@ -82,6 +83,11 @@ class JobManager:
             from ..krx_sessions import require_previous_close
 
             as_of = require_previous_close(payload.get("session"), payload.get("as_of"))
+        elif action == "intraday_close":
+            plan = self.context.run_path(payload.get("run_id")) / "plan.json"
+            if not plan.is_file():
+                raise ValueError("선택한 관측 기록의 계획을 찾을 수 없습니다.")
+            as_of = json.loads(plan.read_text(encoding="utf-8"))["session"]
         else:
             as_of = payload.get("as_of")
         as_of = self.context.completed_date(as_of)

@@ -400,6 +400,43 @@ def test_old_closed_intraday_signals_are_never_current_and_accounts_are_isolated
     assert ops.intraday('different-account')['runs']==[]
 
 
+def test_intraday_limits_records_after_filtering_selected_account(ops):
+    w=create(ops)
+    root=ops.home/'live'
+    own=root/('a'*16)
+    own.mkdir(parents=True)
+    (own/'plan.json').write_text(json.dumps(dict(ui_workspace_id=w['id'],session='2026-11-06',
+                                                 as_of='2026-11-05',targets={'005930':{}})))
+    (own/'summary.json').write_text(json.dumps(dict(connection_state='closed')))
+    for index in range(11):
+        other=root/f'{index:016x}'
+        other.mkdir(parents=True)
+        (other/'plan.json').write_text(json.dumps(dict(ui_workspace_id='different-account',
+                                                       session='2026-11-06',as_of='2026-11-05',targets={})))
+        (other/'summary.json').write_text(json.dumps(dict(connection_state='closed')))
+    assert [run['id'] for run in ops.intraday(w['id'])['runs']]==['a'*16]
+
+
+def test_close_comparison_uses_observation_day_and_waits_for_close(ops, monkeypatch):
+    from trendfollow import intraday_close
+
+    w=create(ops)
+    run_id='f'*16
+    folder=ops.run_path(run_id)
+    folder.mkdir(parents=True)
+    (folder/'plan.json').write_text(json.dumps(dict(session='2026-11-19',as_of='2026-11-18',
+                                                    ui_workspace_id=w['id'],targets={})),encoding='utf-8')
+    monkeypatch.setattr(ops,'clock',lambda:datetime.fromisoformat('2026-11-19T11:51:00+09:00'))
+    with pytest.raises(ValueError,match='16:10'):
+        ops.submit(dict(workspace=w['id'],action='intraday_close',as_of='2026-11-18',run_id=run_id))
+    monkeypatch.setattr(ops,'clock',lambda:datetime.fromisoformat('2026-11-19T17:00:00+09:00'))
+    monkeypatch.setattr(intraday_close,'close_comparison',lambda *args,**kwargs: {'compared':True})
+    job=wait_job(ops,ops.submit(dict(workspace=w['id'],action='intraday_close',
+                                 as_of='2026-11-18',run_id=run_id)))
+    assert job['status']=='completed',job.get('error')
+    assert job['as_of']=='2026-11-19'
+
+
 @pytest.mark.parametrize(('when', 'open_session'), [
     ('2026-11-13T08:59:00+09:00', False),
     ('2026-11-13T09:00:00+09:00', True),
@@ -572,6 +609,10 @@ def test_revision_replay_is_a_separate_frozen_account_and_continue_preserves_sou
     assert failed['status']=='failed' and failed['revision_id']
     data=ops.revision_view(w['id']);report=data['report']
     assert data['rows'] and report['row_changes']>=1
+    changed_symbol=data['rows'][0]['symbol']
+    selected_changes=ops.revision_view(w['id'],symbols=[changed_symbol])
+    assert selected_changes['rows'] and all(row['symbol']==changed_symbol for row in selected_changes['rows'])
+    assert ops.revision_view(w['id'],symbols=[])['total']==0
     assert ops.path(w['state']).read_bytes()==original
     assert len(ops.revision_view(w['id'],source='prices')['rows'])==len(data['rows'])
     replay=wait_job(ops,ops.submit(dict(workspace=w['id'],action='revision_replay',as_of='2026-11-06',report_id=report['id'])))

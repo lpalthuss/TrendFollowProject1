@@ -16,6 +16,7 @@ from dotenv import dotenv_values
 from .ui_service import KST, Operations
 from .runtime_guard import source_fingerprint
 from .price_chart import chart_html
+from .symbol_lookup import matching_symbols, named_rows, symbol_names
 
 ROOT = Path(__file__).resolve().parents[1]
 CODE_ROOT = ROOT
@@ -173,12 +174,28 @@ def filter_candidates(rows, search='', industry='전체', signal='전체', rs='�
     return result
 
 
-def table(rows):
+def table(rows, names=None):
     if not rows:
         st.info('저장된 기록이 없습니다.')
     else:
+        if names:
+            rows = named_rows(rows, names)
         st.dataframe(pd.DataFrame(rows).rename(columns=LABELS), hide_index=True,
                      width='stretch')
+
+
+def account_symbol_names(ops, key):
+    return symbol_names(ops.path(ops.workspace(key)['universe']))
+
+
+def stored_symbol_names(ops, key):
+    master = ops.root / 'data' / 'market' / 'master'
+    return symbol_names(master / 'kospi.csv', master / 'kosdaq.csv',
+                        ops.path(ops.workspace(key)['universe']))
+
+
+def symbol_label(code, names):
+    return f'{names.get(code, "종목명 없음")} · {code}'
 
 
 def candidate_table_rows(rows, source, include_reason=False):
@@ -228,7 +245,8 @@ def submit(ops, key, action, as_of, **extra):
     try:
         job = ops.submit(dict(workspace=key, action=action, as_of=as_of, **extra))
         st.session_state[f'job-status-seen-{key}'] = (job['id'],'queued')
-        st.info(f'{ACTIONS[action]} 요청 접수 · {as_of}. 작업 상태 영역에서 진행·완료를 확인하세요. '
+        st.session_state[f'job-submitted-{key}'] = job['id']
+        st.info(f'{ACTIONS[action]} 요청 접수 · {job["as_of"]}. 작업 상태 영역에서 진행·완료를 확인하세요. '
                 f'작업 ID: {job["id"]}')
     except (ValueError, TypeError, KeyError, OSError) as error:
         st.error(str(error))
@@ -303,7 +321,6 @@ def workbench(ops, key, snapshot, as_of=None):
             symbols = st.session_state.setdefault(f'watch-{key}', [])
             if row['symbol'] not in symbols:
                 symbols.append(row['symbol'])
-            st.session_state[f'watch-input-{key}'] = ', '.join(symbols)
             st.success('장중 관측 화면의 목록에 추가했습니다. 관측은 시작하지 않습니다.')
     with st.expander('산업별 후보 집계 · 전체 분석 자료 기준'):
         grouped = pd.DataFrame(rows)
@@ -356,7 +373,8 @@ def workflow(ops, key, snapshot, as_of, can_write):
     active = bool(active_jobs)
     recent = next((job for job in reversed(list(ops.jobs.values())) if job['workspace'] == key), None)
     priority_job = any(job['workspace'] == key for job in active_jobs) or bool(
-        recent and recent['status'] in {'failed', 'interrupted'} and recent.get('as_of') == as_of)
+        recent and recent['action'] in {'daily', 'paper', 'industry', 'analyze'}
+        and recent['status'] in {'failed', 'interrupted'} and recent.get('as_of') == as_of)
     missing = g.get('candidate_missing_sessions', [])
     from .candidate_universe import historical_candidate_source
     from .krx_sessions import observation_market
@@ -395,8 +413,10 @@ def workflow(ops, key, snapshot, as_of, can_write):
                     try:
                         seconds = max(1, int((ops.now().replace(hour=20, minute=0, second=0, microsecond=0)
                                                - ops.now()).total_seconds()))
-                        st.success(ops.start_watch(dict(workspace=key, plan_id=today_plan['id'],
-                                                        seconds=min(seconds, 39600))))
+                        started = ops.start_watch(dict(workspace=key, plan_id=today_plan['id'],
+                                                       seconds=min(seconds, 39600)))
+                        st.session_state.pop(f'job-submitted-{key}', None)
+                        st.info(f'관측 시작 요청 접수 · 실행 ID {started["run_id"]} · KIS 연결 확인 중')
                     except (ValueError, OSError) as error:
                         st.error(str(error))
             else:
@@ -623,7 +643,7 @@ def market_candidates(ops, key, snapshot, can_write):
         st.info('선정 목록은 저장됐습니다. ② 시장 후보 계산 후 조건별 결과를 볼 수 있습니다.')
 
 
-def holdings(snapshot):
+def holdings(snapshot, names):
     st.subheader('보유·체결 결과')
     st.caption(f'모의계좌 마지막 처리일: {snapshot["account_as_of"] or "미시작"} · 실제 증권사 주문은 없습니다.')
     with st.container(border=True):
@@ -636,16 +656,16 @@ def holdings(snapshot):
         else:
             st.caption('다음 거래일 진입·추가매수 계획은 없습니다. 신호가 없는 날에도 정상적인 결과일 수 있습니다.')
     st.markdown('#### 다음 거래일 계획')
-    table(snapshot['pending'])
+    table(snapshot['pending'], names)
     st.markdown('#### 현재 보유 종목')
-    table(snapshot['positions'])
+    table(snapshot['positions'], names)
     a,b = st.columns(2)
     a.button('종목 조건 살펴보기', on_click=open_page, args=('종목 탐색',))
     b.button('장중 관측 준비하기', on_click=open_page, args=('장중 관측',))
     st.markdown('#### 상세 기록')
     for name, label in [('orders','모의 주문·체결'),('trades','청산 손익'),('events','청산·운용 이벤트'),('campaign-risk','위험 검토'),('pyramiding-review','추가매수 검토')]:
         with st.expander(label):
-            table(snapshot['logs'].get(name, []))
+            table(snapshot['logs'].get(name, []), names)
 
 
 def recovery(ops, key, snapshot, as_of, can_write):
@@ -675,11 +695,35 @@ def recovery(ops, key, snapshot, as_of, can_write):
     else:
         st.warning(report.get('block_reason') or '변경 내역을 검토한 뒤 처리 방법을 선택하세요.')
     st.write(report.get('explanation',''))
-    symbol = st.text_input('변경 종목코드 검색',key=f'revision-symbol-{key}')
+    names = stored_symbol_names(ops, key)
+    query = st.text_input('변경 종목명·코드 검색', key=f'revision-symbol-{key}',
+                          placeholder='예: 삼성전자 또는 005930').strip()
+    matches = matching_symbols(names, query)
+    exact = [code for code in matches if code.casefold() == query.casefold()
+             or names[code].casefold() == query.casefold()]
+    selected = None
+    direct_code = ''
+    if query and len(exact) == 1:
+        selected = exact[0]
+    elif query and len(matches) == 1:
+        selected = matches[0]
+    elif query and matches:
+        selected = st.selectbox('검색 결과에서 종목 선택', matches[:50], index=None,
+                                format_func=lambda code: symbol_label(code, names),
+                                key=f'revision-match-{key}')
+        if len(matches) > 50:
+            st.caption(f'{len(matches)}개가 검색됐습니다. 더 구체적인 종목명을 입력하세요.')
+    elif query and len(query) == 6 and query.isascii() and query.isalnum():
+        direct_code = query.upper()
+    elif query:
+        st.info('저장된 종목 목록에서 일치하는 이름이나 코드를 찾지 못했습니다.')
+    if selected:
+        st.caption(f'검색 종목: {symbol_label(selected, names)}')
     page = st.number_input('변경 내역 페이지 · 100건씩',min_value=1,value=1,key=f'revision-page-{key}')
-    changes = ops.revision_view(key,report['id'],offset=(page-1)*100,symbol=symbol)
+    changes = ops.revision_view(key, report['id'], offset=(page-1)*100,
+                                symbol=direct_code, symbols=([selected] if selected else [] if query and not direct_code else None))
     st.caption(f'조건에 맞는 변경 {changes["total"]}건')
-    table(changes['rows'])
+    table(changes['rows'], names)
     if not report['applied'] and not report['stale']:
         reviewed = st.checkbox('변경 내역과 이전 결정 보존 방식을 확인했습니다.',key=f'revision-reviewed-{key}')
         price_reviewed = (st.checkbox('OHLC 가격·수량 기준의 변경도 확인했습니다.',key=f'price-reviewed-{key}')
@@ -691,74 +735,165 @@ def recovery(ops, key, snapshot, as_of, can_write):
         if st.button('별도 정정 비교 계좌 생성',disabled=not can_write):
             submit(ops,key,'revision_replay',report['as_of'],report_id=report['id'])
     st.subheader('종목·계좌 위험과 추가매수 검토')
-    table(snapshot['logs'].get('campaign-risk',[]))
-    table(snapshot['logs'].get('pyramiding-review',[]))
+    table(snapshot['logs'].get('campaign-risk',[]), names)
+    table(snapshot['logs'].get('pyramiding-review',[]), names)
 
 
 def observation(ops, key, as_of, can_write):
     st.subheader('장중 관측')
-    st.info('관측은 잠정 신호와 기록만 남깁니다. 현금·보유를 변경하지 않으며 종가 처리를 대신하지 않습니다.')
+    st.caption('KIS 체결을 받아 잠정 조건을 확인합니다. 모의계좌의 현금·보유는 바뀌지 않으며 장 마감 후 종가 처리는 별도로 실행합니다.')
     data = ops.intraday(key)
-    symbols = st.text_input('종목 코드 · 쉼표로 구분', value=', '.join(st.session_state.get(f'watch-{key}', [])), key=f'watch-input-{key}')
-    watch_mode = st.selectbox('감시 범위',['industry','symbols'],
-                              format_func=lambda value: '전체 산업 포함' if value == 'industry' else '입력 종목만')
-    session = st.date_input('관측 거래일', value=date.fromisoformat(data['default_session']))
-    chosen = [s.strip() for s in symbols.split(',') if s.strip()]
+    names = account_symbol_names(ops, key)
+    watch_key = f'watch-{key}'
+    selected = [code for code in st.session_state.get(watch_key, []) if code in names]
+    if st.session_state.get(watch_key) != selected:
+        st.session_state[watch_key] = selected
+    market_open = data['regular_session']
+    session = data['today'] if market_open else data['default_session']
+    if market_open:
+        st.info(f'오늘 {session} 관측 시간입니다. 시작할 계획은 자동으로 오늘 날짜를 사용합니다.')
+    else:
+        st.info(f'현재 관측 시간이 아닙니다. {session} 계획을 미리 저장할 수 있으며 관측 ON은 해당 거래 시간에만 가능합니다.')
+    st.markdown('#### ① 대상 선택')
+    chosen = st.multiselect('감시 종목명·코드 검색', sorted(names),
+                            format_func=lambda code: symbol_label(code, names),
+                            key=watch_key, placeholder='종목명을 입력하고 결과를 선택하세요')
+    watch_mode = st.selectbox('감시 범위', ['symbols', 'industry'],
+                              format_func=lambda value: '입력 종목만' if value == 'symbols' else '전체 산업 포함')
+    st.caption(f'선택 {len(chosen)}종목 · 전체 산업 포함은 동종업종 종목까지 KIS 구독 요청이 늘어납니다.')
     basis = None
     try:
-        basis = ops.intraday_service.plan_basis(key,session.isoformat())
-        st.caption(f'관측 기준 종가 {basis["as_of"]} · 산업 자료 {"준비됨" if basis["industry_ready"] else "없음"}')
+        basis = ops.intraday_service.plan_basis(key, session)
+        st.caption(f'판단 기준: 직전 거래일 {basis["as_of"]} 종가 · 산업 자료 {"준비됨" if basis["industry_ready"] else "없음"}')
     except ValueError as error:
         st.warning(str(error))
-    if st.button('구독 수 미리보기',disabled=not chosen or basis is None):
+    if basis and chosen:
         try:
             preview = ops.intraday_service.subscription_preview(
-                key,basis['as_of'],chosen,watch_mode,session.isoformat())
-            st.info(f'예상 KIS 구독 {preview["count"]}건 · 산업 {len(preview["industries"])}개')
+                key, basis['as_of'], chosen, watch_mode, session)
+            st.caption(f'예상 KIS 구독 {preview["count"]}건 · 산업 {len(preview["industries"])}개')
         except ValueError as error:
-            st.warning(str(error))
-    if st.button('자료 준비 및 관측 계획 생성', disabled=not can_write or not chosen or basis is None
-                 or watch_mode == 'industry' and not basis['industry_ready']):
-        submit(ops,key,'prepare_intraday',basis['as_of'], symbols=chosen,
-               session=session.isoformat(),watch_mode=watch_mode)
+            st.caption(f'구독 수는 계획 준비 후 확인할 수 있습니다: {error}')
     if basis and watch_mode == 'industry' and not basis['industry_ready']:
         st.caption('산업 자료가 없으면 입력 종목만 관측을 선택할 수 있습니다.')
-    st.write('관측 상태:', data['control']['status'])
-    plans = {p['id']:p for p in data['plans']}
-    if plans:
-        plan = st.selectbox('저장한 계획', list(plans), format_func=lambda p:f'{plans[p]["session"]} · {", ".join(plans[p]["targets"])}')
-        seconds = st.number_input('관측 시간(초)', min_value=1,max_value=39600,value=39600)
-        if st.button('관측 ON', disabled=not can_write):
-            try:
-                st.success(ops.start_watch(dict(workspace=key,plan_id=plan,seconds=seconds)))
-            except (ValueError, OSError) as error:
-                st.error(str(error))
+    st.markdown('#### ② 관측 시작·종료')
+    running = bool(data['control']['active_or_unconfirmed'])
+    if running:
+        st.success('관측이 실행 중이거나 KIS 연결 상태를 확인 중입니다.')
+    elif data['control']['enabled']:
+        st.warning('관측 설정은 ON이지만 실행 중인 연결은 확인되지 않습니다. 새 관측을 시작하기 전에 상태를 확인하세요.')
     else:
-        st.info('생성한 관측 계획이 없습니다.')
-    if st.button('관측 OFF', disabled=not can_write):
-        st.write(ops.stop_watch())
-    if data['runs']:
-        runs = {r['id']:r for r in data['runs']}
-        run = st.selectbox('관측 기록', list(runs),
-                           format_func=lambda run_id:f'{runs[run_id]["session"]} · {run_id}')
-        summary = runs[run]['summary']
-        st.write(f'연결 {summary.get("connection_state", "미확인")} · 요청 {summary.get("subscriptions_requested", "미확인")} / 승인 {summary.get("subscription_acks", "미확인")} · 체결 {summary.get("quote_ticks", "미확인")}')
+        st.caption('현재 실행 중인 관측이 없습니다.')
+    start_disabled = (not can_write or not market_open or not chosen or basis is None or running
+                      or watch_mode == 'industry' and not basis['industry_ready'])
+    if market_open:
+        if st.button('선택 종목으로 관측 ON', type='primary', disabled=start_disabled):
+            submit(ops, key, 'watch_auto', basis['as_of'], symbols=chosen,
+                   session=session, watch_mode=watch_mode)
+        st.caption('필요한 기준 자료와 계획을 준비한 뒤 관측을 시작합니다. 20:00까지 관측하며 언제든 OFF할 수 있습니다.')
+    elif st.button(f'{session} 관측 계획만 저장', disabled=not can_write or not chosen or basis is None
+                   or watch_mode == 'industry' and not basis['industry_ready']):
+        submit(ops, key, 'prepare_intraday', basis['as_of'], symbols=chosen,
+               session=session, watch_mode=watch_mode)
+    if st.button('관측 OFF', disabled=not can_write or not data['control']['enabled']):
+        result = ops.stop_watch()
+        st.success('관측 종료 요청을 보냈습니다. 연결 종료 상태를 확인하세요.')
+    with st.expander('저장된 계획 확인·다시 시작'):
+        plans = [p for p in data['plans'] if p['session'] == session]
+        if chosen:
+            plans = [p for p in plans if set(chosen).issubset(set(p['targets']))]
+        if plans:
+            plans_by_id = {p['id']: p for p in plans}
+            plan = st.selectbox(f'{session} 저장 계획', list(plans_by_id),
+                                format_func=lambda plan_id: ', '.join(
+                                    symbol_label(code, names) for code in plans_by_id[plan_id]['targets'][:3]))
+            if st.button('이 계획으로 관측 ON', disabled=not can_write or not market_open or running):
+                try:
+                    seconds = max(1, min(39600, int((ops.now().replace(
+                        hour=20, minute=0, second=0, microsecond=0) - ops.now()).total_seconds())))
+                    result = ops.start_watch(dict(workspace=key, plan_id=plan, seconds=seconds))
+                    st.session_state.pop(f'job-submitted-{key}', None)
+                    st.info(f'관측 시작 요청 접수 · 실행 ID {result["run_id"]} · KIS 연결 확인 중')
+                except (ValueError, OSError) as error:
+                    st.error(str(error))
+        else:
+            st.caption('선택한 종목의 대상 거래일 저장 계획이 없습니다. 위 버튼을 누르면 새로 준비합니다.')
+    st.markdown('#### ③ 관측 결과')
+    current_runs = [run for run in data['runs'] if run['session'] == data['today']
+                    and (not chosen or set(chosen).issubset(set(run['targets'])))]
+    if current_runs:
+        run = current_runs[0]
+        summary = run['summary']
+        targets = ', '.join(symbol_label(code, names) for code in run['targets'][:3])
+        st.write(f'오늘 최근 관측 · {targets} · 연결 {summary.get("connection_state", "미확인")}'
+                 f' · KIS 구독 요청 {summary.get("subscriptions_requested", "미확인")} / 승인 {summary.get("subscription_acks", "미확인")}'
+                 f' · 수신 체결 {summary.get("quote_ticks", "미확인")}')
         if summary.get('kis_error_code') or summary.get('rejected_symbol'):
-            st.error(f'KIS 오류 {summary.get("kis_error_code", "미확인")} · 거절 종목 {summary.get("rejected_symbol", "미확인")}')
+            rejected = summary.get('rejected_symbol')
+            st.error(f'KIS 구독 또는 연결 실패 · 오류 {summary.get("kis_error_code", "미확인")}'
+                     + (f' · 거절 종목 {symbol_label(rejected, names)}' if rejected else ''))
+        elif summary.get('connection_state') == 'failed':
+            reason = summary.get('failure_reason') or summary.get('last_disconnect_reason') or '상세 사유 기록 없음'
+            display = 'KIS WebSocket 연결 오류' if reason == 'connection_error' else reason
+            st.error(f'KIS 연결 실패 · {display} · 구독 승인 '
+                     f'{summary.get("subscription_acks", "미확인")}/{summary.get("subscriptions_requested", "미확인")}. '
+                     '연결 환경과 해당 실행 기록을 확인하세요.')
         quotes = summary.get('latest_target_quotes') or {}
         if quotes:
-            st.write('최근 체결');table([{**quote,'symbol':symbol} for symbol,quote in quotes.items()])
-        if summary.get('hourly_quotes'):
-            st.write('시간대별 잠정 관측');table(summary['hourly_quotes'])
-        st.write('판단 이력');table(runs[run]['events'])
-        with st.expander('관측 원본 요약'):
+            st.write('선택 종목의 최근 체결')
+            st.dataframe(pd.DataFrame([{
+                '종목': symbol_label(symbol, names),
+                '체결 시각': observed_time_label(quote.get('timestamp')),
+                '현재가': quote.get('price'),
+                '누적 거래량': quote.get('cumulative_volume'),
+                '전일 종가': quote.get('previous_close'),
+                '가격 기준': '불일치' if quote.get('price_basis_mismatch') else '확인',
+            } for symbol, quote in quotes.items()]), hide_index=True, width='stretch')
+        elif summary.get('connection_state') in {'starting', 'active'}:
+            st.info('아직 선택 종목의 체결을 받지 못했습니다. 잠시 후 자료 다시 읽기를 누르세요.')
+        with st.expander('시간대별 관측·판단 근거'):
+            st.caption('시간대별 잠정 가격·거래량과 조건 변화 기록입니다. 종가 확정 결과는 아닙니다.')
+            table(summary.get('hourly_quotes') or [], names)
+            table(run['events'], names)
+        with st.expander('이 관측의 원본 요약'):
             st.json(summary, expanded=False)
-        for action in ['intraday_close','volume_import']:
-            if st.button(ACTIONS[action], disabled=not can_write):
-                submit(ops,key,action,as_of,run_id=run)
-    if st.button('동시간 거래량 기준 생성', disabled=not can_write):
-        submit(ops,key,'volume_profile',as_of)
-    st.caption('거래량 누적은 관측 종료 후 16:10 이후 수행하세요. 기준 생성에는 최소 5개 유효 거래일이 필요합니다.')
+    else:
+        st.info('선택한 종목의 오늘 관측 결과가 아직 없습니다. 관측을 시작하면 이곳에 표시됩니다.')
+    with st.expander('이전 관측 기록·종료 후 처리'):
+        st.caption('과거 관측은 현재 선택 종목의 상태와 별개입니다. 종가 대조·거래량 누적은 관측 종료 후 필요할 때만 실행합니다.')
+        if data['runs']:
+            runs_by_id = {run['id']: run for run in data['runs']}
+            run_id = st.selectbox('관측 기록 선택', list(runs_by_id),
+                                  format_func=lambda selected_id: f'{runs_by_id[selected_id]["session"]} · '
+                                  + ', '.join(symbol_label(code, names) for code in runs_by_id[selected_id]['targets'][:2])
+                                  + f' · {selected_id}')
+            history = runs_by_id[run_id]
+            history_summary = history['summary']
+            st.caption(f'연결 {history_summary.get("connection_state", "미확인")} · '
+                       f'요청 {history_summary.get("subscriptions_requested", "미확인")} / '
+                       f'승인 {history_summary.get("subscription_acks", "미확인")} · '
+                       f'체결 {history_summary.get("quote_ticks", "미확인")}')
+            with st.expander('선택한 관측 기록 상세'):
+                old_quotes = history_summary.get('latest_target_quotes') or {}
+                table([{'symbol': code, **quote} for code, quote in old_quotes.items()], names)
+                st.write('시간대별 잠정 관측')
+                table(history_summary.get('hourly_quotes') or [], names)
+                st.write('판단 이력')
+                table(history['events'], names)
+            from .candidate_universe import latest_completed_session
+            close_ready = history['session'] <= latest_completed_session(ops.now())
+            if not close_ready:
+                st.caption(f'{history["session"]} 종가와 대조·거래량 누적은 해당 거래일 16:10 이후 가능합니다.')
+            for action in ['intraday_close', 'volume_import']:
+                finished = history_summary.get('connection_state') not in {'starting', 'active'}
+                if st.button(ACTIONS[action], disabled=not can_write or not close_ready
+                             or action == 'volume_import' and not finished):
+                    submit(ops, key, action, history['session'], run_id=run_id)
+        else:
+            st.caption('저장된 관측 기록이 없습니다.')
+        if st.button('동시간 거래량 기준 생성', disabled=not can_write):
+            submit(ops, key, 'volume_profile', as_of)
+        st.caption('거래량 누적은 관측 종료 후 16:10 이후 수행합니다. 기준 생성에는 최소 5개 유효 거래일이 필요합니다.')
 
 
 def settings(ops, snapshot, can_write):
@@ -822,6 +957,7 @@ def job_status(ops, key, show_next=True):
     statuses = {'queued':'대기','running':'진행 중','completed':'완료','failed':'실패','interrupted':'중단'}
     label = ACTIONS.get(job['action'], job['action'])
     as_of = job.get('as_of', '—')
+    prominent = status in {'queued', 'running'} or st.session_state.get(f'job-submitted-{key}') == job['id']
     if status in {'queued','running'}:
         with st.container(border=True):
             st.markdown(f'#### {label} · {as_of}')
@@ -841,13 +977,13 @@ def job_status(ops, key, show_next=True):
                 if state:
                     st.caption(f'계좌에 반영된 마지막 거래일: {state["last_date"]} · 목표: {as_of}')
             st.caption('작업 중 서버를 종료하면 중단될 수 있습니다. 완료 또는 실패 표시를 확인한 뒤 재시작하세요.')
-    elif status == 'completed':
+    elif status == 'completed' and prominent:
         reused = (job.get('result') or {}).get('status') == 'already_present'
         st.markdown(f'✅ 최근 작업 · **{label}** · {as_of} · 완료'
                     f'{" (저장된 결과 사용)" if reused else ""}')
-    elif status in {'failed','interrupted'}:
+    elif status in {'failed','interrupted'} and prominent:
         st.error(f'{label} · {as_of} · {statuses[status]}: {error or "작업 기록을 확인하세요."}')
-    if show_next and job['action'] == 'daily' and status in {'completed','failed','interrupted'}:
+    if show_next and prominent and job['action'] == 'daily' and status in {'completed','failed','interrupted'}:
         state = ops.state(ops.workspace(key))
         last = state['last_date'] if state else None
         if last:
@@ -864,7 +1000,9 @@ def job_status(ops, key, show_next=True):
                       on_click=lambda: st.session_state.update({'page-picker':'오늘의 운용'}))
     if status not in {'queued','running'}:
         with st.expander(f'작업 기록 보기{f" · 이전 {len(jobs)-1}건" if len(jobs) > 1 else ""}'):
-            st.caption(f'최근 작업 ID {job["id"]}')
+            st.caption(f'최근 작업 · {label} · {as_of} · {statuses.get(status,status)} · {job["id"]}')
+            if status in {'failed', 'interrupted'}:
+                st.write(error or '작업 기록을 확인하세요.')
             if job.get('result') is not None:
                 st.json(job['result'], expanded=False)
             if len(jobs) > 1:
@@ -945,7 +1083,7 @@ def main():
         if page=='종목 탐색': workbench(ops,key,snapshot)
         elif page=='날짜별 시장 후보': market_candidates(ops,key,snapshot,can_write)
         elif page=='오늘의 운용': workflow(ops,key,snapshot,as_of,can_write)
-        elif page=='보유·체결': holdings(snapshot)
+        elif page=='보유·체결': holdings(snapshot, stored_symbol_names(ops, key))
         elif page=='장중 관측': observation(ops,key,as_of,can_write)
         elif page=='정정·검증': recovery(ops,key,snapshot,as_of,can_write)
         else: settings(ops,snapshot,can_write)

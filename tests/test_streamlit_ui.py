@@ -8,8 +8,19 @@ from streamlit.testing.v1 import AppTest
 from trendfollow.streamlit_ui import (auth_key, candidate_stage, candidate_table_rows, filter_candidates,
                                      high52_distance, issue_auth_token, missing_candidate_sessions,
                                      observed_time_label, valid_auth_token)
+from trendfollow.symbol_lookup import matching_symbols, named_rows, symbol_names
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_saved_master_resolves_name_and_preserves_duplicate_choices(tmp_path):
+    master = tmp_path / 'master.csv'
+    master.write_text('symbol,name\n005930,삼성전자\n005935,삼성전자우\n123456,동명이인\n654321,동명이인\n',
+                      encoding='utf-8')
+    names = symbol_names(master)
+    assert matching_symbols(names, '삼성전자')[0] == '005930'
+    assert matching_symbols(names, '동명이인') == ['123456', '654321']
+    assert named_rows([{'symbol': '005930', 'price': 100}], names)[0]['name'] == '삼성전자'
 
 
 def test_industry_observation_time_is_labelled_in_kst_without_inventing_missing_time():
@@ -73,6 +84,35 @@ def test_stale_server_shows_running_job_instead_of_claiming_it_stopped():
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
     assert any('기존 코드로 계속 실행' in warning.value for warning in app.warning)
     status.assert_called_once()
+
+
+def test_old_observation_failure_stays_in_job_history(tmp_path):
+    from threading import RLock
+
+    class Jobs:
+        home = tmp_path
+        lock = RLock()
+        jobs = {'old': dict(id='old', workspace='account', action='intraday_close',
+                            as_of='2026-11-18', status='failed',
+                            error='대조 기준일을 관측 거래일과 맞추세요.')}
+
+        def refresh_jobs(self):
+            pass
+
+    ops = Jobs()
+    def page():
+        import streamlit as st
+        from trendfollow.streamlit_ui import job_status
+        job_status(st.session_state['fake-ops'], 'account', show_next=False)
+
+    app = AppTest.from_function(page)
+    app.session_state['fake-ops'] = ops
+    app.run(timeout=30)
+    assert not app.error
+    assert any('작업 기록 보기' in item.label for item in app.expander)
+    app.session_state['job-submitted-account'] = 'old'
+    app.run(timeout=30)
+    assert any('대조 기준일' in item.value for item in app.error)
 
 
 def test_candidate_table_uses_display_names_and_hides_internal_fields():
@@ -172,6 +212,78 @@ def test_account_change_returns_to_primary_workflow(monkeypatch):
         assert any('오늘의 운용 · 다음 단계' in item.value for item in app.subheader)
 
 
+def test_observation_selects_account_stock_by_name(monkeypatch):
+    monkeypatch.delenv('UI_PASSWORD', raising=False)
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), \
+         patch('trendfollow.streamlit_ui.job_status'):
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        app.radio(key='page-picker').set_value('장중 관측').run(timeout=30)
+        chooser = next(widget for widget in app.multiselect if widget.label == '감시 종목명·코드 검색')
+        assert any('000080' in label and '·' in label for label in chooser.options)
+        chooser.set_value(['000080']).run(timeout=30)
+        assert not app.exception and not app.error
+        key = app.selectbox(key='account-picker').value
+        assert app.session_state[f'watch-{key}'] == ['000080']
+
+
+def test_observation_shows_selected_stock_run_instead_of_previous_stock(monkeypatch):
+    from trendfollow.ui_service import Operations
+    from trendfollow.operations.intraday import IntradayService
+
+    def intraday(self, workspace=None):
+        def run(run_id, symbol, error=None, failure_reason=None):
+            return dict(id=run_id, session='2026-11-19', targets=[symbol], events=[],
+                        summary=dict(connection_state='failed', subscriptions_requested=91 if error else 1,
+                                     subscription_acks=41 if error else 1, quote_ticks=23,
+                                     kis_error_code=error, failure_reason=failure_reason,
+                                     rejected_symbol='098460' if error else None,
+                                     latest_target_quotes={symbol: dict(price=100)}))
+        return dict(today='2026-11-19', default_session='2026-11-19', regular_session=True,
+                    control=dict(status='off_confirmed', enabled=False, active_or_unconfirmed=[]),
+                    plans=[], runs=[run('old', '005930'), run('new', '009150', 'OPSP0008'),
+                                    run('connection', '000080', failure_reason='connection_error')])
+
+    monkeypatch.delenv('UI_PASSWORD', raising=False)
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), \
+         patch('trendfollow.streamlit_ui.job_status'), \
+         patch.object(Operations, 'intraday', intraday), \
+         patch.object(IntradayService, 'plan_basis', return_value=dict(as_of='2026-11-18', industry_ready=True)), \
+         patch.object(IntradayService, 'subscription_preview', return_value=dict(count=1, industries=[])):
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        app.radio(key='page-picker').set_value('장중 관측').run(timeout=30)
+        next(widget for widget in app.multiselect if widget.label == '감시 종목명·코드 검색').set_value(['009150']).run(timeout=30)
+        assert not app.exception
+        assert any('OPSP0008' in item.value for item in app.error)
+        assert any('삼성전기' in item.value and '오늘 최근 관측' in item.value for item in app.markdown)
+        assert not any(field.label == '관측 거래일' for field in app.date_input)
+        next(widget for widget in app.multiselect if widget.label == '감시 종목명·코드 검색').set_value(['000080']).run(timeout=30)
+        assert any('KIS WebSocket 연결 오류' in item.value for item in app.error)
+
+
+def test_revision_name_search_passes_exact_stock_code(monkeypatch):
+    from trendfollow.ui_service import Operations
+
+    seen = []
+    report = dict(id='report', account_as_of='2026-11-13', row_changes=1,
+                  applied=True, stale=False, explanation='')
+
+    def revision_view(self, key, report_id=None, **filters):
+        if report_id:
+            seen.append(filters.get('symbols'))
+        return dict(policy='manual', report=report,
+                    rows=[dict(symbol='005930', field='close')] if not report_id else [], total=1)
+
+    monkeypatch.delenv('UI_PASSWORD', raising=False)
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), \
+         patch('trendfollow.streamlit_ui.job_status'), \
+         patch.object(Operations, 'revision_view', revision_view):
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        app.radio(key='page-picker').set_value('정정·검증').run(timeout=30)
+        next(field for field in app.text_input if field.label == '변경 종목명·코드 검색').set_value('삼성전자').run(timeout=30)
+        assert not app.exception and not app.error
+        assert seen[-1] == ['005930']
+
+
 def test_workflow_starts_with_next_action_and_prepares_missing_market_dates():
     from trendfollow.ui_service import Operations
     original = Operations.guidance
@@ -223,10 +335,10 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
     original = Operations.snapshot
     def snapshot(self,key):
         result = original(self,key)
-        result['rows'] = [dict(symbol='000001',name='테스트 상승',sector='산업A',
+        result['rows'] = [dict(symbol='000080',name='테스트 상승',sector='산업A',
             reference_price=10000,rs_percentile=95,signal=True,rs_pass=True,
             setup_phase='breakout',volume_ratio=2),
-            dict(symbol='000002',name='테스트 대기',sector='산업B',
+            dict(symbol='000210',name='테스트 대기',sector='산업B',
             reference_price=9000,rs_percentile=70,signal=False,rs_pass=False,
             setup_phase='base',volume_ratio=None)]
         return result
@@ -242,7 +354,9 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
         assert any(s.value=='테스트 대기' for s in app.subheader)
         next(b for b in app.button if b.label=='관측 목록에 추가').click().run()
         key=app.selectbox(key='account-picker').value
-        assert app.session_state[f'watch-{key}']==['000002']
+        assert app.session_state[f'watch-{key}']==['000210']
+        app.radio(key='page-picker').set_value('장중 관측').run(timeout=30)
+        assert app.multiselect(key=f'watch-{key}').value == ['000210']
 
 
 def test_daily_action_accepts_missing_industry_and_selected_price_source(monkeypatch):

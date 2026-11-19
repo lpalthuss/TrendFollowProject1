@@ -160,7 +160,7 @@ class IntradayService:
                 root.glob("*/summary.json"),
                 key=lambda p: p.stat().st_mtime_ns,
                 reverse=True,
-            )[:10]
+            )
             if root.exists()
             else []
         ):
@@ -206,6 +206,8 @@ class IntradayService:
                                           ("resistance", "setup_resistance", "high52_resistance")}
                                          for symbol, target in plan.get("targets", {}).items()},
                                  summary=summary, events=events))
+                if len(runs) >= 10:
+                    break
             except (OSError, ValueError):
                 continue
         default_session = default_watch_session(now)
