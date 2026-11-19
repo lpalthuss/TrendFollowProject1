@@ -13,6 +13,12 @@ from trendfollow.symbol_lookup import matching_symbols, named_rows, symbol_names
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def unselected_board(**kwargs):
+    # AppTest mocks the v2 JavaScript component registry.
+    from types import SimpleNamespace
+    return SimpleNamespace(symbol=None)
+
+
 def test_partial_market_result_queues_once_without_clicking():
     from types import SimpleNamespace
     from threading import RLock
@@ -222,7 +228,8 @@ def navigate(app, page):
 
 def test_readonly_navigation_never_submits_jobs(monkeypatch):
     monkeypatch.delenv('UI_PASSWORD',raising=False)
-    with patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch('trendfollow.ui_service.Operations.submit') as submit:
+    with patch('trendfollow.streamlit_ui.candidate_board_component', return_value=unselected_board), \
+         patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch('trendfollow.ui_service.Operations.submit') as submit:
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         assert not app.exception
         for page in ['오늘의 운용','날짜별 시장 후보','운용 기록','장중 관측','정정·검증','전략·설정','종목 탐색']:
@@ -432,7 +439,8 @@ def test_market_candidate_page_handles_stale_cached_date_query():
                       'missing_selection_count', 'missing_selection_dates'):
             dates.pop(field, None)
         return dates
-    with patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch.object(Operations, 'candidate_dates', old_dates):
+    with patch('trendfollow.streamlit_ui.candidate_board_component', return_value=unselected_board), \
+         patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch.object(Operations, 'candidate_dates', old_dates):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         navigate(app, '날짜별 시장 후보')
         next(widget for widget in app.selectbox if widget.label == '후보군 자료 원천').set_value('krx_open_api').run(timeout=30)
@@ -458,6 +466,32 @@ def test_close_plan_shows_account_risk_at_close(monkeypatch):
     assert '삼성전자' in row['종목']
     assert 0 < row['예상 수량(주)'] <= 20
     assert 0 < row['계획 위험(원)'] <= 2000
+
+
+def test_candidate_plan_uses_selected_day_and_all_competing_candidates(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import Mock
+    import pandas as pd
+    import trendfollow.streamlit_ui as ui
+
+    day = '2026-11-17'
+    checkpoint = tmp_path / day / 'state.json'
+    checkpoint.parent.mkdir()
+    pending = [{'symbol':'000001'}, {'symbol':'000002'}]
+    checkpoint.write_text(json.dumps({'cash':1234, 'pending':pending}), encoding='utf-8')
+    ops, view = Mock(), Mock()
+    ops.path.return_value = tmp_path / 'state.json'
+    allocate = Mock(return_value=pd.DataFrame([dict(symbol='000002', quantity=2, stop_price=1000, planned_risk=400)]))
+    monkeypatch.setattr(ui, 'st', view)
+    monkeypatch.setattr(ui, 'pending_allocations', allocate)
+    snapshot = dict(workspace={'state':'state.json'}, limits={})
+    ui.candidate_plan(ops, snapshot, day, '000002')
+    assert allocate.call_args.args[0]['cash'] == 1234
+    assert allocate.call_args.args[2] == pending
+    assert '400원' in view.write.call_args.args[0]
+    ui.candidate_plan(ops, snapshot, '2026-11-18', '000002')
+    assert '처리 기록이 없어' in view.caption.call_args.args[0]
+    assert allocate.call_count == 1
 
 
 def test_history_uses_selected_checkpoint_and_next_day_orders(tmp_path):

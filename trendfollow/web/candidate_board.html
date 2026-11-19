@@ -1,0 +1,30 @@
+<section class="candidate-board" aria-label="시장 후보 탐색">
+  <header>
+    <h3>시장 후보 탐색</h3>
+    <span class="count"></span>
+  </header>
+  <div class="toolbar">
+    <label
+      >산업
+      <select data-filter="industry"></select
+    ></label>
+    <label
+      >종목 검색
+      <input type="search" data-filter="search" placeholder="종목명·코드·산업"
+    /></label>
+    <button class="reset" type="button">선택 초기화</button>
+  </div>
+  <div class="cards"></div>
+  <details class="more">
+    <summary>세부 조건</summary>
+    <div class="toolbar advanced"></div>
+  </details>
+  <div class="wave"></div>
+  <p class="summary" aria-live="polite"></p>
+  <div class="grid">
+    <table>
+      <thead></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>

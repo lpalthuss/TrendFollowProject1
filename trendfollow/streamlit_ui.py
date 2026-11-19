@@ -399,61 +399,164 @@ def workbench(ops, key, snapshot, as_of=None):
         index = min(index, len(filtered)-1)
     with detail_area:
         row = next((r for r in filtered if r['symbol'] == st.session_state.get(f'card-selection-{key}')), filtered[index])
-        st.subheader(str(row.get('name') or row['symbol']))
-        st.caption(row['symbol'])
-        st.metric('저장된 종가', '—' if row.get('reference_price') is None else f'{row["reference_price"]:,.0f}원')
-        try:
-            prices = ops.prices(key, row['symbol'], as_of, include_warmup=True)
-            if prices:
-                from .brokers import BrokerError
-                from .krx_sessions import observation_market, previous_close_date
-                from .price_chart import provisional_bar
-                now = ops.now()
-                today = now.date().isoformat()
-                if (observation_market(now) == 'krx' and snapshot['workspace'].get('mode') != 'recalculation'
-                        and prices[-1]['date'] == (as_of or snapshot.get('as_of')) == previous_close_date(today)):
-                    try:
-                        quotes = chart_session_prices(str(ops.root), row['symbol'], prices[-1]['date'], today)
-                        bar = provisional_bar(prices, quotes, today, snapshot['rules']['atr_days'])
-                        prices = [*prices, bar]
-                        st.caption(f'{today} 마지막 봉은 KIS 정규장 잠정 일봉입니다. 화면을 다시 읽으면 갱신됩니다(조회 간격 1분).')
-                    except (ValueError, BrokerError) as error:
-                        st.caption(f'오늘 잠정봉 미표시 · {error}')
-                st.components.v1.html(chart_html(prices), height=550, scrolling=False)
-                st.caption('선택일 이전 최대 15개월 저장 일봉 · 봉을 가리키면 좌측 상단에 OHLCV·ATR 표시')
-            else:
-                st.info('가격 이력이 없습니다.')
-        except (ValueError, OSError):
-            st.info('저장된 가격 이력이 없습니다.')
-        st.markdown('#### 선택 종목 조건 · '+str(as_of or snapshot.get('as_of') or '기준일 미확인'))
-        verdicts = {'rs_pass':'RS 조건', 'sector_action':'산업 조건', 'setup_ready':'셋업 준비',
-                    'setup_trigger':'셋업 돌파', 'high52_breakout':'52주 신고가 돌파', 'signal':'최종 진입'}
-        st.dataframe([{'조건':label, '판정':{True:'충족', False:'미충족'}.get(row.get(field),'미확인·미적용')}
-                      for field,label in verdicts.items()], hide_index=True, width='stretch')
-        table([{field:row.get(field) for field in ('volume_ratio','stop_price','quantity','planned_risk','allocation_reason')}])
-        if snapshot['rules'].get('entry_method') == 'setup':
-            missing = ('조정·베이스 형성 전' if row.get('setup_phase') in ('seeking','rising') else '자료 없음')
-            fields = {'setup_retracement':'준비 판정 반납률', 'setup_retracement_today':'오늘 저가 포함 반납률',
-                      'setup_volume_ratio':'거래량 수축비', 'setup_range_ratio':'변동성 수축비',
-                      'setup_resistance':'셋업 저항선', 'prior_52w_high':'직전 252거래일 최고가'}
-            def value(field):
-                number = row.get(field)
-                if number is None:
-                    return missing if field.startswith('setup_') else '자료 없음'
-                if 'retracement' in field:
-                    return f'{number:.1%}'
-                return f'{number:.2f}' if field.endswith('ratio') else f'{number:,.0f}원'
-            st.dataframe([{'항목':label, '기준일 값':value(field)} for field,label in fields.items()],
-                         hide_index=True, width='stretch')
+        candidate_detail(ops, key, snapshot, row, as_of)
+    with st.expander('산업별 후보 집계 · 전체 분석 자료 기준'):
+        grouped = pd.DataFrame(rows)
+        if 'sector' in grouped:
+            st.dataframe(grouped.groupby('sector', dropna=False).agg(후보수=('symbol','size'),진입신호=('signal','sum')).reset_index(), hide_index=True)
+
+
+@lru_cache(maxsize=1)
+def candidate_board_component():
+    assets = CODE_ROOT / 'trendfollow/web'
+    html = (assets / 'candidate_board.html').read_text(encoding='utf-8')
+    wave = (assets / 'wave_filter.html').read_text(encoding='utf-8')
+    return st.components.v2.component(
+        'market_candidate_board', html=html.replace('<div class="wave"></div>', f'<div class="wave">{wave}</div>'),
+        css=(assets / 'candidate_board.css').read_text(encoding='utf-8'),
+        js=(assets / 'src/filters.js').read_text(encoding='utf-8') + '\n' +
+           (assets / 'candidate_board.js').read_text(encoding='utf-8'))
+
+
+def market_board(ops, key, snapshot, day, selection):
+    rows = snapshot['rows']
+    if not rows:
+        st.info('이 날짜에 표시할 분석 종목이 없습니다.')
+        return
+    display = []
+    for row in rows:
+        close, high = row.get('reference_price'), row.get('prior_52w_high')
+        display.append(dict(row, stage=candidate_stage(row),
+                            gap=(close/high-1)*100 if close is not None and high and high > 0 else None))
+    event = candidate_board_component()(key=f'market-board-{key}-{day}', data=dict(
+        rows=display, rules=snapshot['rules'], day=day,
+        stages={'준비 후보':'셋업 준비 조건 충족', '돌파선 접근':'저항선 아래 1 ATR 이내',
+                '종가 돌파':'셋업 저항선 또는 52주 고가 돌파', '고가 접촉·종가 하회':'장중 저항선 접촉 후 종가 하회'}),
+        on_symbol_change=lambda: None)
+    row = next((r for r in rows if r['symbol'] == event.symbol), None)
+    if row is None:
+        st.caption('종목을 선택하면 이곳에 차트와 선정 근거, 계좌 진입 조건 및 계획 위험이 표시됩니다.')
+        return
+    candidate_detail(ops, key, snapshot, row, day, selection)
+
+
+def candidate_plan(ops, snapshot, day, symbol):
+    checkpoint = ops.path(snapshot['workspace']['state']).parent / day / 'state.json'
+    if not checkpoint.is_file():
+        st.caption(f'{day} 종가 기준 계좌 처리 기록이 없어 계획 수량과 위험을 확인할 수 없습니다.')
+        return
+    state = json.loads(checkpoint.read_text(encoding='utf-8'))
+    if not any(p['symbol'] == symbol for p in state['pending']):
+        st.write('이 계좌는 다음 거래일에 이 종목을 매수할 계획이 없습니다.')
+        st.caption('돌파선 접근 등을 계속 살펴보고 싶을 때만 「관측 목록에 추가」하세요.')
+        return
+    plans = pending_allocations(state, snapshot['limits'], state['pending'])
+    for plan in plans[plans.symbol.eq(symbol)].to_dict('records'):
+        st.write(f'예상 수량 **{plan["quantity"]:,.0f}주** · 손절 기준 **{plan["stop_price"]:,.0f}원** · '
+                 f'계획 위험 **{plan["planned_risk"]:,.0f}원**')
+    st.caption('다음 거래일 장 마감 후 「오늘의 운용」에서 종가 모의 처리를 실행하세요. '
+               '종목별 매수 조작 없이 당일 시가와 가용 현금으로 체결 여부와 수량을 결정합니다.')
+
+
+def candidate_detail(ops, key, snapshot, row, as_of, selection=None):
+    st.subheader(str(row.get('name') or row['symbol']))
+    st.caption(row['symbol'])
+    if selection:
+        member = next((r for r in selection['members'] if r['symbol'] == row['symbol']), None)
+        if member:
+            summary = selection['summary']
+            basis = '최근 거래대금 추정액' if summary.get('source') == 'KIS market master' else '당일 거래대금'
+            from .candidate_universe import _approx_amount
+            amount = _approx_amount(member.get('recent_turnover_proxy'))
+            threshold = summary.get('min_daily_turnover', summary.get('min_recent_turnover_proxy'))
+            criterion = f' · 선정 기준 {threshold/1e8:g}억원 이상' if threshold is not None else ''
+            st.write(f'**시장 선정 근거** · {as_of} {summary["source"]} 선정 목록 · {basis} {amount}{criterion}')
+    if as_of:
+        close = row.get('reference_price')
+        levels = [('셋업 저항선', row.get('setup_resistance')), ('직전 52주 고가', row.get('prior_52w_high'))]
+        distances = []
+        for label, level in levels:
+            if close is not None and level and level > 0:
+                gap = (close / level - 1) * 100
+                distance = '일치' if gap == 0 else f'{abs(gap):.1f}% {"돌파" if gap > 0 else "남음"}'
+                distances.append(f'{label} {level:,.0f}원 · {distance}')
+        st.write('**후보 상태** · ' + ' / '.join([candidate_stage(row), *distances]))
+        st.markdown('**다음 거래일 진입 계획**')
+        candidate_plan(ops, snapshot, as_of, row['symbol'])
+    with st.container(horizontal=True, gap='small'):
         if st.button('관측 목록에 추가', key='add-watch'):
             symbols = st.session_state.setdefault(f'watch-{key}', [])
             if row['symbol'] not in symbols:
                 symbols.append(row['symbol'])
             st.success('장중 관측 화면의 목록에 추가했습니다. 관측은 시작하지 않습니다.')
-    with st.expander('산업별 후보 집계 · 전체 분석 자료 기준'):
-        grouped = pd.DataFrame(rows)
-        if 'sector' in grouped:
-            st.dataframe(grouped.groupby('sector', dropna=False).agg(후보수=('symbol','size'),진입신호=('signal','sum')).reset_index(), hide_index=True)
+        if as_of and snapshot.get('account_as_of'):
+            st.button('오늘의 운용 · 최근 진입 계획 보기', on_click=open_page, args=('오늘의 운용',))
+            if (ops.path(snapshot['workspace']['state']).parent / as_of / 'state.json').is_file():
+                st.button(f'운용 기록 · {as_of} 계획 보기', on_click=open_plan_history, args=(key, as_of))
+    st.metric('저장된 종가', '—' if row.get('reference_price') is None else f'{row["reference_price"]:,.0f}원')
+    try:
+        prices = ops.prices(key, row['symbol'], as_of, include_warmup=True)
+        if prices:
+            from .brokers import BrokerError
+            from .krx_sessions import observation_market, previous_close_date
+            from .price_chart import provisional_bar
+            now = ops.now()
+            today = now.date().isoformat()
+            if (observation_market(now) == 'krx' and snapshot['workspace'].get('mode') != 'recalculation'
+                    and prices[-1]['date'] == (as_of or snapshot.get('as_of')) == previous_close_date(today)):
+                try:
+                    quotes = chart_session_prices(str(ops.root), row['symbol'], prices[-1]['date'], today)
+                    bar = provisional_bar(prices, quotes, today, snapshot['rules']['atr_days'])
+                    prices = [*prices, bar]
+                    st.caption(f'{today} 마지막 봉은 KIS 정규장 잠정 일봉입니다. 화면을 다시 읽으면 갱신됩니다(조회 간격 1분).')
+                except (ValueError, BrokerError) as error:
+                    st.caption(f'오늘 잠정봉 미표시 · {error}')
+            st.components.v1.html(chart_html(prices), height=550, scrolling=False)
+            st.caption('선택일 이전 최대 15개월 저장 일봉 · 봉을 가리키면 좌측 상단에 OHLCV·ATR 표시')
+        else:
+            st.info('가격 이력이 없습니다.')
+    except (ValueError, OSError):
+        st.info('저장된 가격 이력이 없습니다.')
+    st.markdown('#### 계좌 진입 조건 · '+str(as_of or snapshot.get('as_of') or '기준일 미확인'))
+    rules = snapshot['rules']
+    rs_rule = (f'주간 Mansfield > {rules["min_mansfield"]:g}' if rules.get('rs_method') == 'mansfield'
+               else f'RS 순위 ≥ {rules["min_rs"]:g}, 시장 대비 초과수익 > 0')
+    route = (('셋업 또는 52주 신고가 돌파' if rules.get('setup_52w_enabled') else '셋업 돌파')
+             if rules.get('entry_method') == 'setup' else f'직전 {rules["breakout_days"]}거래일 고가 돌파')
+    st.caption(f'{snapshot["workspace"]["name"]} · {rs_rule} · {route} · 거래량 {rules["volume_multiple"]:g}배 이상')
+    verdicts = {'주봉 추세':row.get('weekly_trend'), rs_rule:row.get('rs_pass')}
+    volume = row.get('volume_ratio')
+    verdicts[f'거래량 ≥ 직전 20일 평균의 {rules["volume_multiple"]:g}배'] = (
+        volume >= rules['volume_multiple'] if volume is not None else None)
+    if rules.get('entry_method') == 'setup':
+        if rules.get('sector_require_action'):
+            verdicts['산업 동반 강세'] = row.get('sector_action')
+        verdicts['셋업 경로 · 준비'] = row.get('setup_ready')
+        verdicts['셋업 경로 · 저항선 돌파'] = row.get('setup_trigger')
+        if rules.get('setup_52w_enabled'):
+            verdicts['별도 경로 · 52주 신고가 돌파'] = row.get('high52_breakout')
+    else:
+        high, close = row.get('prior_breakout_high'), row.get('reference_price')
+        verdicts[route] = close > high if close is not None and high is not None else None
+    verdicts['최종 진입 신호'] = row.get('signal')
+    st.dataframe([{'조건':label, '판정':{True:'충족', False:'미충족'}.get(result,'미확인')}
+                  for label,result in verdicts.items()], hide_index=True, width='stretch')
+    if not as_of:
+        table([{field:row.get(field) for field in ('volume_ratio','stop_price','quantity','planned_risk','allocation_reason')}])
+    if snapshot['rules'].get('entry_method') == 'setup':
+        missing = ('조정·베이스 형성 전' if row.get('setup_phase') in ('seeking','rising') else '자료 없음')
+        fields = {'setup_retracement':'준비 판정 반납률', 'setup_retracement_today':'오늘 저가 포함 반납률',
+                  'setup_volume_ratio':'거래량 수축비', 'setup_range_ratio':'변동성 수축비',
+                  'setup_resistance':'셋업 저항선', 'prior_52w_high':'직전 252거래일 최고가'}
+        def value(field):
+            number = row.get(field)
+            if number is None:
+                return missing if field.startswith('setup_') else '자료 없음'
+            if 'retracement' in field:
+                return f'{number:.1%}'
+            return f'{number:.2f}' if field.endswith('ratio') else f'{number:,.0f}원'
+        st.dataframe([{'항목':label, '기준일 값':value(field)} for field,label in fields.items()],
+                     hide_index=True, width='stretch')
 
 
 def observed_time_label(value):
@@ -480,6 +583,11 @@ def open_page(page):
 
 def account_changed():
     open_page('오늘의 운용')
+
+
+def open_plan_history(key, day):
+    st.session_state[f'history-day-{key}'] = day
+    open_page('운용 기록')
 
 
 def suggested_watch_symbols(snapshot, plans, selected=()):
@@ -522,6 +630,17 @@ def home_watch_status(ops, key, as_of, automatic_date):
     st.caption('정규장 종가가 준비되면 이 화면에서 당일 모의 처리를 진행하세요.')
 
 
+def pending_allocations(state, account_limits, pending):
+    from .risk import Account, Limits, allocate
+
+    positions = [dict(position, symbol=symbol, current_price=position['last_price'])
+                 for symbol, position in state['positions'].items()]
+    cash = state['cash']
+    equity = cash + sum(pos['quantity'] * pos['current_price'] for pos in positions)
+    limits = Limits(**{**account_limits, 'units': state['units']})
+    return allocate(pd.DataFrame(pending), Account(equity, cash, positions), limits)
+
+
 def close_plan_summary(ops, key, snapshot):
     day = snapshot['account_as_of']
     if not day or snapshot['status'] != 'ready':
@@ -533,18 +652,11 @@ def close_plan_summary(ops, key, snapshot):
         st.caption('다음 거래일 종가가 준비되면 다시 처리하세요. 기존 보유 종목은 계속 관리합니다.')
         return
 
-    from .risk import Account, Limits, allocate
-
     state = ops.state(ops.workspace(key))
     if not state or state['last_date'] != day:
         st.info('계좌 처리일이 바뀌었습니다. 자료를 다시 읽어 주세요.')
         return
-    positions = [dict(position, symbol=symbol, current_price=position['last_price'])
-                 for symbol, position in state['positions'].items()]
-    cash = state['cash']
-    equity = cash + sum(pos['quantity'] * pos['current_price'] for pos in positions)
-    limits = Limits(**{**snapshot['limits'], 'units': state['units']})
-    plans = allocate(pd.DataFrame(pending), Account(equity, cash, positions), limits)
+    plans = pending_allocations(state, snapshot['limits'], pending)
     names = stored_symbol_names(ops, key)
     st.write(f'진입 후보 {plans.symbol.nunique()}종목 · 예상 배정 {int(plans.quantity.gt(0).sum())}건'
              f' · 합산 계획 위험 {plans.planned_risk.sum():,.0f}원')
@@ -554,7 +666,8 @@ def close_plan_summary(ops, key, snapshot):
         '종가 기준가(원)': row['reference_price'], '손절 기준(원)': row.get('stop_price'),
         '예상 수량(주)': row['quantity'], '계획 위험(원)': round(row['planned_risk']),
     } for row in plans.to_dict('records')]), hide_index=True, width='stretch')
-    st.caption('종가와 계좌 잔액으로 추정한 계획입니다. 다음 거래일 모의 처리에서 시가와 가용 현금을 반영해 체결 여부와 수량을 결정합니다.')
+    st.caption('다음 거래일 장 마감 후 이 화면에서 종가 모의 처리를 실행하세요. 종목별 매수 조작 없이 '
+               '당일 시가와 가용 현금으로 체결 여부와 수량을 결정합니다.')
 
 
 def workflow(ops, key, snapshot, as_of, can_write):
@@ -858,7 +971,7 @@ def market_candidates(ops, key, snapshot, can_write):
             st.warning(f'{selected} 산업 구성은 당시 저장본이 없어 '
                        f'{analysis["industry_membership_observed_at"]} 저장본으로 재구성했습니다. '
                        '당시 실제 구성과 다를 수 있으며 모의계좌 매매 기록에는 반영되지 않습니다.')
-        workbench(ops,key,detail,selected)
+        market_board(ops,key,detail,selected,selection if selection_saved else None)
 
 
 def account_history(ops, key, snapshot):

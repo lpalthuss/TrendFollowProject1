@@ -320,7 +320,7 @@ class OperationsQueries:
         state = self.context.state(w)
         signal = self.context.latest_signals(w, market_as_of)
         frame = read_csv(signal) if signal else pd.DataFrame()
-        fields = [c for c in SIGNAL_FIELDS if c in frame]
+        fields = [c for c in (*SIGNAL_FIELDS, "prior_breakout_high") if c in frame]
         rows = json_rows(frame[fields])
         if rows and "multi_rs" not in fields:
             prices_path = self.context.path(w["data_dir"]) / "prices.csv"
