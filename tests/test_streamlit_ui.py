@@ -352,7 +352,7 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
             reference_price=10000,rs_percentile=95,signal=True,rs_pass=True,
             setup_phase='breakout',volume_ratio=2),
             dict(symbol='000210',name='테스트 대기',sector='산업B',
-            reference_price=9000,rs_percentile=70,signal=False,rs_pass=False,
+            reference_price=9000,rs_percentile=70,signal=False,rs_pass=False,setup_ready=True,
             setup_phase='base',volume_ratio=None)]
         return result
     monkeypatch.delenv('UI_PASSWORD',raising=False)
@@ -362,6 +362,12 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
         assert not app.exception and not app.error
         navigate(app, '종목 탐색')
         assert any(s.value=='테스트 상승' for s in app.subheader)
+        key = app.selectbox(key='account-picker').value
+        app.button(key=f'card-{key}-000210').click().run(timeout=30)
+        assert any(item.value == '테스트 대기' for item in app.subheader)
+        shown = app.dataframe[0].value
+        assert shown['RS 조건'].tolist() == ['통과', '미통과']
+        assert shown['파동 단계'].iloc[1] == '조정·베이스'
         next(t for t in app.text_input if t.label=='종목명·코드·산업 검색').set_value('대기').run()
         assert not app.exception and not app.error
         assert any(s.value=='테스트 대기' for s in app.subheader)
@@ -453,3 +459,18 @@ def test_history_uses_selected_checkpoint_and_next_day_orders(tmp_path):
         assert list(app.dataframe[0].value['종목코드']) == ['005930']
         assert list(app.dataframe[1].value['종목코드']) == ['005930']
         assert list(app.dataframe[1].value['status']) == ['filled']
+
+
+
+def test_wave_filter_switches_and_clears_linked_conditions(monkeypatch):
+    from trendfollow import streamlit_ui as ui
+
+    state = {'phase':'base', 'condition':'준비 충족', 'high52':'돌파'}
+    monkeypatch.setattr(ui.st, 'session_state', state)
+    for choice, expected in [('trigger', ('전체','셋업 돌파')), ('trigger', ('전체','전체')),
+                             ('base', ('base','전체')), ('rising', ('rising','전체')),
+                             ('all', ('전체','전체'))]:
+        state['widget'] = {'choice':choice}
+        ui.choose_wave('widget', 'phase', 'condition')
+        assert (state['phase'], state['condition']) == expected
+        assert state['high52'] == '돌파'

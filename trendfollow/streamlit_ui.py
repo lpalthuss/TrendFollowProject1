@@ -224,8 +224,7 @@ def candidate_stage(row):
               if isinstance(value,(int,float)) and value > 0]
     if close is not None and high is not None and any(high >= value > close for value in levels):
         return '고가 접촉·종가 하회'
-    if close is not None and row.get('atr') is not None and any(
-        close < value and value-close <= row['atr'] for value in levels):
+    if levels and close is not None and row.get('atr') is not None and 0 < min(levels)-close <= row['atr']:
         return '돌파선 접근'
     if row.get('setup_ready') is True:
         return '준비 후보'
@@ -251,58 +250,141 @@ def submit(ops, key, action, as_of, **extra):
         st.error(str(error))
 
 
+PHASE_LABELS = {'전체':'전체', 'seeking':'상승 파동 탐색', 'rising':'상승 파동 진행',
+                'base':'조정·베이스', 'untradable':'거래량 0 · 계산 불가'}
+
+
+@lru_cache(maxsize=1)
+def wave_component():
+    return st.components.v2.component('wave_filter',
+        html=(CODE_ROOT / 'trendfollow/web/wave_filter.html').read_text(encoding='utf-8'),
+        js="""export default function({parentElement, data, setTriggerValue}) {
+            const figure = parentElement.querySelector('figure');
+            figure.dataset.phase = data.phase;
+            figure.dataset.condition = data.condition;
+            for (const node of figure.querySelectorAll('[role=button]')) {
+                const choice = node.dataset.phaseChoice || node.dataset.conditionChoice;
+                node.setAttribute('aria-pressed', String(node.dataset.conditionChoice
+                    ? data.condition === choice : data.phase === choice && (choice !== 'all' || data.condition === 'all')));
+                node.onclick = () => setTriggerValue('choice', choice);
+                node.onkeydown = e => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); node.onclick(); }
+                };
+            }
+        }""")
+
+
+def choose_wave(widget, phase, condition):
+    choice = st.session_state[widget]['choice']
+    previous = st.session_state.get(phase, '전체')
+    current = st.session_state.get(condition, '전체')
+    st.session_state[phase] = choice if choice in PHASE_LABELS and previous != choice else '전체'
+    st.session_state[condition] = ('셋업 돌파' if choice == 'trigger' and
+                                   (current != '셋업 돌파' or previous != '전체') else '전체')
+
+
 def workbench(ops, key, snapshot, as_of=None):
     st.subheader('종목 탐색')
     rows = snapshot['rows']
     if not rows:
         st.info('아직 분석 자료가 없습니다. 「오늘의 운용」에서 자료를 준비하고 분석하세요.')
         return
-    search = st.text_input('종목명·코드·산업 검색', key=f'search-{key}')
-    cols = st.columns(3)
-    industry = cols[0].selectbox('산업', ['전체'] + sorted({str(r.get('industry_name') or r.get('sector')) for r in rows if r.get('industry_name') or r.get('sector')}))
+    st.html("""<style>
+    .st-key-market-filters {gap:.35rem}
+    .st-key-market-filters label p {font-size:.8rem}
+    .st-key-market-filters [data-baseweb="select"] > div,
+    .st-key-market-filters [data-baseweb="input"] {min-height:2rem}
+    .st-key-market-board [data-testid="stColumn"] {display:flex;align-self:stretch}
+    .st-key-market-board [data-testid="stColumn"] > div {flex:1}
+    .st-key-market-board [class*="st-key-stagebox"] {
+        background:white;border:1px solid #cedad6;border-left:4px solid #397bc1;
+        border-radius:6px;padding:.8rem;min-height:8.8rem;height:100%;gap:.35rem}
+    .st-key-market-board .st-key-stagebox2 {border-left-color:#17806b}
+    .st-key-market-board .st-key-stagebox3 {border-left-color:#bb823c}
+    .st-key-market-board .stage-heading {display:flex;justify-content:space-between;
+        gap:.5rem;font-weight:650;color:#25384a;font-size:.92rem}
+    .st-key-market-board [data-testid="stHorizontalBlock"] {row-gap:.25rem;column-gap:.3rem}
+    .st-key-market-board button {min-height:1.55rem;padding:.1rem .4rem;
+        background:white;border:1px solid #c8d6d3;border-radius:4px;color:#24463e}
+    .st-key-market-board button p {font-size:.76rem;line-height:1.2}
+    .st-key-market-board button:hover {border-color:#168575;background:#edf7f4}
+    </style>""")
     choices = ['전체','통과','미통과','미확인·미적용']
-    signal = cols[1].selectbox('최종 신호', choices)
-    rs = cols[2].selectbox('RS 조건', choices)
-    with st.expander('상세 필터'):
-        a,b,c = st.columns(3)
-        volume = a.selectbox('거래량 조건', choices)
-        action = b.selectbox('산업 액션', choices)
-        setup = c.selectbox('셋업 단계', ['전체'] + sorted({r.get('setup_phase') or '미확인·미적용' for r in rows}))
-        d,e = st.columns(2)
-        high52 = d.selectbox('52주 신고가',['전체','돌파','미돌파','자료 부족'])
-        setup_condition = e.selectbox('셋업 조건',['전체','준비 충족','준비 미충족','셋업 돌파','셋업 무효화','미확인'])
-        st.caption(f'거래량 배수 = 기준일 거래량 / 직전 20거래일 평균. 통과 기준 {snapshot["rules"]["volume_multiple"]}배. 필터는 AND 조건입니다.')
+    phase_key = f'phase-{key}'
+    condition_key = f'condition-{key}'
+    with st.container(key='market-filters'):
+        a,b,c,d = st.columns(4)
+        search = a.text_input('종목명·코드·산업 검색', key=f'search-{key}')
+        industry = b.selectbox('산업', ['전체'] + sorted({str(r.get('industry_name') or r.get('sector')) for r in rows if r.get('industry_name') or r.get('sector')}))
+        rs = c.selectbox('RS 조건', choices)
+        signal = d.selectbox('최종 신호', choices)
+        a,b,c,d,e = st.columns(5)
+        setup = a.selectbox('파동 단계', list(PHASE_LABELS), format_func=PHASE_LABELS.get, key=phase_key)
+        setup_condition = b.selectbox('셋업 조건',['전체','준비 충족','준비 미충족','셋업 돌파','셋업 무효화','미확인'], key=condition_key)
+        high52 = c.selectbox('52주 신고가',['전체','돌파','미돌파','자료 부족'])
+        action = d.selectbox('산업 액션', choices)
+        volume = e.selectbox('거래량 조건', choices, help=f'직전 20거래일 평균 대비 {snapshot["rules"]["volume_multiple"]}배 기준')
+    if snapshot['rules'].get('entry_method') == 'setup':
+        widget = f'wave-{key}'
+        wave_component()(key=widget, data={'phase': 'all' if setup == '전체' else setup,
+                        'condition': 'trigger' if setup_condition == '셋업 돌파' else ('all' if setup_condition == '전체' else 'other')},
+                        on_choice_change=lambda: choose_wave(widget, phase_key, condition_key))
     filtered = filter_candidates(rows, search, industry, signal, rs, volume,
                                  snapshot['rules']['volume_multiple'], setup, action,
                                  high52, setup_condition)
     st.caption(f'전체 {len(rows)}종목 중 {len(filtered)}종목 · 필터는 계좌나 신호를 변경하지 않습니다.')
-    stages = {name:[r for r in rows if candidate_stage(r) == name]
-              for name in ['준비 후보','돌파선 접근','종가 돌파','고가 접촉·종가 하회']}
-    for column,(name,members) in zip(st.columns(4),stages.items()):
-        column.metric(name,len(members))
-    with st.expander('단계별 종목과 판정 기준'):
-        st.caption('종가 돌파·고가 접촉은 저장 가격의 셋업 저항선 또는 직전 52주 고가 기준입니다. 계좌 매수 신호와 별개입니다.')
-        for name,members in stages.items():
-            st.write(f'{name} · {len(members)}종목 · '+(', '.join(str(r.get('name') or r['symbol']) for r in members[:10]) or '해당 없음'))
+    descriptions = {'준비 후보':'셋업 준비 조건 충족', '돌파선 접근':'저항선 아래 1 ATR 이내',
+                    '종가 돌파':'셋업 저항선 또는 직전 52주 고가 돌파', '고가 접촉·종가 하회':'장중 저항선 접촉 후 종가 하회'}
+    board = st.container(key='market-board')
+    for idx,(col,(stage,description)) in enumerate(zip(board.columns(4), descriptions.items())):
+        members = [r for r in filtered if candidate_stage(r) == stage]
+        with col.container(key=f'stagebox{idx}'):
+            st.html(f'<div class="stage-heading"><span>{stage}</span><strong>{len(members)}</strong></div>')
+            st.caption(description)
+            with st.container(horizontal=True, gap='small', vertical_alignment='center'):
+                for r in members:
+                    st.button(str(r.get('name') or r['symbol']), key=f'card-{key}-{r["symbol"]}',
+                              on_click=st.session_state.update, args=({f'card-selection-{key}':r['symbol']},))
+                if not members:
+                    st.caption('해당 종목 없음')
     if not filtered:
         st.info('선택 조건에 맞는 종목이 없습니다.')
         return
     table_area = st.container()
     detail_area = st.container()
-    fields = ['symbol','name','industry_name','reference_price','prior_52w_high','high52_breakout',
-              'rs_percentile','mansfield_rs','multi_rs','rs_pass','setup_phase',
-              'setup_ready','setup_trigger','volume_ratio','signal','signal_entry_path','quantity']
-    frame = pd.DataFrame(filtered)
-    frame['52주 거리'] = [high52_distance(r) for r in filtered]
-    fields.insert(5,'52주 거리')
+    def price(value):
+        return '—' if value is None else f'{value:,.0f}'
+
+    def status(value):
+        return {True:'통과', False:'미통과'}.get(value,'미확인')
+
+    shown = pd.DataFrame([{
+        '종목': f'{r.get("name") or ""} {r["symbol"]}'.strip(), '산업': r.get('industry_name') or r.get('sector') or '—',
+        '종가 / 52주 고가': f'{price(r.get("reference_price"))} / {price(r.get("prior_52w_high"))}',
+        '52주 거리': high52_distance(r), 'RS 순위': r.get('rs_percentile'),
+        '주간 Mansfield': r.get('mansfield_rs'), '다기간 Mansfield': r.get('multi_rs'),
+        'RS 조건':status(r.get('rs_pass')), '산업 조건':status(r.get('sector_action')),
+        '파동 단계':PHASE_LABELS.get(r.get('setup_phase'),'미확인'),
+        '준비':status(r.get('setup_ready')), '셋업 돌파':status(r.get('setup_trigger')),
+        '거래량 배수':r.get('volume_ratio'), '최종 신호':status(r.get('signal')),
+        '신호 경로':r.get('signal_entry_path') or '—', '계획 수량':r.get('quantity'),
+    } for r in filtered])
+    colors = {'통과':'color:#10634d;background-color:#e6f2ec',
+              '미통과':'color:#684d43;background-color:#f2edea', '미확인':'color:#67747d'}
+    styled = shown.style.format({'RS 순위':'{:.1f}', '주간 Mansfield':'{:.2f}',
+                                 '다기간 Mansfield':'{:.2f}', '거래량 배수':'{:.2f}배','계획 수량':'{:,.0f}'},
+                                na_rep='—').map(colors.get, subset=['RS 조건','산업 조건','준비','셋업 돌파','최종 신호'])
+    styled.map(lambda v:'color:#b43731' if '돌파' in v else 'color:#235cb0' if '남음' in v else '',
+               subset=['52주 거리'])
     with table_area:
-        shown = frame[[f for f in fields if f in frame]].rename(columns=LABELS)
-        event = st.dataframe(shown, hide_index=True, width='stretch',
-                             on_select='rerun', selection_mode='single-row', key=f'candidates-{key}')
+        st.markdown('**선별 종목**')
+        event = st.dataframe(styled, hide_index=True, width='stretch', row_height=34,
+                             on_select=lambda: st.session_state.pop(f'card-selection-{key}', None),
+                             selection_mode='single-row', key=f'candidates-{key}-{as_of}')
         index = event.selection.rows[0] if event.selection.rows else 0
         index = min(index, len(filtered)-1)
     with detail_area:
-        row = filtered[index]
+        row = next((r for r in filtered if r['symbol'] == st.session_state.get(f'card-selection-{key}')), filtered[index])
         st.subheader(str(row.get('name') or row['symbol']))
         st.caption(row['symbol'])
         st.metric('저장된 종가', '—' if row.get('reference_price') is None else f'{row["reference_price"]:,.0f}원')
@@ -315,7 +397,26 @@ def workbench(ops, key, snapshot, as_of=None):
                 st.info('가격 이력이 없습니다.')
         except (ValueError, OSError):
             st.info('저장된 가격 이력이 없습니다.')
-        st.write({LABELS.get(k,k):row.get(k) for k in ['rs_pass','sector_action','setup_phase','volume_ratio','stop_price','quantity','planned_risk','allocation_reason']})
+        st.markdown('#### 선택 종목 조건 · '+str(as_of or snapshot.get('as_of') or '기준일 미확인'))
+        verdicts = {'rs_pass':'RS 조건', 'sector_action':'산업 조건', 'setup_ready':'셋업 준비',
+                    'setup_trigger':'셋업 돌파', 'high52_breakout':'52주 신고가 돌파', 'signal':'최종 진입'}
+        st.dataframe([{'조건':label, '판정':{True:'충족', False:'미충족'}.get(row.get(field),'미확인·미적용')}
+                      for field,label in verdicts.items()], hide_index=True, width='stretch')
+        table([{field:row.get(field) for field in ('volume_ratio','stop_price','quantity','planned_risk','allocation_reason')}])
+        if snapshot['rules'].get('entry_method') == 'setup':
+            missing = ('조정·베이스 형성 전' if row.get('setup_phase') in ('seeking','rising') else '자료 없음')
+            fields = {'setup_retracement':'준비 판정 반납률', 'setup_retracement_today':'오늘 저가 포함 반납률',
+                      'setup_volume_ratio':'거래량 수축비', 'setup_range_ratio':'변동성 수축비',
+                      'setup_resistance':'셋업 저항선', 'prior_52w_high':'직전 252거래일 최고가'}
+            def value(field):
+                number = row.get(field)
+                if number is None:
+                    return missing if field.startswith('setup_') else '자료 없음'
+                if 'retracement' in field:
+                    return f'{number:.1%}'
+                return f'{number:.2f}' if field.endswith('ratio') else f'{number:,.0f}원'
+            st.dataframe([{'항목':label, '기준일 값':value(field)} for field,label in fields.items()],
+                         hide_index=True, width='stretch')
         if st.button('관측 목록에 추가', key='add-watch'):
             symbols = st.session_state.setdefault(f'watch-{key}', [])
             if row['symbol'] not in symbols:
@@ -601,7 +702,7 @@ def market_candidates(ops, key, snapshot, can_write):
     available = sorted(set(dates['reference_dates'] + dates['signal_dates'] + dates['selection_dates']), reverse=True)
     preferred = next((day for group in (dates['market_analysis_dates'],dates['account_analysis_dates'],
                                         dates['selection_dates'],dates['reference_dates']) for day in group),available[0])
-    selected = st.selectbox('보고 싶은 거래일', available,index=available.index(preferred),key=f'candidate-date-{key}',
+    selected = st.selectbox('보고 싶은 거래일', available,width=290,index=available.index(preferred),key=f'candidate-date-{key}',
                             help='그날의 저장된 종목 목록과 전략 조건 결과를 조회합니다. 목록이 없으면 ①에서 날짜별 자료 원천을 선택해 저장하세요.')
     st.caption(f'{selected}에 저장된 종목 목록·편입/제외·전략 조건 결과를 조회합니다. '
                '그날 목록이 없으면 ①에서 날짜별 자료 원천을 선택해 저장하세요.')

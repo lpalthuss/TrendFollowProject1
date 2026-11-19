@@ -1,0 +1,218 @@
+<style>.phase-example {
+  margin: 0 0 18px;
+  padding: 10px 14px 12px;
+  border: 1px solid #d5e2da;
+  border-radius: 5px;
+  background: white;
+}
+.phase-example svg {
+  display: block;
+  width: 100%;
+  max-height: 245px;
+}
+.phase-example figcaption {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.wave-stage {
+  opacity: 0.8;
+  transition: opacity 180ms ease;
+}
+.wave-stage[role="button"],
+.wave-choice[role="button"] {
+  cursor: pointer;
+}
+.wave-stage:hover,
+.wave-stage:focus-visible {
+  opacity: 1;
+}
+.wave-stage:focus-visible rect,
+.wave-choice:focus-visible rect {
+  stroke: #164e41;
+  stroke-width: 3;
+}
+.wave-stage rect {
+  fill: #f1f5f1;
+  stroke: #e0e9e2;
+}
+.wave-stage path {
+  fill: none;
+  stroke: #27836f;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.wave-stage text {
+  fill: #344a42;
+  font-size: 13px;
+  font-weight: 700;
+}
+.phase-example[data-phase="seeking"] .wave-stage,
+.phase-example[data-phase="rising"] .wave-stage,
+.phase-example[data-phase="base"] .wave-stage,
+.phase-example[data-phase="all"][data-condition="trigger"] .wave-stage,
+.phase-example[data-phase="untradable"] .wave-stage {
+  opacity: 0.25;
+}
+.phase-example .wave-stage:hover,
+.phase-example .wave-stage:focus-visible {
+  opacity: 1;
+}
+.phase-example[data-phase="seeking"] .wave-seeking,
+.phase-example[data-phase="rising"] .wave-rising,
+.phase-example[data-phase="base"] .wave-base,
+.phase-example[data-phase][data-condition="trigger"] .wave-trigger {
+  opacity: 1;
+}
+.phase-example[data-phase="seeking"] .wave-seeking rect,
+.phase-example[data-phase="rising"] .wave-rising rect,
+.phase-example[data-phase="base"] .wave-base rect,
+.phase-example[data-phase][data-condition="trigger"] .wave-trigger rect {
+  fill: #ddf1e6;
+  stroke: #68b89f;
+}
+.wave-resistance {
+  stroke: #c18b50;
+  stroke-width: 2;
+  stroke-dasharray: 5 5;
+  pointer-events: none;
+}
+.wave-resistance-label,
+.wave-axis-label {
+  fill: #657079;
+  font-size: 11px;
+  pointer-events: none;
+}
+.wave-untradable {
+  display: none;
+  pointer-events: none;
+}
+.phase-example[data-phase="untradable"] .wave-untradable {
+  display: block;
+}
+.wave-untradable rect {
+  fill: #fff1eb;
+  stroke: #b14d3e;
+}
+.wave-untradable text {
+  fill: #8b3f32;
+  font-size: 17px;
+  font-weight: 700;
+}
+.wave-choice rect {
+  fill: #f1f5f1;
+  stroke: #d5e2da;
+}
+.wave-choice text {
+  fill: #344a42;
+  font-size: 12px;
+  font-weight: 700;
+}
+.wave-choice:hover rect,
+.phase-example[data-phase="untradable"] .wave-zero-choice rect,
+.phase-example[data-phase="all"][data-condition="all"] .wave-all-choice rect {
+  fill: #ddf1e6;
+  stroke: #68b89f;
+}
+</style>
+<figure id="phase-example" class="phase-example" data-phase="all">
+          <svg
+            viewBox="0 0 740 250"
+            role="group"
+            aria-labelledby="phase-example-title phase-example-desc"
+          >
+            <title id="phase-example-title">파동 셋업 단계 예제</title>
+            <desc id="phase-example-desc">
+              왼쪽부터 저점 탐색, 상승 파동, 고점 이후 조정과 베이스, 저항선
+              돌파 순서로 진행하는 가상의 가격 흐름입니다. 그림의 셋업 돌파는
+              셋업 조건 필터에 연결되며 52주 신고가 필터와는 별개입니다. 실제
+              종목 가격이 아닙니다.
+            </desc>
+            <g
+              class="wave-stage wave-seeking"
+              data-phase-choice="seeking"
+              role="button"
+              tabindex="0"
+              aria-label="상승 파동 탐색 선택"
+            >
+              <rect x="12" y="21" width="155" height="165" rx="6" />
+              <text x="23" y="42">① 상승 파동 탐색</text>
+              <path d="M 30 151 L 75 140 L 110 154 L 155 133" />
+            </g>
+            <g
+              class="wave-stage wave-rising"
+              data-phase-choice="rising"
+              role="button"
+              tabindex="0"
+              aria-label="상승 파동 진행 선택"
+            >
+              <rect x="173" y="21" width="169" height="165" rx="6" />
+              <text x="184" y="42">② 상승 파동 진행</text>
+              <path d="M 155 133 L 195 119 L 229 99 L 264 79 L 314 58" />
+            </g>
+            <g
+              class="wave-stage wave-base"
+              data-phase-choice="base"
+              role="button"
+              tabindex="0"
+              aria-label="조정·베이스 선택"
+            >
+              <rect x="348" y="21" width="209" height="165" rx="6" />
+              <text x="359" y="42">③ 조정·베이스</text>
+              <path
+                d="M 314 58 L 352 88 L 385 101 L 420 91 L 453 99 L 487 88 L 527 91"
+              />
+            </g>
+            <g
+              class="wave-stage wave-trigger"
+              data-condition-choice="trigger"
+              role="button"
+              tabindex="0"
+              aria-label="셋업 조건에서 셋업 돌파 선택"
+            >
+              <rect x="563" y="21" width="164" height="165" rx="6" />
+              <text x="574" y="42">④ 셋업 돌파</text>
+              <path d="M 527 91 L 565 70 L 603 50 L 650 45 L 705 32" />
+            </g>
+            <line class="wave-resistance" x1="314" y1="58" x2="716" y2="58" />
+            <text class="wave-resistance-label" x="622" y="76">
+              셋업 저항선
+            </text>
+            <g class="wave-untradable">
+              <rect x="170" y="85" width="400" height="56" rx="7" />
+              <text x="192" y="119">
+                거래량 0 → 계산 중단 · 파동 탐색 재시작
+              </text>
+            </g>
+            <g
+              class="wave-choice wave-zero-choice"
+              data-phase-choice="untradable"
+              role="button"
+              tabindex="0"
+              aria-label="거래량 0, 셋업 계산 불가 선택"
+            >
+              <rect x="15" y="195" width="195" height="28" rx="5" />
+              <text x="28" y="214">거래량 0 · 계산 불가</text>
+            </g>
+            <g
+              class="wave-choice wave-all-choice"
+              data-phase-choice="all"
+              role="button"
+              tabindex="0"
+              aria-label="파동 단계와 셋업 조건 전체 보기"
+            >
+              <rect x="218" y="195" width="95" height="28" rx="5" />
+              <text x="232" y="214">파동 전체</text>
+            </g>
+            <text class="wave-axis-label" x="15" y="241">시간 →</text>
+            <text class="wave-axis-label" x="560" y="241">
+              가상 종가 흐름 · 실제 시세 아님
+            </text>
+          </svg>
+          <figcaption id="phase-example-caption">
+            그림의 구간을 클릭하면 필터가 바뀝니다. 다시 클릭하면 선택이
+            해제됩니다.
+          </figcaption>
+        </figure>
