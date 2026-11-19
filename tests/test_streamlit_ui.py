@@ -158,6 +158,39 @@ def test_readonly_navigation_never_submits_jobs(monkeypatch):
         submit.assert_not_called()
 
 
+def test_account_change_returns_to_primary_workflow(monkeypatch):
+    monkeypatch.delenv('UI_PASSWORD', raising=False)
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), \
+         patch('trendfollow.streamlit_ui.job_status'):
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        app.radio(key='page-picker').set_value('종목 탐색').run(timeout=30)
+        current = app.selectbox(key='account-picker').value
+        other = 'setup-rs' if current != 'setup-rs' else 'baseline'
+        app.selectbox(key='account-picker').set_value(other).run(timeout=30)
+        assert not app.exception
+        assert app.radio(key='page-picker').value == '오늘의 운용'
+        assert any('오늘의 운용 · 다음 단계' in item.value for item in app.subheader)
+
+
+def test_workflow_starts_with_next_action_and_prepares_missing_market_dates():
+    from trendfollow.ui_service import Operations
+    original = Operations.guidance
+    def guidance(self, key, as_of=None):
+        result = original(self, key, as_of)
+        if as_of:
+            result.update(blocked=None, processed=False, pending_sessions=[as_of],
+                          candidate_missing_sessions=[as_of])
+        return result
+    with patch('trendfollow.streamlit_ui.setting', return_value=''), \
+         patch('trendfollow.streamlit_ui.job_status'), \
+         patch('trendfollow.candidate_universe.historical_candidate_source', return_value='krx_open_api'), \
+         patch.object(Operations, 'guidance', guidance):
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        assert app.radio(key='page-picker').value == '오늘의 운용'
+        assert any('자동 준비할 시장 종목 목록' in item.value for item in app.caption)
+        assert any(button.label.endswith('까지 필요한 자료 준비·종가 처리') for button in app.button)
+
+
 def test_password_gate_and_account_save(tmp_path, monkeypatch):
     import shutil
     import trendfollow.streamlit_ui as ui
@@ -202,6 +235,7 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
             dict(date='2026-11-13',close=9900),dict(date='2026-11-16',close=10000)]):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         assert not app.exception and not app.error
+        app.radio(key='page-picker').set_value('종목 탐색').run(timeout=30)
         assert any(s.value=='테스트 상승' for s in app.subheader)
         next(t for t in app.text_input if t.label=='종목명·코드·산업 검색').set_value('대기').run()
         assert not app.exception and not app.error
@@ -217,16 +251,17 @@ def test_daily_action_accepts_missing_industry_and_selected_price_source(monkeyp
     def guidance(self,key,as_of=None):
         result = original(self,key,as_of)
         if as_of:
-            result.update(blocked=None,processed=False,requires_industry=True,industry_ready=False)
+            result.update(blocked=None,processed=False,requires_industry=True,industry_ready=False,
+                          pending_sessions=[as_of],candidate_missing_sessions=[])
         return result
     monkeypatch.setenv('UI_PASSWORD','test-only-password')
     with patch.object(Operations,'guidance',guidance), patch.object(Operations,'submit',return_value={'id':'test-job'}) as submit:
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         app.text_input[0].set_value('test-only-password')
         app.button[0].click().run(timeout=30)
-        app.selectbox(key='price-source').set_value('pykrx').run(timeout=30)
         app.radio(key='page-picker').set_value('오늘의 운용').run(timeout=30)
-        next(button for button in app.button if button.label=='② 일봉 수집 + 미처리 거래일 모의 처리').click().run(timeout=30)
+        app.selectbox(key='price-source').set_value('pykrx').run(timeout=30)
+        next(button for button in app.button if button.label.endswith('까지 필요한 자료 준비·종가 처리')).click().run(timeout=30)
         assert submit.call_args.args[0]['action'] == 'daily'
         assert submit.call_args.args[0]['price_source'] == 'pykrx'
 

@@ -134,8 +134,8 @@ class ActionRunner:
 
     def run(self, key, w, payload, as_of):
         action = payload["action"]
-        progress = lambda message, current=None, total=None: self.context.job_manager.report_progress(
-            key, message, current, total
+        progress = lambda message, current=None, total=None, **stage: self.context.job_manager.report_progress(
+            key, message, current, total, **stage
         )
         progress("입력 자료 확인 중")
         prices = self.context.path(w["data_dir"]) / "prices.csv"
@@ -293,8 +293,8 @@ class ActionRunner:
                 from exchange_calendars import get_calendar
                 from ..candidate_universe import (
                     account_universe, acquisition_universe, available_selections,
-                    backfill_added_history, capture_selection, industry_membership_snapshot,
-                    latest_completed_session,
+                    backfill_added_history, capture_krx_selection, capture_selection,
+                    historical_candidate_source, industry_membership_snapshot, latest_completed_session,
                 )
 
                 last = self.context.state(w)["last_date"]
@@ -306,14 +306,20 @@ class ActionRunner:
                 available = set(available_selections(self.context.root))
                 missing = [day for day in sessions if day not in available]
                 latest = latest_completed_session(self.context.now())
-                if missing == [latest] and latest == self.context.now().date().isoformat():
-                    progress(f"{latest} 시장 후보군 선정 중")
-                    capture_selection(self.context.root, latest, self.context.now(), progress)
-                    available.add(latest)
-                    missing = [day for day in sessions if day not in available]
+                current_kis_day = latest if latest == self.context.now().date().isoformat() else None
+                historical = [day for day in missing if day != current_kis_day]
+                source = (historical_candidate_source(self.context.root, payload.get("candidate_source", "auto"))
+                          if historical else None)
+                for index, day in enumerate(missing, 1):
+                    progress(f"{day} 시장 종목 목록 저장 중", index - 1, len(missing))
+                    if day == current_kis_day:
+                        capture_selection(self.context.root, day, self.context.now(), progress)
+                    else:
+                        capture_krx_selection(self.context.root, day, self.context.now(), progress,
+                                              source=source)
+                    available.add(day)
                 if missing:
-                    raise ValueError("과거 날짜의 후보군 선정 기록이 없습니다: " + ", ".join(missing) +
-                                     ". 현재 종목 마스터로 과거 목록을 소급하지 않습니다. 계좌는 보존되었습니다.")
+                    progress("미처리 거래일의 시장 종목 목록 준비 완료", len(missing), len(missing))
                 if rules.entry_method == "setup":
                     for day in sessions:
                         snapshot = industry_membership_snapshot(self.context.root, day)
@@ -321,19 +327,16 @@ class ActionRunner:
                             progress(f"{day} 산업 분류에 {snapshot.parent.name} 저장 구성 사용")
                 completed = []
                 for day in sessions:
-                    progress(f"{day} 후보군·보유 종목 준비 중", len(completed), len(sessions))
+                    def day_progress(message, current=None, total=None):
+                        progress(f"{day} · {message}", len(completed), len(sessions),
+                                 stage_current=current, stage_total=total)
+
+                    day_progress("후보군·보유 종목 준비 중")
                     state = self.context.state(self.context.workspace(w["id"]))
                     current = self.context.workspace(w["id"])
                     decision = account_universe(self.context, current, day, state)
                     acquisition = acquisition_universe(self.context, current, decision)
-                    backfill_added_history(self.context.path(current["data_dir"]), decision, day, progress)
-
-                    def day_progress(message, current=None, total=None):
-                        detail = (f" · 현재 단계 {current}/{total}" if isinstance(current, int)
-                                  and isinstance(total, int) and total > 0
-                                  and "종가 처리 중" not in message else "")
-                        progress(f"전체 {len(completed)}/{len(sessions)}거래일 완료 · {message}{detail}",
-                                 len(completed), len(sessions))
+                    backfill_added_history(self.context.path(current["data_dir"]), decision, day, day_progress)
 
                     result = daily_run(
                         current["universe"], self.context.path(current["data_dir"]), state_path,
@@ -345,8 +348,7 @@ class ActionRunner:
                         acquisition_universe_path=acquisition,
                     )
                     completed.append(day)
-                    progress(f"전체 {len(completed)}/{len(sessions)}거래일 완료 · {day} 처리 완료",
-                             len(completed), len(sessions))
+                    progress(f"{day} · 종가 처리 완료", len(completed), len(sessions))
                 result["processed_dates"] = completed
                 result["candidate_universe_mode"] = "daily"
             else:
@@ -387,6 +389,20 @@ class ActionRunner:
             from ..candidate_universe import enable_daily_account
 
             result = enable_daily_account(self.context, w, progress)
+        elif action == "watch_auto":
+            from ..krx_sessions import observation_market
+
+            now = self.context.now()
+            if observation_market(now) is None:
+                raise ValueError("정규장 또는 NXT 애프터마켓 관측 시간에만 시작할 수 있습니다.")
+            progress("감시 기준 자료와 계획 준비 중")
+            prepared = self.run(key, w, {**payload, "action": "prepare_intraday"}, as_of)
+            progress("KIS 장중 관측 시작 중")
+            finish = now.replace(hour=20, minute=0, second=0, microsecond=0)
+            seconds = max(1, min(39600, int((finish - self.context.now()).total_seconds())))
+            started = self.context.start_watch(dict(workspace=w["id"],
+                                                    plan_id=prepared["plan_id"], seconds=seconds))
+            result = {**prepared, **started}
         elif action == "prepare_intraday":
             from ..intraday import prepare_plan
             from ..research_store import require_published_research

@@ -13,6 +13,19 @@ from trendfollow.config import Rules
 from dataclasses import asdict
 
 
+def test_historical_candidate_source_uses_available_credentials(tmp_path, monkeypatch):
+    for name in ('KRX_OPEN_API_KEY', 'KRX_ID', 'KRX_PW'):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / '.env').write_text('KRX_ID=test-id\nKRX_PW=test-password\n', encoding='utf-8')
+    assert candidates.historical_candidate_source(tmp_path) == 'pykrx'
+    (tmp_path / '.env').write_text('KRX_OPEN_API_KEY=test-key\nKRX_ID=test-id\nKRX_PW=test-password\n',
+                                   encoding='utf-8')
+    assert candidates.historical_candidate_source(tmp_path) == 'krx_open_api'
+    (tmp_path / '.env').write_text('', encoding='utf-8')
+    with pytest.raises(ValueError, match='KRX_OPEN_API_KEY'):
+        candidates.historical_candidate_source(tmp_path)
+
+
 def test_snapshot_publish_retries_transient_windows_lock(tmp_path, monkeypatch):
     stage = tmp_path / 'staged'
     target = tmp_path / 'published'

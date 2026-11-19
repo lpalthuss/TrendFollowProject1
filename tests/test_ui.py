@@ -320,6 +320,7 @@ def test_daily_job_passes_the_dated_selection_into_the_same_account(ops, monkeyp
     first=wait_job(ops,ops.submit(dict(workspace=w['id'],action='paper',as_of='2026-11-06')))
     assert first['status']=='completed', first.get('error')
     enable_daily_account(ops,w)
+    assert ops.guidance(w['id'],'2026-11-09')['candidate_missing_sessions']==['2026-11-09']
     folder=selection_home(ops.root)/'2026-11-09'
     folder.mkdir(parents=True)
     base=pd.read_csv(ops.path(ops.workspace(w['id'])['universe']),dtype={'symbol':str})
@@ -327,8 +328,19 @@ def test_daily_job_passes_the_dated_selection_into_the_same_account(ops, monkeyp
     pd.DataFrame(columns=['symbol','reason']).to_csv(folder/'added.csv',index=False)
     pd.DataFrame(columns=['symbol','reason']).to_csv(folder/'removed.csv',index=False)
     (folder/'summary.json').write_text(json.dumps({'as_of':'2026-11-09','count':2}),encoding='utf-8')
+    assert ops.guidance(w['id'],'2026-11-09')['candidate_missing_sessions']==[]
     calls=[]
-    monkeypatch.setattr(actions,'daily_run',lambda *args,**kwargs: calls.append((args,kwargs)) or {'status':'processed'})
+    progress=[]
+    original_progress=ops.job_manager.report_progress
+    def record_progress(*args,**kwargs):
+        progress.append((args,kwargs))
+        return original_progress(*args,**kwargs)
+    def daily(*args,**kwargs):
+        calls.append((args,kwargs))
+        kwargs['progress']('가격 자료 수집 중',25,100)
+        return {'status':'processed'}
+    monkeypatch.setattr(ops.job_manager,'report_progress',record_progress)
+    monkeypatch.setattr(actions,'daily_run',daily)
     monkeypatch.setattr('trendfollow.candidate_universe.backfill_added_history',lambda *args,**kwargs: [])
     monkeypatch.setattr(ops,'clock',lambda:datetime.fromisoformat('2026-11-09T18:00:00+09:00'))
     job=wait_job(ops,ops.submit(dict(workspace=w['id'],action='daily',as_of='2026-11-09')))
@@ -338,6 +350,42 @@ def test_daily_job_passes_the_dated_selection_into_the_same_account(ops, monkeyp
     assert args[2]==ops.path(w['state']) and args[3]=='2026-11-09'
     assert '2026-11-09' in kwargs['universe_by_session']
     assert ops.path(w['state']).exists()
+    assert any(item[0][2:]==(0,1) and item[1]=={'stage_current':25,'stage_total':100}
+               for item in progress)
+
+
+def test_daily_job_collects_missing_past_selection_before_processing(ops, monkeypatch):
+    from trendfollow.candidate_universe import enable_daily_account, selection_home
+    from trendfollow.operations import actions
+
+    w = create(ops)
+    first = wait_job(ops, ops.submit(dict(workspace=w['id'], action='paper', as_of='2026-11-06')))
+    assert first['status'] == 'completed', first.get('error')
+    enable_daily_account(ops, w)
+    calls = []
+
+    def capture(root, as_of, now, progress, source):
+        calls.append(('capture', as_of, source))
+        folder = selection_home(root) / as_of
+        folder.mkdir(parents=True)
+        base = pd.read_csv(ops.path(ops.workspace(w['id'])['universe']), dtype={'symbol': str})
+        base.iloc[:2].to_csv(folder / 'universe.csv', index=False)
+        pd.DataFrame(columns=['symbol', 'reason']).to_csv(folder / 'added.csv', index=False)
+        pd.DataFrame(columns=['symbol', 'reason']).to_csv(folder / 'removed.csv', index=False)
+        (folder / 'summary.json').write_text(json.dumps({'as_of': as_of, 'count': 2}), encoding='utf-8')
+
+    def daily(*args, **kwargs):
+        calls.append(('daily', args[3]))
+        return {'status': 'processed'}
+
+    monkeypatch.setattr(ops, 'clock', lambda: datetime.fromisoformat('2026-11-10T18:00:00+09:00'))
+    monkeypatch.setattr('trendfollow.candidate_universe.capture_krx_selection', capture)
+    monkeypatch.setattr('trendfollow.candidate_universe.backfill_added_history', lambda *args, **kwargs: [])
+    monkeypatch.setattr(actions, 'daily_run', daily)
+    job = wait_job(ops, ops.submit(dict(workspace=w['id'], action='daily', as_of='2026-11-09',
+                                        candidate_source='pykrx')))
+    assert job['status'] == 'completed', job.get('error')
+    assert calls == [('capture', '2026-11-09', 'pykrx'), ('daily', '2026-11-09')]
 
 
 def test_old_closed_intraday_signals_are_never_current_and_accounts_are_isolated(ops):

@@ -31,11 +31,14 @@ class JobManager:
         for lease in leases:
             lease.release()
 
-    def report_progress(self, key, message, current=None, total=None):
+    def report_progress(self, key, message, current=None, total=None,
+                        stage_current=None, stage_total=None):
         with self.context.lock:
             job = dict(self.jobs[key], progress=message)
             job["progress_current"] = current
             job["progress_total"] = total
+            job["stage_current"] = stage_current
+            job["stage_total"] = stage_total
             save_job(self.context.home / "jobs" / f"{key}.json", job)
             self.jobs[key] = job
 
@@ -55,6 +58,7 @@ class JobManager:
             "candidate_universe",
             "candidate_policy",
             "prepare_intraday",
+            "watch_auto",
             "intraday_close",
             "volume_import",
             "volume_profile",
@@ -74,7 +78,7 @@ class JobManager:
             if payload.get("candidate_source") not in {"kis", "krx_open_api", "pykrx"}:
                 raise ValueError("후보군 자료 원천이 전달되지 않았습니다. UI 서버를 재시작하고 화면을 새로고침하세요.")
             as_of = latest_completed_session(self.context.now())
-        elif action == "prepare_intraday":
+        elif action in {"prepare_intraday", "watch_auto"}:
             from ..krx_sessions import require_previous_close
 
             as_of = require_previous_close(payload.get("session"), payload.get("as_of"))
@@ -94,7 +98,7 @@ class JobManager:
             raise ValueError("변경 내역과 이전 결정 보존 방식을 확인하세요.")
         if (
             self.context.state(w)
-            and action in {"analyze", "paper", "daily", "prepare_intraday"}
+            and action in {"analyze", "paper", "daily", "prepare_intraday", "watch_auto"}
             and self.context.snapshot(w["id"])["status"] == "configuration_mismatch"
         ):
             raise ValueError(

@@ -176,12 +176,10 @@ class OperationsQueries:
         rules, _ = self.context.configuration(w)
         state = self.context.state(w)
         now = self.context.now()
-        recommended = pd.Timestamp(now.date())
-        if now.hour * 60 + now.minute < 970:
-            recommended -= pd.Timedelta(days=1)
-        while recommended.weekday() >= 5:
-            recommended -= pd.Timedelta(days=1)
-        target = as_of or str(recommended.date())
+        from ..candidate_universe import latest_completed_session
+
+        recommended = latest_completed_session(now)
+        target = as_of or recommended
         try:
             day = pd.Timestamp(datetime.strptime(target, "%Y-%m-%d").date())
         except (ValueError, TypeError):
@@ -237,10 +235,22 @@ class OperationsQueries:
                     if session.date().isoformat() > state["last_date"]]
             elif not state:
                 pending_sessions = [target]
+        candidate_missing_sessions = []
+        if state and pending_sessions:
+            from ..candidate_universe import available_selections, latest_completed_session, read_policy
+
+            policy = read_policy(self.context.root, w["id"])
+            if policy and target > policy["enabled_after"]:
+                saved = set(available_selections(self.context.root))
+                candidate_missing_sessions = [session for session in pending_sessions if session not in saved]
+                auto_capture = latest_completed_session(now)
+                if (candidate_missing_sessions == [auto_capture]
+                        and auto_capture == now.date().isoformat()):
+                    candidate_missing_sessions = []
         return dict(
             today=str(now.date()),
             now=now.isoformat(),
-            recommended_as_of=str(recommended.date()),
+            recommended_as_of=recommended,
             as_of=target,
             requires_industry=needs_industry,
             industry_ready=not needs_industry or target in dates,
@@ -251,6 +261,7 @@ class OperationsQueries:
             processed=bool(state and state["last_date"] == target),
             last_processed_date=state["last_date"] if state else None,
             pending_sessions=pending_sessions,
+            candidate_missing_sessions=candidate_missing_sessions,
             blocked=blocked,
         )
 

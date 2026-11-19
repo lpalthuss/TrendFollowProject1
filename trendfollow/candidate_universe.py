@@ -33,6 +33,24 @@ def selection_home(root):
     return Path(root) / "outputs" / "ui" / "candidate-universes"
 
 
+def historical_candidate_source(root, preferred="auto"):
+    """Choose one explicit source for missing past selections; never silently relabel KIS data."""
+    if preferred in {"krx_open_api", "pykrx"}:
+        return preferred
+    if preferred != "auto":
+        raise ValueError("과거 후보군 원천은 자동·KRX Open API·pykrx 중에서 선택하세요.")
+    from dotenv import dotenv_values
+
+    values = dotenv_values(Path(root) / ".env", interpolate=False)
+    if os.environ.get("KRX_OPEN_API_KEY") or values.get("KRX_OPEN_API_KEY"):
+        return "krx_open_api"
+    if ((os.environ.get("KRX_ID") or values.get("KRX_ID"))
+            and (os.environ.get("KRX_PW") or values.get("KRX_PW"))):
+        return "pykrx"
+    raise ValueError("과거 시장 종목 목록을 자동 수집할 원천이 없습니다. "
+                     ".env 또는 Cloud Secrets에 KRX_OPEN_API_KEY나 KRX_ID·KRX_PW를 설정하세요.")
+
+
 def industry_membership_snapshot(root, as_of):
     """Use the latest observed classification no later than the decision date."""
     snapshots = Path(root) / "data" / "industries" / "snapshots"
@@ -311,7 +329,7 @@ def backfill_added_history(data_dir, decision_path, as_of, progress=None):
         stage = Path(temporary)
         added.to_csv(stage / "universe.csv", index=False, encoding="utf-8-sig")
         report = acquire_research(stage / "universe.csv", stage / "research", "2020-01-01", as_of,
-                                  required_session=as_of)
+                                  required_session=as_of, progress=progress)
         if not report.get("published") or report.get("errors"):
             raise ValueError("새 후보의 과거 일봉을 모두 가져오지 못했습니다. 계좌 처리는 시작하지 않았습니다.")
         fresh = pd.read_csv(stage / "research" / "prices.csv", dtype={"symbol": str})
