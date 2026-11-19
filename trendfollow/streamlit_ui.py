@@ -916,6 +916,78 @@ def recovery(ops, key, snapshot, as_of, can_write):
     table(snapshot['logs'].get('pyramiding-review',[]), names)
 
 
+def observation_table(rows, names, session, kind):
+    if not rows:
+        st.caption('기록 없음')
+        return
+    fields = {
+        'hour':'시간대', 'timestamp':'판단 시각' if kind == 'events' else '체결 시각',
+        'received_at':'수신 시각', 'decision_at':'판정 시각', 'kind':'기록 유형',
+        'market':'시장', 'price':'체결가(원)', 'cumulative_volume':'누적 거래량(주)',
+        'planned_previous_close':'계획 전일 종가(원)', 'previous_close':'KIS 전일 종가(원)',
+        'price_basis_mismatch':'가격 기준', 'sample_status':'표본 상태',
+        'breakout_present':'돌파', 'holding_stop_breached':'손절선 도달',
+        'industry_action':'산업 조건', 'entry_watch':'진입 관찰', 'setup_invalidated':'셋업 무효화',
+        'volume_pass':'거래량 조건', 'entry_confirmed':'진입 확인', 'volume_status':'거래량 판정 근거',
+        'peer_count':'관측 동료 수', 'expected_peer_count':'대상 동료 수', 'peer_coverage':'동료 수신 비율',
+        'peer_up_fraction':'동료 상승 비율', 'peer_excess_return':'동료 초과수익률',
+        'day_low':'당일 저가(원)', 'holding_stop':'손절 기준(원)',
+        'volume_ratio_same_time':'동시간 거래량 배수', 'volume_reference_sessions':'비교 거래일 수',
+        'volume_sample_at':'거래량 표본 시각', 'volume_vs_previous_same_time':'전일 동시간 거래량 비율',
+        'volume_current_cumulative':'표본 누적 거래량(주)', 'volume_reference_mean':'평균 누적 거래량(주)',
+        'volume_multiple':'기준 배수', 'volume_min_sessions':'최소 비교 거래일 수', 'ui_current':'현재 유효',
+    }
+    labels = {'krx':'정규장', 'nxt_after':'애프터마켓', 'signal_state':'신호 변화',
+              'holding_stop_state':'보유 손절 점검', 'verified':'충족', 'weak':'부족',
+              'unavailable_same_time_history':'동시간 거래량 기록 없음', 'insufficient_history':'비교 거래일 부족',
+              'current_sample_unavailable':'현재 표본 없음', 'stale_or_invalid_quote':'유효 시세 없음',
+              'zero_reference_volume':'기준 거래량 0'}
+    fields = {k:v for k,v in fields.items() if any(k in row for row in rows)}
+    numbers = {}
+    def display(field, value):
+        if value is None:
+            return '미확인'
+        if field in ('timestamp','hour','received_at','decision_at','volume_sample_at'):
+            try:
+                stamp = datetime.fromisoformat(value)
+            except (TypeError, ValueError):
+                return '미확인'
+            if stamp.tzinfo:
+                stamp = stamp.astimezone(KST)
+            prefix = '' if stamp.date().isoformat() == session else stamp.strftime('%m-%d ')
+            return prefix + stamp.strftime('%H시' if field == 'hour' else '%H:%M:%S')
+        if isinstance(value, bool):
+            if field == 'price_basis_mismatch':
+                return '불일치' if value else '일치'
+            return '예' if value else '아니요'
+        if isinstance(value, (int, float)):
+            if field in ('peer_coverage','peer_up_fraction','peer_excess_return'):
+                numbers[fields[field]] = '{:.1%}'
+            else:
+                numbers[fields[field]] = '{:,.2f}' if '배수' in fields[field] or '비율' in fields[field] else '{:,.0f}'
+            return value
+        return labels.get(value, value)
+    records = []
+    for row in rows:
+        record = {'종목':symbol_label(row['symbol'], names) if row.get('symbol') else '—'}
+        record.update({label:display(field,row.get(field)) for field,label in fields.items()})
+        records.append(record)
+    for record in records:
+        for column in numbers:
+            if record[column] == '미확인':
+                record[column] = None
+    frame = pd.DataFrame(records)
+    colors = {'불일치':'color:#973d2c;background-color:#fbece6',
+              '일치':'color:#14664f;background-color:#e7f3ed','미확인':'color:#647381'}
+    styled = frame.style.format(numbers, na_rep='미확인').map(lambda v: colors.get(v,''))
+    st.dataframe(styled, hide_index=True, width='stretch', row_height=32)
+
+
+def matches_watch(record, day, chosen, mode):
+    return (bool(chosen) and record['session'] == day and record.get('watch_mode') == mode
+            and set(chosen) == set(record.get('selected_symbols', record['targets'])))
+
+
 def observation(ops, key, as_of, can_write):
     st.subheader('장중 관측')
     st.caption('KIS 체결을 받아 잠정 조건을 확인합니다. 모의계좌의 현금·보유는 바뀌지 않으며 장 마감 후 종가 처리는 별도로 실행합니다.')
@@ -976,9 +1048,7 @@ def observation(ops, key, as_of, can_write):
         result = ops.stop_watch()
         st.success('관측 종료 요청을 보냈습니다. 연결 종료 상태를 확인하세요.')
     with st.expander('저장된 계획 확인·다시 시작'):
-        plans = [p for p in data['plans'] if p['session'] == session]
-        if chosen:
-            plans = [p for p in plans if set(chosen).issubset(set(p['targets']))]
+        plans = [p for p in data['plans'] if matches_watch(p, session, chosen, watch_mode)]
         if plans:
             plans_by_id = {p['id']: p for p in plans}
             plan = st.selectbox(f'{session} 저장 계획', list(plans_by_id),
@@ -996,13 +1066,14 @@ def observation(ops, key, as_of, can_write):
         else:
             st.caption('선택한 종목의 대상 거래일 저장 계획이 없습니다. 위 버튼을 누르면 새로 준비합니다.')
     st.markdown('#### ③ 관측 결과')
-    current_runs = [run for run in data['runs'] if run['session'] == data['today']
-                    and (not chosen or set(chosen).issubset(set(run['targets'])))]
+    current_runs = [run for run in data['runs'] if matches_watch(run, data['today'], chosen, watch_mode)]
     if current_runs:
         run = current_runs[0]
         summary = run['summary']
         targets = ', '.join(symbol_label(code, names) for code in run['targets'][:3])
-        st.write(f'오늘 최근 관측 · {targets} · 연결 {summary.get("connection_state", "미확인")}'
+        connection = {'active':'연결 중', 'starting':'연결 준비 중', 'failed':'연결 실패',
+                      'closed':'종료', 'completed':'완료', 'reconnecting':'재연결 중'}.get(summary.get('connection_state'), '미확인')
+        st.write(f'오늘 최근 관측 · {targets} · {connection}'
                  f' · KIS 구독 요청 {summary.get("subscriptions_requested", "미확인")} / 승인 {summary.get("subscription_acks", "미확인")}'
                  f' · 수신 체결 {summary.get("quote_ticks", "미확인")}')
         if summary.get('kis_error_code') or summary.get('rejected_symbol'):
@@ -1018,24 +1089,20 @@ def observation(ops, key, as_of, can_write):
         quotes = summary.get('latest_target_quotes') or {}
         if quotes:
             st.write('선택 종목의 최근 체결')
-            st.dataframe(pd.DataFrame([{
-                '종목': symbol_label(symbol, names),
-                '체결 시각': observed_time_label(quote.get('timestamp')),
-                '현재가': quote.get('price'),
-                '누적 거래량': quote.get('cumulative_volume'),
-                '전일 종가': quote.get('previous_close'),
-                '가격 기준': '불일치' if quote.get('price_basis_mismatch') else '확인',
-            } for symbol, quote in quotes.items()]), hide_index=True, width='stretch')
+            observation_table([dict(quote, symbol=code) for code, quote in quotes.items()],
+                              names, run['session'], 'quotes')
         elif summary.get('connection_state') in {'starting', 'active'}:
             st.info('아직 선택 종목의 체결을 받지 못했습니다. 잠시 후 자료 다시 읽기를 누르세요.')
         with st.expander('시간대별 관측·판단 근거'):
             st.caption('시간대별 잠정 가격·거래량과 조건 변화 기록입니다. 종가 확정 결과는 아닙니다.')
-            table(summary.get('hourly_quotes') or [], names)
-            table(run['events'], names)
+            st.write('시간대별 잠정 관측')
+            observation_table(summary.get('hourly_quotes') or [], names, run['session'], 'hourly')
+            st.write('판단 이력')
+            observation_table(run['events'], names, run['session'], 'events')
         with st.expander('이 관측의 원본 요약'):
             st.json(summary, expanded=False)
     else:
-        st.info('선택한 종목의 오늘 관측 결과가 아직 없습니다. 관측을 시작하면 이곳에 표시됩니다.')
+        st.info('현재 선택한 종목과 감시 범위로 실행한 오늘 관측 기록이 없습니다. 관측을 시작하면 이곳에 표시됩니다.')
     with st.expander('이전 관측 기록·종료 후 처리'):
         st.caption('과거 관측은 현재 선택 종목의 상태와 별개입니다. 종가 대조·거래량 누적은 관측 종료 후 필요할 때만 실행합니다.')
         if data['runs']:
@@ -1050,13 +1117,20 @@ def observation(ops, key, as_of, can_write):
                        f'요청 {history_summary.get("subscriptions_requested", "미확인")} / '
                        f'승인 {history_summary.get("subscription_acks", "미확인")} · '
                        f'체결 {history_summary.get("quote_ticks", "미확인")}')
+            history_mode = '전체 산업 포함' if history.get('watch_mode') == 'industry' else '입력 종목만'
+            st.caption(f'실행 당시 감시 범위 · {history_mode}')
+            if history_summary.get('kis_error_code'):
+                rejected = history_summary.get('rejected_symbol')
+                st.caption(f'이 실행의 KIS 오류 · {history_summary["kis_error_code"]}'
+                           + (f' · 거절 종목 {symbol_label(rejected, names)}' if rejected else ''))
             with st.expander('선택한 관측 기록 상세'):
                 old_quotes = history_summary.get('latest_target_quotes') or {}
-                table([{'symbol': code, **quote} for code, quote in old_quotes.items()], names)
+                observation_table([dict(quote, symbol=code) for code, quote in old_quotes.items()],
+                                  names, history['session'], 'quotes')
                 st.write('시간대별 잠정 관측')
-                table(history_summary.get('hourly_quotes') or [], names)
+                observation_table(history_summary.get('hourly_quotes') or [], names, history['session'], 'hourly')
                 st.write('판단 이력')
-                table(history['events'], names)
+                observation_table(history['events'], names, history['session'], 'events')
             from .candidate_universe import latest_completed_session
             close_ready = history['session'] <= latest_completed_session(ops.now())
             if not close_ready:

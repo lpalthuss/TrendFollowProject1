@@ -182,7 +182,7 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
         'sector_min_peers': rules.sector_min_peers, 'sector_min_breadth': rules.sector_min_breadth,
         'sector_require_action': rules.sector_require_action, 'min_peer_coverage': 1.0,
         'max_quote_age_seconds': 60, 'targets': targets, 'members': scope['members'],
-        'subscriptions': sorted(subscriptions),
+        'selected_symbols': sorted(set(symbols)), 'subscriptions': sorted(subscriptions),
         'source_hashes': {str(path): hashlib.sha256(Path(path).read_bytes()).hexdigest()
                           for path in input_paths}}
     if volume_profile:

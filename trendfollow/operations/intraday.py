@@ -43,6 +43,7 @@ class IntradayService:
                     session=plan["session"],
                     as_of=plan["as_of"],
                     targets=list(plan["targets"]),
+                    selected_symbols=plan.get("selected_symbols", list(plan["targets"])),
                     subscriptions=len(plan["subscriptions"]),
                     watch_mode=plan.get("watch_mode", "industry"),
                 )
@@ -202,6 +203,8 @@ class IntradayService:
                     )
                 runs.append(dict(id=p.parent.name, as_of=plan.get("as_of"),
                                  session=plan.get("session"), targets=list(plan.get("targets", {})),
+                                 watch_mode=plan.get("watch_mode", "industry"),
+                                 selected_symbols=plan.get("selected_symbols", list(plan["targets"])),
                                  levels={symbol: {key: target.get(key) for key in
                                           ("resistance", "setup_resistance", "high52_resistance")}
                                          for symbol, target in plan.get("targets", {}).items()},

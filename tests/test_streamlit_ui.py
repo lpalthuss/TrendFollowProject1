@@ -245,7 +245,7 @@ def test_observation_shows_selected_stock_run_instead_of_previous_stock(monkeypa
 
     def intraday(self, workspace=None):
         def run(run_id, symbol, error=None, failure_reason=None):
-            return dict(id=run_id, session='2026-11-19', targets=[symbol], events=[],
+            return dict(id=run_id, session='2026-11-19', targets=[symbol], events=[], watch_mode='industry' if error else 'symbols',
                         summary=dict(connection_state='failed', subscriptions_requested=91 if error else 1,
                                      subscription_acks=41 if error else 1, quote_ticks=23,
                                      kis_error_code=error, failure_reason=failure_reason,
@@ -266,8 +266,11 @@ def test_observation_shows_selected_stock_run_instead_of_previous_stock(monkeypa
         navigate(app, '장중 관측')
         next(widget for widget in app.multiselect if widget.label == '감시 종목명·코드 검색').set_value(['009150']).run(timeout=30)
         assert not app.exception
+        assert not any('OPSP0008' in item.value for item in app.error)
+        next(widget for widget in app.selectbox if widget.label=='감시 범위').set_value('industry').run()
         assert any('OPSP0008' in item.value for item in app.error)
         assert any('삼성전기' in item.value and '오늘 최근 관측' in item.value for item in app.markdown)
+        next(widget for widget in app.selectbox if widget.label=='감시 범위').set_value('symbols').run()
         assert not any(field.label == '관측 거래일' for field in app.date_input)
         next(widget for widget in app.multiselect if widget.label == '감시 종목명·코드 검색').set_value(['000080']).run(timeout=30)
         assert any('KIS WebSocket 연결 오류' in item.value for item in app.error)
