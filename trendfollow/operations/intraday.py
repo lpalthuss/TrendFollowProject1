@@ -206,7 +206,7 @@ class IntradayService:
                                  watch_mode=plan.get("watch_mode", "industry"),
                                  selected_symbols=plan.get("selected_symbols", list(plan["targets"])),
                                  levels={symbol: {key: target.get(key) for key in
-                                          ("resistance", "setup_resistance", "high52_resistance")}
+                                          ("resistance", "setup_resistance", "high52_resistance", "setup_phase")}
                                          for symbol, target in plan.get("targets", {}).items()},
                                  summary=summary, events=events))
                 if len(runs) >= 10:

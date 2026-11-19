@@ -166,6 +166,7 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
             ['insufficient_52w_history'] if rules.setup_52w_enabled and high52_resistance is None else [])
         targets[symbol] = {'name': str(row['name']), 'sector': sector, 'benchmark': str(row.benchmark),
             'previous_close': finite(f.close.iloc[-1], True), 'resistance': min(levels) if levels else None,
+            'setup_phase': str(row.setup_phase) if pd.notna(row.setup_phase) else None,
             'setup_resistance': resistance, 'high52_resistance': high52_resistance,
             'healthy_floor': floor, 'holding_stop': finite(positions[symbol]['stop_price'],True) if symbol in positions else None,
             'prior_filters_pass': setup_pass or high52_pass, 'prior_filter_reasons': reasons,

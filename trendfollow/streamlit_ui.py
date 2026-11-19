@@ -465,7 +465,7 @@ def candidate_plan(ops, snapshot, day, symbol):
     state = json.loads(checkpoint.read_text(encoding='utf-8'))
     if not any(p['symbol'] == symbol for p in state['pending']):
         st.write('이 계좌는 다음 거래일에 이 종목을 매수할 계획이 없습니다.')
-        st.caption('계속 살펴볼 종목은 별표로 저장하세요. 장중 관측에서 관심 종목을 불러올 수 있습니다.')
+        st.caption('계속 살펴볼 종목은 별표로 저장하세요. 「계좌 관심 종목 전체」에서 장중 관측을 시작할 수 있습니다.')
         return
     plans = pending_allocations(state, snapshot['limits'], state['pending'])
     for plan in plans[plans.symbol.eq(symbol)].to_dict('records'):
@@ -927,6 +927,8 @@ def account_favorite_board(ops, key, snapshot, dates, can_write):
     for code, member in members.items():
         if member.get('name'):
             names[code] = member['name']
+    favorite_watch(ops, key, favorites, names, can_write, snapshot)
+
     def label(code):
         status = ('후보에 포함' if code in members else '후보에 없음') if selection else '후보 목록 미저장'
         return f'{symbol_label(code, names)} · {status}'
@@ -1196,7 +1198,7 @@ def observation_table(rows, names, session, kind):
         'market':'시장', 'price':'체결가(원)', 'cumulative_volume':'누적 거래량(주)',
         'planned_previous_close':'계획 전일 종가(원)', 'previous_close':'KIS 전일 종가(원)',
         'price_basis_mismatch':'가격 기준', 'sample_status':'표본 상태',
-        'breakout_present':'돌파', 'holding_stop_breached':'손절선 도달',
+        'setup_phase':'직전 종가 파동 단계', 'breakout_present':'돌파', 'holding_stop_breached':'손절선 도달',
         'industry_action':'산업 조건', 'entry_watch':'진입 관찰', 'setup_invalidated':'셋업 무효화',
         'volume_pass':'거래량 조건', 'entry_confirmed':'진입 확인', 'volume_status':'거래량 판정 근거',
         'peer_count':'관측 동료 수', 'expected_peer_count':'대상 동료 수', 'peer_coverage':'동료 수신 비율',
@@ -1256,6 +1258,66 @@ def observation_table(rows, names, session, kind):
 def matches_watch(record, day, chosen, mode):
     return (bool(chosen) and record['session'] == day and record.get('watch_mode') == mode
             and set(chosen) == set(record.get('selected_symbols', record['targets'])))
+
+
+@st.fragment(run_every='5s')
+def favorite_watch(ops, key, favorites, names, can_write, snapshot):
+    data = ops.intraday(key)
+    today = data['today']
+    st.markdown('#### 관심 종목 장중 관측')
+    universe = account_symbol_names(ops, key)
+    available = [code for code in favorites if code in universe]
+    excluded = [symbol_label(code, names) for code in favorites if code not in universe]
+    if excluded:
+        st.caption('계좌의 관측 가능 종목 범위 밖 · ' + ', '.join(excluded))
+    chosen = st.multiselect('관측할 관심 종목', available, default=available,
+                            format_func=lambda code: symbol_label(code, names),
+                            key=f'favorite-watch-{key}')
+    running = bool(data['control']['active_or_unconfirmed'])
+    reason = ''
+    if not can_write:
+        reason = '조회 전용 계좌입니다.'
+    elif snapshot['workspace'].get('mode') == 'recalculation':
+        reason = '정정 재계산 계좌입니다. 원계좌에서 관측할 수 있습니다.'
+    elif snapshot['rules'].get('entry_method') != 'setup' or snapshot['rules'].get('market_units_enabled'):
+        reason = '장중 관측은 시장 유닛을 사용하지 않는 파동 셋업 계좌에서 가능합니다.'
+    elif not data['regular_session']:
+        reason = '장중 관측 시간에 시작할 수 있습니다.'
+    elif running:
+        reason = '기존 관측이 실행 중이거나 연결 상태를 확인하고 있습니다.'
+    elif not chosen:
+        reason = '관측할 관심 종목을 선택하세요.'
+    if st.button(f'선택한 {len(chosen)}종목 장중 관측 시작', type='primary', disabled=bool(reason)):
+        submit(ops, key, 'watch_auto', data['today_as_of'], symbols=chosen,
+               session=today, watch_mode='symbols')
+    if reason:
+        st.caption(reason)
+    st.caption('선택한 종목의 돌파와 셋업 무효화를 체결가로 확인합니다. 파동 단계는 종가 분석에서 갱신됩니다.')
+    run = next((r for r in data['runs'] if matches_watch(r, today, chosen, 'symbols')), None)
+    if not run:
+        st.caption(f'{today} 선택 종목의 관측 기록이 없습니다.')
+        return
+    summary = run['summary']
+    connection = summary.get('connection_state')
+    if connection == 'failed':
+        st.error(f'관측 연결 실패 · {summary.get("kis_error_code") or summary.get("failure_reason") or "연결 상태를 확인하세요."}')
+    st.caption(f'{today} · {WATCH_CONNECTIONS.get(connection, "상태 미확인")} · 수신 체결 {summary.get("quote_ticks", 0)}건')
+    events = {}
+    for event in run['events']:
+        if event.get('kind') == 'signal_state' and event.get('symbol') in chosen:
+            events[event['symbol']] = event
+    events.update(summary.get('latest_signal_states') or {})
+    fields = ('timestamp', 'breakout_present', 'setup_invalidated', 'price_basis_mismatch')
+    quotes = summary.get('latest_target_quotes') or {}
+    levels = run.get('levels', {})
+    rows = [dict(symbol=code, setup_phase=PHASE_LABELS.get(levels.get(code, {}).get('setup_phase')),
+                 price=quotes.get(code, {}).get('price'),
+                 **{field: events.get(code, {}).get(field) for field in fields}) for code in chosen]
+    observation_table(rows, names, today, 'events')
+
+
+WATCH_CONNECTIONS = {'active':'연결 중', 'starting':'연결 준비 중', 'failed':'연결 실패',
+                     'closed':'종료', 'completed':'완료', 'reconnecting':'재연결 중'}
 
 
 def observation(ops, key, as_of, can_write):
@@ -1348,8 +1410,7 @@ def observation(ops, key, as_of, can_write):
         run = current_runs[0]
         summary = run['summary']
         targets = ', '.join(symbol_label(code, names) for code in run['targets'][:3])
-        connection = {'active':'연결 중', 'starting':'연결 준비 중', 'failed':'연결 실패',
-                      'closed':'종료', 'completed':'완료', 'reconnecting':'재연결 중'}.get(summary.get('connection_state'), '미확인')
+        connection = WATCH_CONNECTIONS.get(summary.get('connection_state'), '미확인')
         st.write(f'오늘 최근 관측 · {targets} · {connection}'
                  f' · KIS 구독 요청 {summary.get("subscriptions_requested", "미확인")} / 승인 {summary.get("subscription_acks", "미확인")}'
                  f' · 수신 체결 {summary.get("quote_ticks", "미확인")}')

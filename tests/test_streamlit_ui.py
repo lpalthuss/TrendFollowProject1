@@ -561,6 +561,7 @@ def test_favorite_outside_current_candidates_opens_last_analysis(tmp_path, monke
     ops, view, render = Mock(), Mock(), Mock()
     monkeypatch.setattr(ui, 'st', view)
     monkeypatch.setattr(ui, 'candidate_detail', render)
+    monkeypatch.setattr(ui, 'favorite_watch', Mock())
     monkeypatch.setattr(ui, 'stored_symbol_names', lambda *_: {'000020': '동화약품'})
     ops.accounts.favorites.return_value = ['000020']
     ops.candidate_selection.return_value = {'members': [{'symbol': '005930'}]}
@@ -576,3 +577,26 @@ def test_favorite_outside_current_candidates_opens_last_analysis(tmp_path, monke
     assert render.call_args.args[3:5] == (row, earlier)
     assert render.call_args.kwargs['chart_day'] == today
     ops.snapshot.assert_called_once_with('account', earlier)
+
+def test_favorite_watch_starts_only_selected_symbols_and_displays_matching_run(monkeypatch):
+    from unittest.mock import Mock
+    import trendfollow.streamlit_ui as ui
+
+    ops, view, submit, table = Mock(), Mock(), Mock(), Mock()
+    monkeypatch.setattr(ui, 'st', view)
+    monkeypatch.setattr(ui, 'submit', submit)
+    monkeypatch.setattr(ui, 'observation_table', table)
+    names = {'000020': '동화약품', '005930': '삼성전자'}
+    monkeypatch.setattr(ui, 'account_symbol_names', lambda *_: names)
+    view.multiselect.return_value = ['005930']
+    view.button.return_value = True
+    run = dict(session='2026-11-20', targets=['005930'], watch_mode='symbols', events=[],
+               summary={'latest_signal_states': {'005930': {'breakout_present': True}}})
+    ops.intraday.return_value = dict(today=run['session'], today_as_of='2026-11-19',
+                                     regular_session=True, control={'active_or_unconfirmed': []},
+                                     runs=[dict(run, watch_mode='industry', summary={}), run])
+    ui.favorite_watch.__wrapped__(ops, 'account', list(names), names, True,
+                                  {'workspace': {}, 'rules': {'entry_method': 'setup'}})
+    submit.assert_called_once_with(ops, 'account', 'watch_auto', '2026-11-19',
+                                   symbols=['005930'], session=run['session'], watch_mode='symbols')
+    assert table.call_args.args[0][0]['breakout_present'] is True

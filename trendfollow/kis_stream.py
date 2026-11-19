@@ -148,6 +148,8 @@ def _watch(plan_path, output, env_file, seconds, probe,evaluation_seconds,tick_s
                 sink.write(json.dumps(value,ensure_ascii=False,allow_nan=False)+'\n');sink.flush()
             def emit(values):
                 for value in values:
+                    if value.get('kind') == 'signal_state':
+                        summary.setdefault('latest_signal_states', {})[value['symbol']] = value
                     if hourly: hourly.decision(value)
                     record(events,value)
                     print(json.dumps(value,ensure_ascii=False,allow_nan=False),flush=True)

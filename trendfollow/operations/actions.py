@@ -440,7 +440,8 @@ class ActionRunner:
             out = self.context.home / "intraday" / key
             out.mkdir(parents=True)
             plan = out / "plan.json"
-            if (signal is None or frame.empty
+            if (signal is None or not set(targets).issubset(pd.read_csv(signal, usecols=["symbol"], dtype=str).symbol)
+                    or frame.empty
                     or not set(targets).issubset(set(frame.loc[frame.date.eq(as_of), "symbol"]))):
                 progress("감시 후보·가격 자료 준비 중")
                 signal, prices = self.prepare_watch_candidates(
