@@ -489,7 +489,33 @@ def stock_detail_heading(ops, key, row, can_write):
     st.caption(row['symbol'])
 
 
-def candidate_detail(ops, key, snapshot, row, as_of, selection=None, show_heading=True, can_write=False):
+def stock_price_chart(ops, key, snapshot, symbol, as_of):
+    try:
+        prices = ops.prices(key, symbol, as_of, include_warmup=True)
+        if prices:
+            from .brokers import BrokerError
+            from .krx_sessions import observation_market, previous_close_date
+            from .price_chart import provisional_bar
+            now = ops.now()
+            today = now.date().isoformat()
+            if (observation_market(now) == 'krx' and snapshot['workspace'].get('mode') != 'recalculation'
+                    and prices[-1]['date'] == (as_of or snapshot.get('as_of')) == previous_close_date(today)):
+                try:
+                    quotes = chart_session_prices(str(ops.root), symbol, prices[-1]['date'], today)
+                    bar = provisional_bar(prices, quotes, today, snapshot['rules']['atr_days'])
+                    prices = [*prices, bar]
+                    st.caption(f'{today} 마지막 봉은 KIS 정규장 잠정 일봉입니다. 화면을 다시 읽으면 갱신됩니다(조회 간격 1분).')
+                except (ValueError, BrokerError) as error:
+                    st.caption(f'오늘 잠정봉 미표시 · {error}')
+            st.components.v1.html(chart_html(prices), height=550, scrolling=False)
+            st.caption('선택일 이전 최대 15개월 저장 일봉 · 봉을 가리키면 좌측 상단에 OHLCV·ATR 표시')
+        else:
+            st.info('가격 이력이 없습니다.')
+    except (ValueError, OSError):
+        st.info('저장된 가격 이력이 없습니다.')
+
+
+def candidate_detail(ops, key, snapshot, row, as_of, selection=None, show_heading=True, can_write=False, chart_day=None):
     if show_heading:
         stock_detail_heading(ops, key, row, can_write)
     if selection:
@@ -522,29 +548,7 @@ def candidate_detail(ops, key, snapshot, row, as_of, selection=None, show_headin
             if (ops.path(snapshot['workspace']['state']).parent / as_of / 'state.json').is_file():
                 st.button(f'운용 기록 · {as_of} 계획 보기', on_click=open_plan_history, args=(key, as_of))
     st.metric('저장된 종가', '—' if row.get('reference_price') is None else f'{row["reference_price"]:,.0f}원')
-    try:
-        prices = ops.prices(key, row['symbol'], as_of, include_warmup=True)
-        if prices:
-            from .brokers import BrokerError
-            from .krx_sessions import observation_market, previous_close_date
-            from .price_chart import provisional_bar
-            now = ops.now()
-            today = now.date().isoformat()
-            if (observation_market(now) == 'krx' and snapshot['workspace'].get('mode') != 'recalculation'
-                    and prices[-1]['date'] == (as_of or snapshot.get('as_of')) == previous_close_date(today)):
-                try:
-                    quotes = chart_session_prices(str(ops.root), row['symbol'], prices[-1]['date'], today)
-                    bar = provisional_bar(prices, quotes, today, snapshot['rules']['atr_days'])
-                    prices = [*prices, bar]
-                    st.caption(f'{today} 마지막 봉은 KIS 정규장 잠정 일봉입니다. 화면을 다시 읽으면 갱신됩니다(조회 간격 1분).')
-                except (ValueError, BrokerError) as error:
-                    st.caption(f'오늘 잠정봉 미표시 · {error}')
-            st.components.v1.html(chart_html(prices), height=550, scrolling=False)
-            st.caption('선택일 이전 최대 15개월 저장 일봉 · 봉을 가리키면 좌측 상단에 OHLCV·ATR 표시')
-        else:
-            st.info('가격 이력이 없습니다.')
-    except (ValueError, OSError):
-        st.info('저장된 가격 이력이 없습니다.')
+    stock_price_chart(ops, key, snapshot, row['symbol'], chart_day or as_of)
     st.markdown('#### 계좌 진입 조건 · '+str(as_of or snapshot.get('as_of') or '기준일 미확인'))
     rules = snapshot['rules']
     rs_rule = (f'주간 Mansfield > {rules["min_mansfield"]:g}' if rules.get('rs_method') == 'mansfield'
@@ -906,10 +910,60 @@ def complete_candidate_analysis(ops, key, day, inputs):
     st.info(f'{day} 후보 분석에 필요한 자료를 확인하고 있습니다.')
 
 
+@lru_cache(maxsize=256)
+def analysis_symbols(path, modified_ns, size):
+    return frozenset(pd.read_csv(path, usecols=['symbol'], dtype=str)['symbol'])
+
+
+def account_favorite_board(ops, key, snapshot, dates, can_write):
+    favorites = ops.accounts.favorites(key)
+    if not favorites:
+        st.info('저장한 관심 종목이 없습니다. 시장 후보 표에서 종목 옆 ☆를 누르세요.')
+        return
+    day = dates['capture_as_of']
+    selection = ops.candidate_selection(day) if day in dates['selection_dates'] else None
+    members = {r['symbol']: r for r in selection['members']} if selection else {}
+    names = stored_symbol_names(ops, key)
+    for code, member in members.items():
+        if member.get('name'):
+            names[code] = member['name']
+    def label(code):
+        status = ('후보에 포함' if code in members else '후보에 없음') if selection else '후보 목록 미저장'
+        return f'{symbol_label(code, names)} · {status}'
+    st.caption(f'관심 종목 {len(favorites)}개 · 후보 포함 여부는 최근 완료 거래일 {day} 기준')
+    code = st.radio('상세를 볼 관심 종목', favorites, format_func=label, horizontal=True,
+                    key=f'favorite-detail-{key}')
+    st.button('★ 관심 종목에서 제거', disabled=not can_write, key=f'remove-favorite-{key}-{code}',
+              on_click=ops.accounts.set_favorite, args=(key, code, False))
+    for analysis_day in sorted(dates['signal_dates'], reverse=True):
+        path = ops.latest_signals(snapshot['workspace'], analysis_day)
+        if not path:
+            continue
+        stat = path.stat()
+        if code not in analysis_symbols(path, stat.st_mtime_ns, stat.st_size):
+            continue
+        detail = ops.snapshot(key, analysis_day)
+        row = next((item for item in detail['rows'] if item['symbol'] == code), None)
+        if row:
+            st.subheader(str(row.get('name') or names.get(code) or code))
+            st.caption(f'최근 저장 분석 {analysis_day} · 차트 조회 기준 {day}')
+            basis = ops.candidate_selection(analysis_day) if analysis_day in dates['selection_dates'] else None
+            candidate_detail(ops, key, detail, row, analysis_day, basis, show_heading=False, chart_day=day)
+            return
+    st.subheader(symbol_label(code, names))
+    st.info('이 계좌에서 이 종목의 전략 조건을 분석한 기록이 없습니다.')
+    stock_price_chart(ops, key, snapshot, code, day)
+
+
 def market_candidates(ops, key, snapshot, can_write):
     from .market_candidate_analysis import saved_analysis_current, selection_inputs
     st.subheader('날짜별 시장 후보')
     dates = ops.candidate_dates(key)
+    mode = st.radio('조회 목록', ['거래일별 시장 후보', '계좌 관심 종목 전체'], horizontal=True,
+                    key=f'market-view-{key}')
+    if mode == '계좌 관심 종목 전체':
+        account_favorite_board(ops, key, snapshot, dates, can_write)
+        return
     available = sorted(set(dates['reference_dates'] + dates['signal_dates'] + dates['selection_dates']), reverse=True)
     preferred = next((day for group in (dates['market_analysis_dates'],dates['account_analysis_dates'],
                                         dates['selection_dates'],dates['reference_dates']) for day in group),available[0])

@@ -552,3 +552,27 @@ def test_wave_filter_switches_and_clears_linked_conditions(monkeypatch):
         ui.choose_wave('widget', 'phase', 'condition')
         assert (state['phase'], state['condition']) == expected
         assert state['high52'] == '돌파'
+
+def test_favorite_outside_current_candidates_opens_last_analysis(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    import trendfollow.streamlit_ui as ui
+
+    today, earlier = '2026-11-19', '2026-11-17'
+    ops, view, render = Mock(), Mock(), Mock()
+    monkeypatch.setattr(ui, 'st', view)
+    monkeypatch.setattr(ui, 'candidate_detail', render)
+    monkeypatch.setattr(ui, 'stored_symbol_names', lambda *_: {'000020': '동화약품'})
+    ops.accounts.favorites.return_value = ['000020']
+    ops.candidate_selection.return_value = {'members': [{'symbol': '005930'}]}
+    view.radio.return_value = '000020'
+    for day, symbol in [(today, '005930'), (earlier, '000020')]:
+        (tmp_path / day).write_text(f'symbol\n{symbol}\n', encoding='utf-8')
+    ops.latest_signals.side_effect = lambda workspace, day: tmp_path / day
+    row = {'symbol': '000020'}
+    ops.snapshot.return_value = {'rows': [row]}
+    dates = {'capture_as_of': today, 'selection_dates': [today], 'signal_dates': [today, earlier]}
+    ui.account_favorite_board(ops, 'account', {'workspace': {}}, dates, True)
+    assert '후보에 없음' in view.radio.call_args.kwargs['format_func']('000020')
+    assert render.call_args.args[3:5] == (row, earlier)
+    assert render.call_args.kwargs['chart_day'] == today
+    ops.snapshot.assert_called_once_with('account', earlier)
