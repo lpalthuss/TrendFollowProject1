@@ -148,3 +148,21 @@
 .candidate-board .below {
   color: #2762a3;
 }
+.candidate-board .stock-star {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 1.1rem;
+  vertical-align: middle;
+}
+.candidate-board .stock-star[aria-pressed="true"],
+.candidate-board .favorite-filter[aria-pressed="true"] {
+  color: #92620b;
+  background: #fff3d4;
+}
+.candidate-board .stock-detail:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 1rem;
+}

@@ -256,7 +256,8 @@ def test_account_change_returns_to_primary_workflow(monkeypatch):
 def test_observation_selects_account_stock_by_name(monkeypatch):
     monkeypatch.delenv('UI_PASSWORD', raising=False)
     with patch('trendfollow.streamlit_ui.setting', return_value=''), \
-         patch('trendfollow.streamlit_ui.job_status'):
+         patch('trendfollow.streamlit_ui.job_status'), \
+         patch('trendfollow.operations.accounts.WorkspaceStore.favorites', return_value=['005930']):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         navigate(app, '장중 관측')
         chooser = next(widget for widget in app.multiselect if widget.label == '감시 종목명·코드 검색')
@@ -265,6 +266,26 @@ def test_observation_selects_account_stock_by_name(monkeypatch):
         assert not app.exception and not app.error
         key = app.selectbox(key='account-picker').value
         assert app.session_state[f'watch-{key}'] == ['000080']
+        next(b for b in app.button if b.label == '관심 종목 불러오기').click().run(timeout=30)
+        assert app.session_state[f'watch-{key}'] == ['000080', '005930']
+
+
+def test_favorites_persist_per_account_and_removal_is_idempotent(tmp_path):
+    from trendfollow.operations import Operations
+    ops = Operations(tmp_path)
+    try:
+        ops.accounts.set_favorite('baseline', '005930', True)
+        ops.accounts.set_favorite('baseline', '005930', True)
+        assert ops.accounts.favorites('setup-rs') == []
+    finally:
+        ops.close()
+    ops = Operations(tmp_path)
+    try:
+        assert ops.accounts.favorites('baseline') == ['005930']
+        ops.accounts.set_favorite('baseline', '005930', False)
+        assert ops.accounts.favorites('baseline') == []
+    finally:
+        ops.close()
 
 
 def test_observation_shows_selected_stock_run_instead_of_previous_stock(monkeypatch):
@@ -402,10 +423,9 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
         next(t for t in app.text_input if t.label=='종목명·코드·산업 검색').set_value('대기').run()
         assert not app.exception and not app.error
         assert any(s.value=='테스트 대기' for s in app.subheader)
-        next(b for b in app.button if b.label=='관측 목록에 추가').click().run()
+        next(b for b in app.button if b.label=='장중 관측에서 열기').click().run(timeout=30)
         key=app.selectbox(key='account-picker').value
         assert app.session_state[f'watch-{key}']==['000210']
-        navigate(app, '장중 관측')
         assert app.multiselect(key=f'watch-{key}').value == ['000210']
 
 

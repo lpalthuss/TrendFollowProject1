@@ -2,6 +2,7 @@ export default function ({
   parentElement,
   data,
   setStateValue,
+  setTriggerValue,
 }) {
   const board = parentElement.querySelector(".candidate-board");
   const find = (s) => board.querySelector(s);
@@ -21,12 +22,34 @@ export default function ({
   const view = (board.view ??= {
     filters: { ...defaults },
     stage: "",
-    symbol: "",
+    symbol: data.selected || "",
+    favoritesOnly: false,
     sort: "",
     direction: 0,
   });
   const filters = view.filters;
   const rows = data.rows;
+  const favorites = new Set(data.favorites);
+  let saving = false;
+  function star(row, withLabel = false) {
+    const selected = favorites.has(row.symbol);
+    const label = selected ? "관심 종목에서 제거" : "관심 종목에 추가";
+    const button = element("button", withLabel ? label : selected ? "★" : "☆");
+    button.className = withLabel ? "favorite-action" : "stock-star";
+    button.disabled = !data.canWrite || saving;
+    button.setAttribute("aria-pressed", String(selected));
+    button.title = data.canWrite
+      ? `${row.name || row.symbol} 관심 종목 ${selected ? "제거" : "추가"}`
+      : "조회 모드";
+    button.setAttribute("aria-label", button.title);
+    button.onclick = (event) => {
+      event.stopPropagation();
+      if (saving) return;
+      saving = true;
+      setTriggerValue("favorite", { symbol: row.symbol, selected: !selected });
+    };
+    return button;
+  }
   const stages = data.stages;
   const all = ["all", "전체"];
   const tests = [
@@ -179,7 +202,13 @@ export default function ({
         };
       }
     }
-    const base = filterRows(rows, filters, data.rules);
+    const matches = filterRows(rows, filters, data.rules);
+    const base = view.favoritesOnly
+      ? matches.filter((r) => favorites.has(r.symbol))
+      : matches;
+    const toggle = find(".favorite-filter");
+    toggle.setAttribute("aria-pressed", String(view.favoritesOnly));
+    toggle.textContent = (view.favoritesOnly ? "★" : "☆") + " 관심만 보기";
     const cards = find(".cards");
     cards.replaceChildren();
     for (const [stage, description] of Object.entries(stages)) {
@@ -219,7 +248,13 @@ export default function ({
           (typeof x === "string" ? x.localeCompare(y, "ko") : x - y)
         );
       });
-    if (view.symbol && !visible.some(r => r.symbol === view.symbol))
+    if (
+      view.symbol &&
+      !matches.some(
+        (r) =>
+          r.symbol === view.symbol && (!view.stage || r.stage === view.stage),
+      )
+    )
       selectSymbol("");
     find(".count").textContent =
       `${data.day} 종가 기준 · 전체 ${rows.length}종목`;
@@ -285,7 +320,7 @@ export default function ({
         const td = element("td", i === 0 ? null : value);
         if (i === 0) {
           const button = element("button", value);
-          td.append(button, element("small", r.symbol));
+          td.append(star(r), button, element("small", r.symbol));
         }
         if (i === 4 && r.gap) td.className = r.gap > 0 ? "above" : "below";
         tr.append(td);
@@ -293,10 +328,27 @@ export default function ({
       body.append(tr);
     }
     find("tbody").replaceChildren(body);
+    const detail = find(".stock-detail");
+    const selected = rows.find((r) => r.symbol === view.symbol);
+    detail.hidden = !selected;
+    detail.replaceChildren();
+    if (selected)
+      detail.append(
+        star(selected),
+        document.createTextNode(
+          `${selected.name || selected.symbol} · ${selected.symbol}`,
+        ),
+        star(selected, true),
+      );
   }
+  find(".favorite-filter").onclick = () => {
+    view.favoritesOnly = !view.favoritesOnly;
+    render();
+  };
   find(".reset").onclick = () => {
     Object.assign(filters, defaults);
     view.stage = "";
+    view.favoritesOnly = false;
     view.direction = 0;
     controls();
     render();

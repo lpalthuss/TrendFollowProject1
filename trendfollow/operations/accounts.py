@@ -4,6 +4,7 @@ from dataclasses import asdict
 from datetime import datetime
 import json
 import math
+import re
 import uuid
 from zoneinfo import ZoneInfo
 from ..risk import Limits
@@ -87,6 +88,22 @@ class WorkspaceStore:
             if row["id"] == key:
                 return row
         raise ValueError("계좌를 찾을 수 없습니다.")
+
+    def favorites(self, key):
+        path = self.context.home / "favorites" / (self.workspace(key)["id"] + ".json")
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+
+    def set_favorite(self, key, symbol, selected):
+        if not isinstance(symbol, str) or not re.fullmatch(r"[0-9A-Z]{6}", symbol) or type(selected) is not bool:
+            raise ValueError("관심 종목 코드와 선택 상태를 확인하세요.")
+        path = self.context.home / "favorites" / (self.workspace(key)["id"] + ".json")
+        with control_lock(path):
+            symbols = set(self.favorites(key))
+            if selected:
+                symbols.add(symbol)
+            else:
+                symbols.discard(symbol)
+            save_json(path, sorted(symbols))
 
     def configuration(self, w):
         cfg = json.loads(self.context.path(w["config"]).read_text(encoding="utf-8-sig"))

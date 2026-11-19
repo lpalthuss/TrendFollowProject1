@@ -297,7 +297,7 @@ def chart_session_prices(root, symbol, previous, today):
         return client.daily(symbol, previous, today)
 
 
-def workbench(ops, key, snapshot, as_of=None):
+def workbench(ops, key, snapshot, as_of=None, can_write=False):
     st.subheader('종목 탐색')
     rows = snapshot['rows']
     if not rows:
@@ -399,7 +399,7 @@ def workbench(ops, key, snapshot, as_of=None):
         index = min(index, len(filtered)-1)
     with detail_area:
         row = next((r for r in filtered if r['symbol'] == st.session_state.get(f'card-selection-{key}')), filtered[index])
-        candidate_detail(ops, key, snapshot, row, as_of)
+        candidate_detail(ops, key, snapshot, row, as_of, can_write=can_write)
     with st.expander('산업별 후보 집계 · 전체 분석 자료 기준'):
         grouped = pd.DataFrame(rows)
         if 'sector' in grouped:
@@ -418,7 +418,7 @@ def candidate_board_component():
            (assets / 'candidate_board.js').read_text(encoding='utf-8'))
 
 
-def market_board(ops, key, snapshot, day, selection):
+def market_board(ops, key, snapshot, day, selection, can_write=False):
     rows = snapshot['rows']
     if not rows:
         st.info('이 날짜에 표시할 분석 종목이 없습니다.')
@@ -428,16 +428,33 @@ def market_board(ops, key, snapshot, day, selection):
         close, high = row.get('reference_price'), row.get('prior_52w_high')
         display.append(dict(row, stage=candidate_stage(row),
                             gap=(close/high-1)*100 if close is not None and high and high > 0 else None))
-    event = candidate_board_component()(key=f'market-board-{key}-{day}', data=dict(
-        rows=display, rules=snapshot['rules'], day=day,
-        stages={'준비 후보':'셋업 준비 조건 충족', '돌파선 접근':'저항선 아래 1 ATR 이내',
-                '종가 돌파':'셋업 저항선 또는 52주 고가 돌파', '고가 접촉·종가 하회':'장중 저항선 접촉 후 종가 하회'}),
-        on_symbol_change=lambda: None)
-    row = next((r for r in rows if r['symbol'] == event.symbol), None)
+    selected_key = f'market-detail-{key}-{day}'
+    market_board_controls(ops, key, day, display, snapshot['rules'], can_write, selected_key)
+    row = next((r for r in rows if r['symbol'] == st.session_state.get(selected_key)), None)
     if row is None:
         st.caption('종목을 선택하면 이곳에 차트와 선정 근거, 계좌 진입 조건 및 계획 위험이 표시됩니다.')
         return
-    candidate_detail(ops, key, snapshot, row, day, selection)
+    candidate_detail(ops, key, snapshot, row, day, selection, show_heading=False)
+
+
+@st.fragment
+def market_board_controls(ops, key, day, display, rules, can_write, selected_key):
+    widget = f'market-board-{key}-{day}'
+
+    def save_star():
+        change = st.session_state[widget]['favorite']
+        if can_write and change and any(r['symbol'] == change.get('symbol') for r in display):
+            ops.accounts.set_favorite(key, change['symbol'], change['selected'])
+
+    event = candidate_board_component()(key=widget, data=dict(
+        rows=display, rules=rules, day=day, favorites=ops.accounts.favorites(key), canWrite=can_write,
+        selected=st.session_state.get(selected_key, ''),
+        stages={'준비 후보':'셋업 준비 조건 충족', '돌파선 접근':'저항선 아래 1 ATR 이내',
+                '종가 돌파':'셋업 저항선 또는 52주 고가 돌파', '고가 접촉·종가 하회':'장중 저항선 접촉 후 종가 하회'}),
+        on_symbol_change=lambda: None, on_favorite_change=save_star)
+    if event.symbol is not None and event.symbol != st.session_state.get(selected_key, ''):
+        st.session_state[selected_key] = event.symbol
+        st.rerun(scope='app')
 
 
 def candidate_plan(ops, snapshot, day, symbol):
@@ -448,7 +465,7 @@ def candidate_plan(ops, snapshot, day, symbol):
     state = json.loads(checkpoint.read_text(encoding='utf-8'))
     if not any(p['symbol'] == symbol for p in state['pending']):
         st.write('이 계좌는 다음 거래일에 이 종목을 매수할 계획이 없습니다.')
-        st.caption('돌파선 접근 등을 계속 살펴보고 싶을 때만 「관측 목록에 추가」하세요.')
+        st.caption('계속 살펴볼 종목은 별표로 저장하세요. 장중 관측에서 관심 종목을 불러올 수 있습니다.')
         return
     plans = pending_allocations(state, snapshot['limits'], state['pending'])
     for plan in plans[plans.symbol.eq(symbol)].to_dict('records'):
@@ -458,9 +475,23 @@ def candidate_plan(ops, snapshot, day, symbol):
                '종목별 매수 조작 없이 당일 시가와 가용 현금으로 체결 여부와 수량을 결정합니다.')
 
 
-def candidate_detail(ops, key, snapshot, row, as_of, selection=None):
-    st.subheader(str(row.get('name') or row['symbol']))
+@st.fragment
+def stock_detail_heading(ops, key, row, can_write):
+    selected = row['symbol'] in ops.accounts.favorites(key)
+    with st.container(horizontal=True, vertical_alignment='center'):
+        st.button('★' if selected else '☆', key=f'detail-star-{key}-{row["symbol"]}',
+                  help='관심 종목 제거' if selected else '관심 종목 추가', disabled=not can_write,
+                  on_click=ops.accounts.set_favorite, args=(key, row['symbol'], not selected))
+        st.subheader(str(row.get('name') or row['symbol']))
+        st.button('관심 종목에서 제거' if selected else '관심 종목에 추가', disabled=not can_write,
+                  key=f'detail-favorite-{key}-{row["symbol"]}', on_click=ops.accounts.set_favorite,
+                  args=(key, row['symbol'], not selected))
     st.caption(row['symbol'])
+
+
+def candidate_detail(ops, key, snapshot, row, as_of, selection=None, show_heading=True, can_write=False):
+    if show_heading:
+        stock_detail_heading(ops, key, row, can_write)
     if selection:
         member = next((r for r in selection['members'] if r['symbol'] == row['symbol']), None)
         if member:
@@ -484,11 +515,8 @@ def candidate_detail(ops, key, snapshot, row, as_of, selection=None):
         st.markdown('**다음 거래일 진입 계획**')
         candidate_plan(ops, snapshot, as_of, row['symbol'])
     with st.container(horizontal=True, gap='small'):
-        if st.button('관측 목록에 추가', key='add-watch'):
-            symbols = st.session_state.setdefault(f'watch-{key}', [])
-            if row['symbol'] not in symbols:
-                symbols.append(row['symbol'])
-            st.success('장중 관측 화면의 목록에 추가했습니다. 관측은 시작하지 않습니다.')
+        st.button('장중 관측에서 열기', key='add-watch', on_click=open_watch_symbol,
+                  args=(key, row['symbol']), help='이 종목을 관측 대상에 담고 장중 관측 화면으로 이동합니다.')
         if as_of and snapshot.get('account_as_of'):
             st.button('오늘의 운용 · 최근 진입 계획 보기', on_click=open_page, args=('오늘의 운용',))
             if (ops.path(snapshot['workspace']['state']).parent / as_of / 'state.json').is_file():
@@ -583,6 +611,12 @@ def open_page(page):
 
 def account_changed():
     open_page('오늘의 운용')
+
+
+def open_watch_symbol(key, symbol):
+    watch_key = f'watch-{key}'
+    st.session_state[watch_key] = list(dict.fromkeys([*st.session_state.get(watch_key, []), symbol]))
+    open_page('장중 관측')
 
 
 def open_plan_history(key, day):
@@ -971,7 +1005,7 @@ def market_candidates(ops, key, snapshot, can_write):
             st.warning(f'{selected} 산업 구성은 당시 저장본이 없어 '
                        f'{analysis["industry_membership_observed_at"]} 저장본으로 재구성했습니다. '
                        '당시 실제 구성과 다를 수 있으며 모의계좌 매매 기록에는 반영되지 않습니다.')
-        market_board(ops,key,detail,selected,selection if selection_saved else None)
+        market_board(ops,key,detail,selected,selection if selection_saved else None,can_write)
 
 
 def account_history(ops, key, snapshot):
@@ -1186,6 +1220,13 @@ def observation(ops, key, as_of, can_write):
     else:
         st.info(f'현재 관측 시간이 아닙니다. {session} 계획을 미리 저장할 수 있으며 관측 ON은 해당 거래 시간에만 가능합니다.')
     st.markdown('#### ① 대상 선택')
+    favorites = ops.accounts.favorites(key)
+    available = [symbol for symbol in favorites if symbol in names]
+    if st.button('관심 종목 불러오기', disabled=not available,
+                 help='선택 계좌의 관심 종목을 현재 선택에 추가합니다. 관측 시작은 별도로 선택하세요.'):
+        st.session_state[watch_key] = list(dict.fromkeys([*selected, *available]))
+    if len(available) < len(favorites):
+        st.caption(f'계좌의 관측 대상 범위에 없는 관심 종목 {len(favorites)-len(available)}개는 불러올 수 없습니다.')
     chosen = st.multiselect('감시 종목명·코드 검색', sorted(names),
                             format_func=lambda code: symbol_label(code, names),
                             key=watch_key, placeholder='종목명을 입력하고 결과를 선택하세요')
@@ -1557,7 +1598,7 @@ def main():
             st.error('계좌 설정과 저장 자료가 일치하지 않습니다. 기존 계좌를 보존하고 새 비교 계좌를 만드세요.')
         if not snapshot['files_ready']:
             st.warning('시세 또는 유니버스 자료가 준비되지 않았습니다. 저장된 실제 데이터 없이 가상 결과를 표시하지 않습니다.')
-        if page=='종목 탐색': workbench(ops,key,snapshot)
+        if page=='종목 탐색': workbench(ops,key,snapshot,can_write=can_write)
         elif page=='시장 후보': market_candidates(ops,key,snapshot,can_write)
         elif page=='오늘의 운용': workflow(ops,key,snapshot,as_of,can_write)
         elif page=='운용 기록': account_history(ops,key,snapshot)
