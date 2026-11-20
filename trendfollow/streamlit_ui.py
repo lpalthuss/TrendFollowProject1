@@ -1485,6 +1485,49 @@ def observation(ops, key, as_of, can_write):
         st.caption('거래량 누적은 관측 종료 후 16:10 이후 수행합니다. 기준 생성에는 최소 5개 유효 거래일이 필요합니다.')
 
 
+PRESET_FIELDS = {
+    'entry_method':'진입 방식', 'rs_method':'상대강도 방식', 'mansfield_benchmark':'Mansfield 비교 기준',
+    'initial_stop_method':'초기 손절 방식', 'initial_stop_reference':'초기 손절 기준가',
+    'stop_limit_enabled':'진입 시 손절 폭 제한', 'rs_exit_enabled':'RS 약화 청산',
+    'market_units_enabled':'시장 강도별 유닛 상한', 'market_units_benchmark':'시장 강도 비교 기준',
+    'pyramiding_review_enabled':'추가매수 검토', 'pyramiding_enabled':'추가매수 모의 체결',
+}
+PRESET_VALUES = {
+    'breakout':'고가 돌파', 'setup':'파동 셋업', 'percentile':'RS 수익률 순위', 'mansfield':'주간 Mansfield',
+    'universe':'시장 ETF', 'market_index':'시장지수', 'atr':'ATR 손절', 'fixed':'고정 비율 손절',
+    'hybrid':'혼합 손절', 'entry_fill':'모의 체결가', 'signal_close':'신호일 종가',
+}
+
+
+def preset_preview(preset, previous):
+    rules, limits = preset['rules'], preset['limits']
+    ranked = rules['rs_method'] == 'percentile'
+    strength = (f'RS 순위 {rules["min_rs"]:g} 이상 · 시장 대비 초과수익 양수' if ranked
+                else f'주간 Mansfield {rules["min_mansfield"]:g} 초과')
+    entry = ('파동 셋업' if rules['entry_method'] == 'setup' else f'직전 {rules["breakout_days"]}거래일 고가 돌파')
+    if rules['entry_method'] == 'setup' and rules['setup_52w_enabled']:
+        entry += ' 또는 52주 신고가 돌파'
+    st.write(f'**진입** · {entry} · {strength} · 거래량 {rules["volume_multiple"]:g}배 이상')
+    threshold = f'RS 순위 {rules["rs_exit_percentile"]:g}' if ranked else f'Mansfield {rules["rs_exit_mansfield"]:g}'
+    exit_rule = (f'{threshold} 미만 {rules["rs_exit_confirmations"]}회 연속이면 청산'
+                 if rules['rs_exit_enabled'] else 'RS 약화 청산 꺼짐')
+    st.write(f'**손절·청산** · {PRESET_VALUES[rules["initial_stop_method"]]} · {exit_rule}')
+    st.write(f'**위험 한도** · 거래당 {limits["max_trade_risk"]:.0%} · 계좌 전체 {limits["total_risk"]:.0%}')
+    if previous:
+        def display(value):
+            if isinstance(value, bool):
+                return '사용' if value else '해제'
+            return str(PRESET_VALUES.get(value, value))
+        changes = [{'항목':PRESET_FIELDS.get(field, field), '이전 값':display(previous[group][field]),
+                    '선택한 값':display(value)}
+                   for group in ('rules', 'limits') for field, value in preset[group].items()
+                   if previous[group][field] != value]
+        st.caption(f'이전 예제 {previous["name"]} → {preset["name"]} · 변경 {len(changes)}개')
+        if changes:
+            st.dataframe(changes, hide_index=True, width='content')
+
+
+
 def settings(ops, snapshot, can_write):
     st.subheader('적용 전략')
     st.json(dict(rules=snapshot['rules'],limits=snapshot['limits']),expanded=False)
@@ -1545,11 +1588,21 @@ def settings(ops, snapshot, can_write):
                 st.error(str(error))
     st.subheader('새 비교 계좌 만들기')
     presets = ops.presets()
-    preset = st.selectbox('전략 예제', presets, format_func=lambda p:p['name'])
+    st.caption('전략 예제를 고르면 새 계좌의 매매 규칙과 위험 한도가 채워집니다. 저장 전에 아래에서 주요 기준과 바뀐 항목을 확인하세요.')
+    by_name = {item['name']: item for item in presets}
+    preset = by_name[st.selectbox('전략 예제', list(by_name), key=f'preset-{workspace["id"]}')]
+    history_key = f'preset-history-{workspace["id"]}'
+    previous_id, current_id = st.session_state.get(history_key, (None, preset['id']))
+    if current_id != preset['id']:
+        previous_id = current_id
+    st.session_state[history_key] = (previous_id, preset['id'])
+    preset_preview(preset, next((p for p in presets if p['id'] == previous_id), None))
     with st.form('new-account'):
         name = st.text_input('계좌 이름', value='추세추종 비교 계좌')
         capital = st.number_input('초기 모의자금(원)',min_value=1,value=10000000)
-        config = st.text_area('전략 JSON · rules / limits',json.dumps(dict(rules=preset['rules'],limits=preset['limits']),ensure_ascii=False,indent=2),height=300,key=f'config-{preset["id"]}')
+        with st.expander('고급 · 예제 설정 전체 보기 및 직접 수정'):
+            st.caption('직접 수정하면 입력한 JSON 값으로 계좌를 저장합니다. 위 요약은 선택한 예제 기준입니다.')
+            config = st.text_area('전략 JSON · rules / limits',json.dumps(dict(rules=preset['rules'],limits=preset['limits']),ensure_ascii=False,indent=2),height=300,key=f'config-{preset["id"]}')
         if st.form_submit_button('별도 계좌 저장',disabled=not can_write):
             try:
                 cfg = json.loads(config)

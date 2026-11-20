@@ -374,7 +374,7 @@ def test_password_gate_and_account_save(tmp_path, monkeypatch):
     shutil.copytree(ROOT/'examples',tmp_path/'examples')
     monkeypatch.setattr(ui,'ROOT',tmp_path)
     monkeypatch.setenv('UI_PASSWORD','test-only-password')
-    app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+    app = AppTest.from_file(str(ROOT/'streamlit_app.py'), default_timeout=30).run(timeout=30)
     assert not app.radio
     app.text_input[0].set_value('wrong')
     app.button[0].click().run()
@@ -385,6 +385,14 @@ def test_password_gate_and_account_save(tmp_path, monkeypatch):
     assert not any(field.label == '운용 비밀번호' for field in app.text_input)
     assert not any(button.label == '로그인' for button in app.button)
     navigate(app, '전략·설정')
+    for preset_name in ('setup', 'setup-rs-exit'):
+        selector = next(widget for widget in app.selectbox if widget.label == '전략 예제')
+        selector.select_index(selector.options.index(preset_name)).run(timeout=30)
+    assert not app.exception
+    assert any('RS 순위 50 미만 2회 연속이면 청산' in item.value for item in app.markdown)
+    assert any(frame.value.to_dict('records') == [
+        {'항목':'RS 약화 청산', '이전 값':'해제', '선택한 값':'사용'}
+    ] for frame in app.dataframe)
     next(b for b in app.button if b.label=='별도 계좌 저장').click().run()
     assert not app.exception
     assert not app.error
