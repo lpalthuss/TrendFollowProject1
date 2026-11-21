@@ -326,20 +326,6 @@ def workbench(ops, key, snapshot, as_of=None, can_write=False):
     .st-key-market-filters label p {font-size:.8rem}
     .st-key-market-filters [data-baseweb="select"] > div,
     .st-key-market-filters [data-baseweb="input"] {min-height:2rem}
-    .st-key-market-board [data-testid="stColumn"] {display:flex;align-self:stretch}
-    .st-key-market-board [data-testid="stColumn"] > div {flex:1}
-    .st-key-market-board [class*="st-key-stagebox"] {
-        background:white;border:1px solid #cedad6;border-left:4px solid #397bc1;
-        border-radius:6px;padding:.8rem;min-height:8.8rem;height:100%;gap:.35rem}
-    .st-key-market-board .st-key-stagebox2 {border-left-color:#17806b}
-    .st-key-market-board .st-key-stagebox3 {border-left-color:#bb823c}
-    .st-key-market-board .stage-heading {display:flex;justify-content:space-between;
-        gap:.5rem;font-weight:650;color:#25384a;font-size:.92rem}
-    .st-key-market-board [data-testid="stHorizontalBlock"] {row-gap:.25rem;column-gap:.3rem}
-    .st-key-market-board button {min-height:1.55rem;padding:.1rem .4rem;
-        background:white;border:1px solid #c8d6d3;border-radius:4px;color:#24463e}
-    .st-key-market-board button p {font-size:.76rem;line-height:1.2}
-    .st-key-market-board button:hover {border-color:#168575;background:#edf7f4}
     </style>""")
     choices = ['전체','통과','미통과','미확인·미적용']
     phase_key = f'phase-{key}'
@@ -365,75 +351,52 @@ def workbench(ops, key, snapshot, as_of=None, can_write=False):
                                  snapshot['rules']['volume_multiple'], setup, action,
                                  high52, setup_condition)
     st.caption(f'전체 {len(rows)}종목 중 {len(filtered)}종목 · 필터는 계좌나 신호를 변경하지 않습니다.')
-    descriptions = {'준비 후보':'셋업 준비 조건 충족', '돌파선 접근':'저항선 아래 1 ATR 이내',
-                    '종가 돌파':'셋업 저항선 또는 직전 52주 고가 돌파', '고가 접촉·종가 하회':'장중 저항선 접촉 후 종가 하회'}
-    board = st.container(key='market-board')
-    for idx,(col,(stage,description)) in enumerate(zip(board.columns(4), descriptions.items())):
-        members = [r for r in filtered if candidate_stage(r) == stage]
-        with col.container(key=f'stagebox{idx}'):
-            st.html(f'<div class="stage-heading"><span>{stage}</span><strong>{len(members)}</strong></div>')
-            st.caption(description)
-            with st.container(horizontal=True, gap='small', vertical_alignment='center'):
-                for r in members:
-                    st.button(str(r.get('name') or r['symbol']), key=f'card-{key}-{r["symbol"]}',
-                              on_click=st.session_state.update, args=({f'card-selection-{key}':r['symbol']},))
-                if not members:
-                    st.caption('해당 종목 없음')
-    if not filtered:
+    selected_key = f'card-selection-{key}'
+    row = next((r for r in filtered if r['symbol'] == st.session_state.get(selected_key)), next(iter(filtered), None))
+    widget = f'explorer-table-{key}-{as_of}'
+
+    def select_row():
+        symbol = st.session_state[widget]['symbol']
+        if any(r['symbol'] == symbol for r in filtered):
+            st.session_state[selected_key] = symbol
+
+    candidate_board_component(explorer=True)(key=widget, data=dict(
+        explorer=True, rows=board_rows(filtered), rules=snapshot['rules'], selected=row['symbol'] if row else '',
+        favorites=ops.accounts.favorites(key), canWrite=can_write),
+        on_symbol_change=select_row, on_favorite_change=lambda: save_board_star(ops, key, widget, filtered, can_write))
+    if row is None:
         st.info('선택 조건에 맞는 종목이 없습니다.')
         return
-    table_area = st.container()
-    detail_area = st.container()
-    def price(value):
-        return '—' if value is None else f'{value:,.0f}'
-
-    def status(value):
-        return {True:'통과', False:'미통과'}.get(value,'미확인')
-
-    shown = pd.DataFrame([{
-        '종목': f'{r.get("name") or ""} {r["symbol"]}'.strip(), '산업': r.get('industry_name') or r.get('sector') or '—',
-        '종가 / 52주 고가': f'{price(r.get("reference_price"))} / {price(r.get("prior_52w_high"))}',
-        '52주 거리': high52_distance(r), 'RS 순위': r.get('rs_percentile'),
-        '주간 Mansfield': r.get('mansfield_rs'), '다기간 Mansfield': r.get('multi_rs'),
-        'RS 조건':status(r.get('rs_pass')), '산업 조건':status(r.get('sector_action')),
-        '파동 단계':PHASE_LABELS.get(r.get('setup_phase'),'미확인'),
-        '준비':status(r.get('setup_ready')), '셋업 돌파':status(r.get('setup_trigger')),
-        '거래량 배수':r.get('volume_ratio'), '최종 신호':status(r.get('signal')),
-        '신호 경로':r.get('signal_entry_path') or '—', '계획 수량':r.get('quantity'),
-    } for r in filtered])
-    colors = {'통과':'color:#10634d;background-color:#e6f2ec',
-              '미통과':'color:#684d43;background-color:#f2edea', '미확인':'color:#67747d'}
-    styled = shown.style.format({'RS 순위':'{:.1f}', '주간 Mansfield':'{:.2f}',
-                                 '다기간 Mansfield':'{:.2f}', '거래량 배수':'{:.2f}배','계획 수량':'{:,.0f}'},
-                                na_rep='—').map(colors.get, subset=['RS 조건','산업 조건','준비','셋업 돌파','최종 신호'])
-    styled.map(lambda v:'color:#b43731' if '돌파' in v else 'color:#235cb0' if '남음' in v else '',
-               subset=['52주 거리'])
-    with table_area:
-        st.markdown('**선별 종목**')
-        event = st.dataframe(styled, hide_index=True, width='stretch', row_height=34,
-                             on_select=lambda: st.session_state.pop(f'card-selection-{key}', None),
-                             selection_mode='single-row', key=f'candidates-{key}-{as_of}')
-        index = event.selection.rows[0] if event.selection.rows else 0
-        index = min(index, len(filtered)-1)
-    with detail_area:
-        row = next((r for r in filtered if r['symbol'] == st.session_state.get(f'card-selection-{key}')), filtered[index])
-        candidate_detail(ops, key, snapshot, row, as_of, can_write=can_write)
+    candidate_detail(ops, key, snapshot, row, as_of, can_write=can_write)
     with st.expander('산업별 후보 집계 · 전체 분석 자료 기준'):
         grouped = pd.DataFrame(rows)
         if 'sector' in grouped:
             st.dataframe(grouped.groupby('sector', dropna=False).agg(후보수=('symbol','size'),진입신호=('signal','sum')).reset_index(), hide_index=True)
 
 
-@lru_cache(maxsize=1)
-def candidate_board_component():
+@lru_cache(maxsize=2)
+def candidate_board_component(explorer=False):
     assets = CODE_ROOT / 'trendfollow/web'
-    html = (assets / 'candidate_board.html').read_text(encoding='utf-8')
-    wave = (assets / 'wave_filter.html').read_text(encoding='utf-8')
+    if explorer:
+        html = '<section class="candidate-board" aria-label="선별 종목"><div class="cards"></div><p class="summary" aria-live="polite"></p><div class="grid"><table><thead></thead><tbody></tbody></table></div></section>'
+    else:
+        html = (assets / 'candidate_board.html').read_text(encoding='utf-8')
+        wave = (assets / 'wave_filter.html').read_text(encoding='utf-8')
+        html = html.replace('<div class="wave"></div>', f'<div class="wave">{wave}</div>')
     return st.components.v2.component(
-        'market_candidate_board', html=html.replace('<div class="wave"></div>', f'<div class="wave">{wave}</div>'),
+        'explorer_candidate_table' if explorer else 'market_candidate_board', html=html,
         css=(assets / 'candidate_board.css').read_text(encoding='utf-8'),
         js=(assets / 'src/filters.js').read_text(encoding='utf-8') + '\n' +
            (assets / 'candidate_board.js').read_text(encoding='utf-8'))
+
+
+def board_rows(rows):
+    display = []
+    for row in rows:
+        close, high = row.get('reference_price'), row.get('prior_52w_high')
+        display.append(dict(row, stage=candidate_stage(row),
+                            gap=(close/high-1)*100 if close is not None and high and high > 0 else None))
+    return display
 
 
 def market_board(ops, key, snapshot, day, selection, can_write=False):
@@ -441,11 +404,7 @@ def market_board(ops, key, snapshot, day, selection, can_write=False):
     if not rows:
         st.info('이 날짜에 표시할 분석 종목이 없습니다.')
         return
-    display = []
-    for row in rows:
-        close, high = row.get('reference_price'), row.get('prior_52w_high')
-        display.append(dict(row, stage=candidate_stage(row),
-                            gap=(close/high-1)*100 if close is not None and high and high > 0 else None))
+    display = board_rows(rows)
     selected_key = f'market-detail-{key}-{day}'
     market_board_controls(ops, key, day, display, snapshot['rules'], can_write, selected_key)
     row = next((r for r in rows if r['symbol'] == st.session_state.get(selected_key)), None)
@@ -455,21 +414,20 @@ def market_board(ops, key, snapshot, day, selection, can_write=False):
     candidate_detail(ops, key, snapshot, row, day, selection, show_heading=False)
 
 
+def save_board_star(ops, key, widget, rows, can_write):
+    change = st.session_state[widget]['favorite']
+    if can_write and change and any(r['symbol'] == change.get('symbol') for r in rows):
+        ops.accounts.set_favorite(key, change['symbol'], change['selected'])
+
+
 @st.fragment
 def market_board_controls(ops, key, day, display, rules, can_write, selected_key):
     widget = f'market-board-{key}-{day}'
 
-    def save_star():
-        change = st.session_state[widget]['favorite']
-        if can_write and change and any(r['symbol'] == change.get('symbol') for r in display):
-            ops.accounts.set_favorite(key, change['symbol'], change['selected'])
-
     event = candidate_board_component()(key=widget, data=dict(
         rows=display, rules=rules, day=day, favorites=ops.accounts.favorites(key), canWrite=can_write,
-        selected=st.session_state.get(selected_key, ''),
-        stages={'준비 후보':'셋업 준비 조건 충족', '돌파선 접근':'저항선 아래 1 ATR 이내',
-                '종가 돌파':'셋업 저항선 또는 52주 고가 돌파', '고가 접촉·종가 하회':'장중 저항선 접촉 후 종가 하회'}),
-        on_symbol_change=lambda: None, on_favorite_change=save_star)
+        selected=st.session_state.get(selected_key, '')),
+        on_symbol_change=lambda: None, on_favorite_change=lambda: save_board_star(ops, key, widget, display, can_write))
     if event.symbol is not None and event.symbol != st.session_state.get(selected_key, ''):
         st.session_state[selected_key] = event.symbol
         st.rerun(scope='app')
@@ -493,7 +451,6 @@ def candidate_plan(ops, snapshot, day, symbol):
                '종목별 매수 조작 없이 당일 시가와 가용 현금으로 체결 여부와 수량을 결정합니다.')
 
 
-@st.fragment
 def stock_detail_heading(ops, key, row, can_write):
     selected = row['symbol'] in ops.accounts.favorites(key)
     with st.container(horizontal=True, vertical_alignment='center'):

@@ -46,26 +46,40 @@
 .candidate-board .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 205px), 1fr));
-  gap: 8px;
+  gap: 5px;
   margin: 14px 0;
 }
 .candidate-board .card {
-  border: 1px solid #aebfc2;
-  border-top: 3px solid #69889a;
-  border-radius: 7px;
-  padding: 10px;
-  background: var(--st-background-color, #fff);
+  border: 1px solid #cedad6;
+  border-left: 4px solid #397bc1;
+  border-radius: 6px;
+  padding: .8rem;
+  box-sizing: border-box;
+  min-height: 8.8rem;
+  color: #25384a;
+  background: white;
+}
+.candidate-board .card:nth-child(3) {
+  border-left-color: #17806b;
+}
+.candidate-board .card:nth-child(4) {
+  border-left-color: #bb823c;
+}
+.candidate-board .card small {
+  color: #526575;
 }
 .candidate-board .card.selected {
   outline: 2px solid #16816c;
   outline-offset: -2px;
 }
-.candidate-board .card > button {
+.candidate-board .card-heading {
   display: flex;
   justify-content: space-between;
   width: 100%;
   border: 0;
   padding: 0;
+  background: transparent;
+  margin-bottom: .35rem;
   text-align: left;
   font-weight: 650;
 }
@@ -80,15 +94,16 @@
 .candidate-board .chips button {
   font-size: 0.76rem;
   padding: 2px 6px;
+  background: white;
+  border-color: #c8d6d3;
+  color: #24463e;
+  border-radius: 4px;
 }
 .candidate-board .more {
   margin: 8px 0;
 }
 .candidate-board .advanced {
   padding: 8px 0;
-}
-.candidate-board .wave svg {
-  max-height: 150px;
 }
 .candidate-board .summary {
   margin: 8px 0;

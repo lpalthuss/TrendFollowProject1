@@ -444,18 +444,19 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
             setup_phase='base',volume_ratio=None)]
         return result
     monkeypatch.delenv('UI_PASSWORD',raising=False)
-    with patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch.object(Operations,'snapshot',snapshot), patch.object(Operations,'prices',return_value=[
+    from unittest.mock import Mock
+    table = Mock()
+    with patch('trendfollow.streamlit_ui.candidate_board_component', return_value=table), \
+         patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch.object(Operations,'snapshot',snapshot), patch.object(Operations,'prices',return_value=[
             dict(date='2026-11-13',close=9900),dict(date='2026-11-16',close=10000)]):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         assert not app.exception and not app.error
         navigate(app, '종목 탐색')
         assert any(s.value=='테스트 상승' for s in app.subheader)
-        key = app.selectbox(key='account-picker').value
-        app.button(key=f'card-{key}-000210').click().run(timeout=30)
-        assert any(item.value == '테스트 대기' for item in app.subheader)
-        shown = app.dataframe[0].value
-        assert shown['RS 조건'].tolist() == ['통과', '미통과']
-        assert shown['파동 단계'].iloc[1] == '조정·베이스'
+        shown = table.call_args.kwargs['data']
+        assert shown['explorer'] and shown['selected'] == '000080'
+        assert [r['rs_pass'] for r in shown['rows']] == [True, False]
+        assert shown['rows'][1]['setup_phase'] == 'base'
         next(t for t in app.text_input if t.label=='종목명·코드·산업 검색').set_value('대기').run()
         assert not app.exception and not app.error
         assert any(s.value=='테스트 대기' for s in app.subheader)

@@ -50,7 +50,12 @@ export default function ({
     };
     return button;
   }
-  const stages = data.stages;
+  const stages = {
+    "준비 후보": "셋업 준비 조건 충족",
+    "돌파선 접근": "저항선 아래 1 ATR 이내",
+    "종가 돌파": "셋업 저항선 또는 직전 52주 고가 돌파",
+    "고가 접촉·종가 하회": "장중 저항선 접촉 후 종가 하회",
+  };
   const all = ["all", "전체"];
   const tests = [
     all,
@@ -141,7 +146,8 @@ export default function ({
   function selectSymbol(symbol) {
     if (view.symbol === symbol) return;
     view.symbol = symbol;
-    setStateValue("symbol", symbol);
+    if (data.explorer) setTriggerValue("symbol", symbol);
+    else setStateValue("symbol", symbol);
   }
   const stateLabel = (v) => (v == null ? "미확인" : v ? "통과" : "미통과");
   const number = (v, n = 1) =>
@@ -164,7 +170,124 @@ export default function ({
     ["signal", "최종 신호"],
     ["signal_entry_path", "신호 경로"],
   ];
+  function renderTable(visible) {
+    if (view.direction)
+      visible.sort((a, b) => {
+        const x = a[view.sort],
+          y = b[view.sort];
+        if (x == null || y == null)
+          return Number(x == null) - Number(y == null);
+        return (
+          view.direction *
+          (typeof x === "string" ? x.localeCompare(y, "ko") : x - y)
+        );
+      });
+    const header = element("tr");
+    for (const [field, label] of columns) {
+      const th = element("th", field === "reference_price" ? label : null);
+      if (field !== "reference_price") {
+        const active = view.sort === field && view.direction;
+        const button = element(
+          "button",
+          label + (active ? (view.direction === 1 ? " ↑" : " ↓") : ""),
+        );
+        button.onclick = () => {
+          view.direction =
+            view.sort === field ? { 0: 1, 1: -1, "-1": 0 }[view.direction] : 1;
+          view.sort = field;
+          render();
+        };
+        th.append(button);
+      }
+      header.append(th);
+    }
+    find("thead").replaceChildren(header);
+    const body = document.createDocumentFragment();
+    for (const r of visible) {
+      const tr = element("tr");
+      tr.dataset.symbol = r.symbol;
+      tr.classList.toggle("current", r.symbol === view.symbol);
+      tr.onclick = () => {
+        selectSymbol(r.symbol);
+        render();
+      };
+      const values = [
+        r.name || r.symbol,
+        r.industry_name || r.sector || "—",
+        r.stage,
+        number(r.reference_price) + " / " + number(r.prior_52w_high),
+        r.gap == null
+          ? "자료 부족"
+          : r.gap === 0
+            ? "고가 일치"
+            : number(Math.abs(r.gap)) + "% " + (r.gap > 0 ? "돌파" : "남음"),
+        number(r.rs_percentile),
+        number(r.mansfield_rs, 2),
+        number(r.multi_rs, 2),
+        stateLabel(r.rs_pass),
+        stateLabel(r.sector_action),
+        phaseLabels[r.setup_phase] || "—",
+        stateLabel(r.setup_ready),
+        stateLabel(r.setup_trigger),
+        r.volume_ratio == null ? "—" : number(r.volume_ratio, 2) + "배",
+        stateLabel(r.signal),
+        r.signal_entry_path || "—",
+      ];
+      if (data.explorer) values.push(number(r.quantity, 0));
+      values.forEach((value, i) => {
+        const td = element("td", i === 0 ? null : value);
+        if (i === 0) {
+          const button = element("button", value);
+          td.append(star(r), button, element("small", r.symbol));
+        }
+        if (i === 4 && r.gap) td.className = r.gap > 0 ? "above" : "below";
+        tr.append(td);
+      });
+      body.append(tr);
+    }
+    find("tbody").replaceChildren(body);
+  }
+  if (data.explorer) columns.push(["quantity", "계획 수량"]);
+  function renderCards(base) {
+    const cards = find(".cards");
+    cards.replaceChildren();
+    for (const [stage, description] of Object.entries(stages)) {
+      const members = base.filter((r) => r.stage === stage);
+      const card = element("section"),
+        heading = element(data.explorer ? "div" : "button", stage),
+        chips = element("div");
+      card.className = "card" + (view.stage === stage ? " selected" : "");
+      heading.className = "card-heading";
+      heading.append(element("strong", members.length));
+      if (!data.explorer) {
+        heading.setAttribute("aria-pressed", String(view.stage === stage));
+        heading.onclick = () => {
+          view.stage = view.stage === stage ? "" : stage;
+          render();
+        };
+      }
+      chips.className = "chips";
+      for (const r of members) {
+        const chip = element("button", r.name || r.symbol);
+        chip.onclick = () => {
+          if (!data.explorer) view.stage = stage;
+          selectSymbol(r.symbol);
+          render();
+        };
+        chips.append(chip);
+      }
+      if (!members.length) chips.append(element("small", "해당 종목 없음"));
+      card.append(heading, element("small", description), chips);
+      cards.append(card);
+    }
+  }
   function render() {
+    if (data.explorer) {
+      renderCards(rows);
+      find(".summary").textContent = `선별 종목 ${rows.length}개`;
+      renderTable([...rows]);
+      return;
+    }
     const figure = find("figure");
     if (figure) {
       figure.hidden = !setup;
@@ -209,45 +332,8 @@ export default function ({
     const toggle = find(".favorite-filter");
     toggle.setAttribute("aria-pressed", String(view.favoritesOnly));
     toggle.textContent = (view.favoritesOnly ? "★" : "☆") + " 관심만 보기";
-    const cards = find(".cards");
-    cards.replaceChildren();
-    for (const [stage, description] of Object.entries(stages)) {
-      const members = base.filter((r) => r.stage === stage);
-      const card = element("section"),
-        button = element("button", stage),
-        chips = element("div");
-      card.className = "card" + (view.stage === stage ? " selected" : "");
-      button.setAttribute("aria-pressed", String(view.stage === stage));
-      button.append(element("strong", members.length));
-      button.onclick = () => {
-        view.stage = view.stage === stage ? "" : stage;
-        render();
-      };
-      chips.className = "chips";
-      for (const r of members) {
-        const chip = element("button", r.name || r.symbol);
-        chip.onclick = () => {
-          view.stage = stage;
-          selectSymbol(r.symbol);
-          render();
-        };
-        chips.append(chip);
-      }
-      card.append(button, element("small", description), chips);
-      cards.append(card);
-    }
+    renderCards(base);
     const visible = base.filter((r) => !view.stage || r.stage === view.stage);
-    if (view.direction)
-      visible.sort((a, b) => {
-        const x = a[view.sort],
-          y = b[view.sort];
-        if (x == null || y == null)
-          return Number(x == null) - Number(y == null);
-        return (
-          view.direction *
-          (typeof x === "string" ? x.localeCompare(y, "ko") : x - y)
-        );
-      });
     if (
       view.symbol &&
       !matches.some(
@@ -265,69 +351,7 @@ export default function ({
     ]
       .filter(Boolean)
       .join(" · ");
-    const header = element("tr");
-    for (const [field, label] of columns) {
-      const th = element("th", field === "reference_price" ? label : null);
-      if (field !== "reference_price") {
-        const active = view.sort === field && view.direction;
-        const button = element(
-          "button",
-          label + (active ? (view.direction === 1 ? " ↑" : " ↓") : ""),
-        );
-        button.onclick = () => {
-          view.direction =
-            view.sort === field ? { 0: 1, 1: -1, "-1": 0 }[view.direction] : 1;
-          view.sort = field;
-          render();
-        };
-        th.append(button);
-      }
-      header.append(th);
-    }
-    find("thead").replaceChildren(header);
-    const body = document.createDocumentFragment();
-    for (const r of visible) {
-      const tr = element("tr");
-      tr.dataset.symbol = r.symbol;
-      tr.classList.toggle("current", r.symbol === view.symbol);
-      tr.onclick = () => {
-        selectSymbol(r.symbol);
-        render();
-      };
-      const values = [
-        r.name || r.symbol,
-        r.industry_name,
-        r.stage,
-        number(r.reference_price) + " / " + number(r.prior_52w_high),
-        r.gap == null
-          ? "자료 부족"
-          : r.gap === 0
-            ? "고가 일치"
-            : number(Math.abs(r.gap)) + "% " + (r.gap > 0 ? "돌파" : "남음"),
-        number(r.rs_percentile),
-        number(r.mansfield_rs, 2),
-        number(r.multi_rs, 2),
-        stateLabel(r.rs_pass),
-        stateLabel(r.sector_action),
-        phaseLabels[r.setup_phase] || "—",
-        stateLabel(r.setup_ready),
-        stateLabel(r.setup_trigger),
-        r.volume_ratio == null ? "—" : number(r.volume_ratio, 2) + "배",
-        stateLabel(r.signal),
-        r.signal_entry_path || "—",
-      ];
-      values.forEach((value, i) => {
-        const td = element("td", i === 0 ? null : value);
-        if (i === 0) {
-          const button = element("button", value);
-          td.append(star(r), button, element("small", r.symbol));
-        }
-        if (i === 4 && r.gap) td.className = r.gap > 0 ? "above" : "below";
-        tr.append(td);
-      });
-      body.append(tr);
-    }
-    find("tbody").replaceChildren(body);
+    renderTable(visible);
     const detail = find(".stock-detail");
     const selected = rows.find((r) => r.symbol === view.symbol);
     detail.hidden = !selected;
@@ -340,6 +364,11 @@ export default function ({
         ),
         star(selected, true),
       );
+  }
+  if (data.explorer) {
+    view.symbol = data.selected;
+    render();
+    return;
   }
   find(".favorite-filter").onclick = () => {
     view.favoritesOnly = !view.favoritesOnly;
