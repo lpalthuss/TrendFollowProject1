@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import threading
+from tempfile import TemporaryDirectory
 import time
 import zipfile
 import uuid
@@ -101,6 +102,47 @@ def build_universe(frames, min_recent_turnover=1e9):
             else:
                 records.append(base)
     return pd.DataFrame(records), pd.DataFrame(excluded)
+
+
+def ensure_market_inputs(directory, now, progress):
+    """Prepare the shared research universe and the two industry master inputs."""
+    universe = directory / 'universe.csv'
+    master = directory / 'master'
+    markets = ('kospi.csv', 'kosdaq.csv')
+    have_master = all((master / name).is_file() for name in markets)
+    if universe.is_file() and have_master:
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=directory, prefix='.bootstrap-') as tmp:
+        stage = Path(tmp)
+        if have_master:
+            frames = [pd.read_csv(master / name, dtype=str, keep_default_na=False) for name in markets]
+        else:
+            progress('최초 운용 준비 · KIS 코스피·코스닥 종목 마스터 수집 중')
+            try:
+                frames = download_master(stage / 'master')
+            except requests.RequestException as exc:
+                raise ValueError('KIS 종목 마스터 수집에 실패했습니다. 잠시 후 같은 버튼으로 다시 시도하세요.') from exc
+        if not universe.is_file():
+            progress('최초 운용 준비 · 시장 종목 목록 생성 중')
+            metadata = directory / 'universe-metadata.json'
+            settings = json.loads(metadata.read_text(encoding='utf-8-sig')) if metadata.exists() else {}
+            threshold = float(settings.get('min_recent_turnover_proxy', 1e9))
+            members, excluded = build_universe(frames, threshold)
+            if members.empty:
+                raise ValueError('KIS 마스터에서 선정된 종목이 없습니다. 시장 종목 목록을 저장하지 않았습니다.')
+            members.to_csv(stage / universe.name, index=False, encoding='utf-8-sig')
+            excluded.to_csv(stage / 'excluded.csv', index=False, encoding='utf-8-sig')
+            settings.update(snapshot_at=now.isoformat(), min_recent_turnover_proxy=threshold,
+                            eligible=len(members), excluded=len(excluded), historical_point_in_time=False)
+            (stage / metadata.name).write_text(json.dumps(settings, ensure_ascii=False), encoding='utf-8')
+        if not have_master:
+            master.mkdir(exist_ok=True)
+            for path in (stage / 'master').iterdir():
+                path.replace(master / path.name)
+        if (stage / universe.name).is_file():
+            for name in ('excluded.csv', 'universe-metadata.json', universe.name):
+                (stage / name).replace(directory / name)
 
 
 class NaverResearchSource:

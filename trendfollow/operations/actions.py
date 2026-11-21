@@ -16,6 +16,16 @@ class ActionRunner:
     def __init__(self, context):
         self.context = context
 
+    def sync_industries(self, progress):
+        from ..industries import industry_sync
+        from ..market import ensure_market_inputs
+
+        market = self.context.root / "data/market"
+        ensure_market_inputs(market, self.context.now(), progress)
+        progress("산업 구성·동료 종목 수익률 수집 중")
+        return industry_sync(market / "universe.csv", market / "master",
+                             self.context.root / "data/industries", refresh=True)
+
     def prepare_watch_candidates(self, out, prices, frame, universe, members, symbols, as_of, rules, watch_mode):
         from ..backtest import features
         from ..market import acquire_research
@@ -275,21 +285,36 @@ class ActionRunner:
                 prices, universe, as_of, state_path, w["capital"], config
             )
         elif action == "daily":
+            from ..candidate_universe import latest_completed_session, read_policy
+
             progress("누락 거래일 확인 중")
-            if rules.entry_method == "setup":
+            now = self.context.now()
+            if not universe.is_file():
+                from ..market import ensure_market_inputs
+
+                market = self.context.root / "data/market"
+                industry = self.context.root / "data/industries/universe.csv"
+                if self.context.state(w) or universe not in {market / "universe.csv", industry}:
+                    raise ValueError("기존 계좌의 종목 목록이 누락되었습니다. 저장된 계좌 백업에서 운용 자료를 복원하세요.")
+                if as_of != latest_completed_session(now):
+                    raise ValueError("처음 운용할 시장·산업 자료가 없습니다. 자동 기준일인 최근 완료 거래일로 실행하세요.")
+                if universe == industry:
+                    report = self.sync_industries(progress)
+                    if report["returns_date"] != as_of:
+                        raise ValueError(f"수집된 산업 수익률은 {report['returns_date']} 기준입니다. "
+                                         f"{as_of} 종가 자료가 준비된 뒤 다시 실행하세요.")
+                else:
+                    ensure_market_inputs(market, now, progress)
+            elif rules.entry_method == "setup":
                 from .intraday import industry_ready
-                if as_of == str(self.context.now().date()) and not industry_ready(
+
+                first_latest = (not state_path.is_file()
+                                and universe == self.context.root / "data/industries/universe.csv"
+                                and as_of == latest_completed_session(now))
+                if (as_of == str(now.date()) or first_latest) and not industry_ready(
                     pd.read_csv(universe,dtype={"symbol":str,"benchmark":str}),as_of
                 ):
-                    from ..industries import industry_sync
-                    progress("오늘 산업 자료 수집 중")
-                    industry_sync(
-                        self.context.root / "data/market/universe.csv",
-                        self.context.root / "data/market/master",
-                        self.context.root / "data/industries",
-                        refresh=True,
-                    )
-            from ..candidate_universe import read_policy
+                    self.sync_industries(progress)
 
             policy = read_policy(self.context.root, w["id"])
             if policy and self.context.state(w) and as_of > policy["enabled_after"]:
@@ -370,15 +395,7 @@ class ActionRunner:
                     price_source=payload.get("price_source", "naver"),
                 )
         elif action == "industry":
-            from ..industries import industry_sync
-
-            progress("산업 자료 수집·저장 중")
-            result = industry_sync(
-                self.context.root / "data/market/universe.csv",
-                self.context.root / "data/market/master",
-                self.context.root / "data/industries",
-                refresh=True,
-            )
+            result = self.sync_industries(progress)
         elif action == "candidate_universe":
             from ..candidate_universe import capture_selection, capture_krx_missing
 

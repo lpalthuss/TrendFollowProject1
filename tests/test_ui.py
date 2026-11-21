@@ -115,6 +115,46 @@ def test_unexpected_job_error_keeps_local_diagnostic(ops, monkeypatch):
     assert 'RuntimeError: test failure' in diagnostic.read_text(encoding='utf-8')
 
 
+def test_first_setup_close_prepares_missing_universes_on_weekend(ops, monkeypatch):
+    from trendfollow import industries, market
+    from trendfollow.operations import actions
+
+    monkeypatch.setattr(ops, 'clock', lambda: datetime.fromisoformat('2026-11-21T12:00:00+09:00'))
+    account = create(ops, rules=asdict(Rules(entry_method='setup')))
+    price_universe = ops.root / 'data/market/universe.csv'
+    members = pd.read_csv(price_universe, dtype=str)
+    price_universe.unlink()
+    steps = []
+
+    def master(directory):
+        steps.append('master')
+        directory.mkdir()
+        for name in ('kospi.csv', 'kosdaq.csv'):
+            members.to_csv(directory / name, index=False)
+        return [members, members]
+
+    def industry(universe, masters, out, refresh):
+        assert universe.is_file() and (masters / 'kosdaq.csv').is_file()
+        steps.append('industry')
+        out.mkdir()
+        members.to_csv(out / 'universe.csv', index=False)
+        return {'returns_date': '2026-11-20'}
+
+    def daily(universe, prices, state, day, *args, **kwargs):
+        assert universe.is_file() and day == '2026-11-20'
+        steps.append('daily')
+        return {'status': 'processed', 'as_of': day}
+
+    monkeypatch.setattr(market, 'download_master', master)
+    monkeypatch.setattr(market, 'build_universe', lambda frames, threshold: (members, pd.DataFrame()))
+    monkeypatch.setattr(industries, 'industry_sync', industry)
+    monkeypatch.setattr(actions, 'daily_run', daily)
+    job = wait_job(ops, ops.submit(dict(workspace=account['id'], action='daily', as_of='2026-11-20')))
+    assert job['status'] == 'completed', job.get('error')
+    assert steps == ['master', 'industry', 'daily']
+    assert not (ops.home / 'candidate-universes/2026-11-20').exists()
+
+
 def test_watch_job_collects_missing_close_and_saves_plan_without_account_processing(ops, monkeypatch):
     import trendfollow.market as market
 
