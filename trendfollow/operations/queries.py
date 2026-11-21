@@ -70,7 +70,7 @@ class OperationsQueries:
         w = self.context.workspace(key)
         paths = [
             self.context.path(w["state"]),
-            self.context.path(w["config"]),
+            self.context.accounts.config_path(w, "9999-12-31"),
             self.context.path(w["universe"]),
             self.context.root / "data/industries/peer-returns.csv",
             selection_home(self.context.root),
@@ -433,7 +433,7 @@ class OperationsQueries:
         if (
             analysis_meta.get("config_sha256")
             and analysis_meta["config_sha256"]
-            != hashlib.sha256(self.context.path(w["config"]).read_bytes()).hexdigest()
+            != hashlib.sha256(self.context.accounts.config_path(w, analysis_meta.get("as_of") or market_as_of).read_bytes()).hexdigest()
         ):
             status = "configuration_mismatch"
         if status != "configuration_mismatch" and rows and "prior_52w_high" not in fields:
@@ -454,6 +454,8 @@ class OperationsQueries:
             if not frame.empty and "date" in frame
             else state["last_date"] if state else None
         )
+        if market_as_of:
+            rules, limits = self.context.configuration(w, market_as_of)
         return dict(
             workspace=w,
             candidate_policy=read_policy(self.context.root, w["id"]),

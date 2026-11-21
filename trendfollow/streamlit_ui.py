@@ -1223,7 +1223,11 @@ def account_history(ops, key, snapshot):
         table(orders.to_dict('records'), names)
     elif plans:
         st.caption('다음 거래일 모의 처리 후 체결 결과가 표시됩니다.')
-    history_record_panel(root / day, positions, snapshot['rules'], names, key)
+    from .config import strategy_versions
+    history_rules = record.get('pyramiding_settings')
+    if history_rules is None and strategy_versions(ops.path(snapshot['workspace']['state'])).is_dir():
+        history_rules = vars(ops.accounts.configuration(snapshot['workspace'], day)[0])
+    history_record_panel(root / day, positions, history_rules or snapshot['rules'], names, key)
 
 
 def recovery(ops, key, snapshot, as_of, can_write):
@@ -1599,7 +1603,7 @@ PRESET_FIELDS = {
     'initial_stop_method':'초기 손절 방식', 'initial_stop_reference':'초기 손절 기준가',
     'stop_limit_enabled':'진입 시 손절 폭 제한', 'rs_exit_enabled':'RS 약화 청산',
     'market_units_enabled':'시장 강도별 유닛 상한', 'market_units_benchmark':'시장 강도 비교 기준',
-    'pyramiding_review_enabled':'추가매수 검토', 'pyramiding_enabled':'추가매수 모의 체결',
+    'pyramiding_review_enabled':'추가매수 검토', 'pyramiding_enabled':'추가매수 계획 및 모의 체결',
 }
 PRESET_VALUES = {
     'breakout':'고가 돌파', 'setup':'파동 셋업', 'percentile':'RS 수익률 순위', 'mansfield':'주간 Mansfield',
@@ -1641,6 +1645,32 @@ def settings(ops, snapshot, can_write):
     st.subheader('적용 전략')
     st.json(dict(rules=snapshot['rules'],limits=snapshot['limits']),expanded=False)
     workspace = snapshot['workspace']
+    if snapshot['rules']['entry_method'] == 'setup' and workspace.get('mode') != 'recalculation':
+        key = workspace['id']
+        day = snapshot['account_as_of']
+        planned, _ = ops.accounts.configuration(workspace, '9999-12-31')
+        st.markdown('#### 이 계좌의 추가매수 설정')
+        review = st.checkbox('추가매수 검토', value=planned.pyramiding_review_enabled,
+                             help='종가 기준으로 보유 종목의 추가매수 조건을 확인하고 검토 결과를 기록합니다.',
+                             disabled=not can_write or planned.pyramiding_review_enabled,
+                             key=f'add-review-{key}-{planned.pyramiding_review_enabled}')
+        execution = st.checkbox('추가매수 계획 및 모의 체결', value=planned.pyramiding_enabled,
+                                help='이 설정을 켜면 새 계획의 초기 손절 기준가는 모의 체결가입니다. 기존 손절가와 대기 주문은 유지됩니다.',
+                                disabled=not can_write or not review or planned.pyramiding_enabled,
+                                key=f'add-execute-{key}-{planned.pyramiding_enabled}')
+        st.caption('종가에 조건을 충족한 후보로 추가매수를 계획합니다. 다음 거래일을 처리할 때 그날 시가·가용 현금·위험 한도를 확인해 모의 체결 여부와 수량을 결정합니다.')
+        execution = review and execution
+        if day and (planned.pyramiding_enabled != snapshot['rules']['pyramiding_enabled'] or
+                    planned.pyramiding_review_enabled != snapshot['rules']['pyramiding_review_enabled']):
+            st.info(f'{day} 이후 첫 미처리 거래일부터 변경한 설정을 적용합니다.')
+        changed = (review, execution) != (planned.pyramiding_review_enabled, planned.pyramiding_enabled)
+        if st.button('다음 미처리 거래일부터 적용' if day else '첫 거래일부터 적용',
+                     disabled=not can_write or not changed or snapshot['status'] == 'configuration_mismatch'):
+            try:
+                ops.accounts.enable_pyramiding(key, review, execution, day)
+                st.rerun()
+            except (ValueError, OSError) as error:
+                st.error(str(error))
     st.markdown('#### 날짜별 선정 종목을 이 계좌의 신규 매수 후보로 사용')
     st.caption('장 마감 후 「오늘의 운용」에서 새 거래일의 종가 모의 처리를 실행할 때 사용합니다. '
                '처리하는 거래일에 저장된 선정 종목만 신규 매수 대상으로 검토하며, 계좌의 RS·진입 조건도 충족해야 합니다. '

@@ -139,6 +139,7 @@ def simulate(
     limits=Limits(),
     max_entry_gap=0.05,
     initial_state=None,
+    close_rules=None,
 ):
     """Execute prior-close signals at next session open, then process intraday stops.
 
@@ -513,6 +514,19 @@ def simulate(
                     )
                 )
         pending = []
+        # Prior plans have already executed on their original terms. Enrol surviving
+        # holdings (including today's fills) before assessing today's close.
+        if close_rules and close_rules.pyramiding_review_enabled:
+            for pos in positions.values():
+                pos['pyramiding_review_enabled'] = True
+                if close_rules.pyramiding_enabled and not pos.get('pyramiding_enabled'):
+                    pos.update(pyramiding_enabled=True, addition_count=0,
+                               initial_quantity=pos['quantity'], average_entry_price=pos['entry_price'],
+                               total_committed_risk=pos['initial_risk'], pyramiding_filled_setups=[],
+                               lots=[dict(number=0, date=pos['entry_date'], quantity=pos['quantity'],
+                                          entry_price=pos['entry_price'], entry_total=pos['entry_total'],
+                                          initial_risk=pos['initial_risk'])])
+
         # A same-day low below the stop wins over a same-day high above the 3R threshold.
         for symbol in sorted(list(positions)):
             pos = positions[symbol]

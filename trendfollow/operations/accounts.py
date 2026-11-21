@@ -1,6 +1,6 @@
 """Accounts responsibilities for the local operations UI."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 import json
 import math
@@ -8,7 +8,7 @@ import re
 import uuid
 from zoneinfo import ZoneInfo
 from ..risk import Limits
-from ..config import Rules
+from ..config import Rules, strategy_config, strategy_versions
 from ..workflow import save_json
 from ..observation_control import control_lock
 
@@ -105,8 +105,45 @@ class WorkspaceStore:
                 symbols.discard(symbol)
             save_json(path, sorted(symbols))
 
-    def configuration(self, w):
-        cfg = json.loads(self.context.path(w["config"]).read_text(encoding="utf-8-sig"))
+    def config_path(self, w, day=None):
+        state_path = self.context.path(w["state"])
+        if day is None:
+            day = (self.state(w) or {}).get("last_date", "9999-12-31")
+        return strategy_config(state_path, self.context.path(w["config"]), day)
+
+    def enable_pyramiding(self, key, review, execution, expected_day):
+        from ..ui_jobs import acquire_lease
+
+        w = self.workspace(key)
+        if w.get("archived_at") or w.get("mode") == "recalculation":
+            raise ValueError("운용 중인 원계좌에서 설정하세요.")
+        if type(review) is not bool or type(execution) is not bool or execution and not review:
+            raise ValueError("추가매수 모의 체결에는 후보 검토가 필요합니다.")
+        lease = acquire_lease(self.context.home / "jobs" / ".executor.lock")
+        if lease is None:
+            raise ValueError("실행 중인 작업이 끝난 후 설정하세요.")
+        try:
+            state_path = self.context.path(w["state"])
+            with control_lock(state_path):
+                day = (self.state(w) or {}).get("last_date")
+                if day != expected_day:
+                    raise ValueError("계좌 처리일이 바뀌었습니다. 화면을 새로고침하세요.")
+                rules, limits = self.configuration(w, "9999-12-31")
+                if rules.entry_method != "setup":
+                    raise ValueError("파동 셋업 계좌에서 추가매수를 설정할 수 있습니다.")
+                if rules.pyramiding_enabled and not execution or rules.pyramiding_review_enabled and not review:
+                    raise ValueError("이미 적용한 추가매수 설정을 해제할 수 없습니다.")
+                updated = replace(rules, pyramiding_review_enabled=review, pyramiding_enabled=execution,
+                                  initial_stop_reference="entry_fill" if execution else rules.initial_stop_reference)
+                updated.validate()
+                if updated != rules:
+                    save_json(strategy_versions(state_path) / ((day or "0000-00-00") + ".json"),
+                              dict(rules=asdict(updated), limits=asdict(limits)))
+        finally:
+            lease.release()
+
+    def configuration(self, w, day=None):
+        cfg = json.loads(self.config_path(w, day).read_text(encoding="utf-8-sig"))
         if set(cfg) - {"rules", "limits"}:
             raise ValueError("설정에는 rules와 limits만 지정하세요.")
         rules = Rules(**cfg.get("rules", {}))

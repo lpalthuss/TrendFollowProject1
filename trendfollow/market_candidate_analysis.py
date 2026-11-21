@@ -70,8 +70,14 @@ def saved_analysis_current(root, workspace, day, config_hash, selection_hash):
             and meta.get("signals_sha256") == hashlib.sha256((prior / "signals.csv").read_bytes()).hexdigest())
 
 
+def _dated_config(context, workspace, day):
+    from .config import strategy_config
+    path = context.path(workspace["config"])
+    return strategy_config(context.path(workspace["state"]), path, day) if workspace.get("state") else path
+
+
 def selection_inputs(context, workspace, day):
-    return (hashlib.sha256(context.path(workspace["config"]).read_bytes()).hexdigest(),
+    return (hashlib.sha256(_dated_config(context, workspace, day).read_bytes()).hexdigest(),
             hashlib.sha256((selection_home(context.root) / day / "universe.csv").read_bytes()).hexdigest())
 
 
@@ -82,14 +88,14 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None,
         raise ValueError(f"{through} 날짜별 시장 후보군이 없습니다. 후보군을 먼저 저장하세요.")
     if selected_only:
         dates = [through]
-    config_path = context.path(workspace["config"])
-    config_hash = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    config_path = _dated_config(context, workspace, through)
     rules = Rules(**json.loads(config_path.read_text(encoding="utf-8-sig")).get("rules", {}))
     rules.validate()
     pending = []
     for day in dates:
         selection_path = selection_home(context.root) / day / "universe.csv"
         selection_hash = hashlib.sha256(selection_path.read_bytes()).hexdigest()
+        config_hash = hashlib.sha256(_dated_config(context, workspace, day).read_bytes()).hexdigest()
         if saved_analysis_current(context.root, workspace["id"], day, config_hash, selection_hash):
             continue
         pending.append((day, selection_hash))
@@ -170,6 +176,10 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None,
     for index, (day, selection_hash) in enumerate(pending, 1):
         if progress:
             progress(f"{day} 시장 후보 조건 계산 중", index - 1, len(pending))
+        raw = _dated_config(context, workspace, day).read_bytes()
+        rules = Rules(**json.loads(raw).get("rules", {}))
+        rules.validate()
+        config_hash = hashlib.sha256(raw).hexdigest()
         universe, membership_day, unclassified = industry_inputs[day]
         symbols = set(universe.symbol) | set(universe.benchmark)
         if rules.mansfield_benchmark == "market_index":

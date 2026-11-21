@@ -715,3 +715,33 @@ def test_legacy_running_job_is_not_asserted_interrupted_or_overwritten(project):
         file.write_text(json.dumps(dict(running,status='completed',result={'as_of':'2026-11-06'})))
         ops.refresh_jobs();assert ops.jobs['legacy']['status']=='completed'
     finally:ops.close()
+
+def test_existing_account_enables_additions_after_saved_close(ops, project):
+    from trendfollow.workflow import paper_checkpoint
+
+    account = create(ops, rules=asdict(Rules(entry_method='setup', sector_require_action=False)))
+    universe = ops.path(account['universe'])
+    universe.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(project/'demo/universe.csv', universe)
+    state = ops.path(account['state'])
+    prices = ops.path(account['data_dir'])/'prices.csv'
+    config = ops.path(account['config'])
+    def close(day):
+        return paper_checkpoint(prices, universe, day, state, account['capital'], config)
+
+    close('2026-11-05')
+    checkpoint = state.parent/'2026-11-05'/'state.json'
+    original = checkpoint.read_bytes()
+    ops.accounts.enable_pyramiding(account['id'], True, False, '2026-11-05')
+    ops.accounts.enable_pyramiding(account['id'], True, True, '2026-11-05')
+    assert state.read_bytes() == original
+    assert close('2026-11-05')['status'] == 'already_processed'
+    assert not ops.configuration(account)[0].pyramiding_review_enabled
+    result = close('2026-11-06')
+    assert result['status'] == 'processed'
+    assert checkpoint.read_bytes() == original
+    assert ops.snapshot(account['id'])['status'] == 'ready'
+    rules, _ = ops.configuration(account)
+    assert rules.pyramiding_enabled and rules.initial_stop_reference == 'entry_fill'
+    assert not ops.snapshot(account['id'], '2026-11-05')['rules']['pyramiding_enabled']
+    assert close('2026-11-06')['status'] == 'already_processed'

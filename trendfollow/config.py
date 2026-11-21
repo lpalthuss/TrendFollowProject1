@@ -1,7 +1,9 @@
 """Strategy configuration, independent of calculation and transport modules."""
 
 from dataclasses import dataclass
+import json
 import math
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -171,3 +173,21 @@ class Rules:
         ]:
             if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
                 raise ValueError(f"{name}은 유한한 양수여야 합니다.")
+
+
+def strategy_versions(state_path):
+    state_path = Path(state_path)
+    return state_path.parent / (state_path.name + '.strategies')
+
+
+def strategy_config(state_path, base_config, day=None):
+    """A saved version takes effect strictly after its checkpoint date."""
+    directory = strategy_versions(state_path)
+    if directory.is_dir():
+        if day is None:
+            path = Path(state_path)
+            day = json.loads(path.read_text(encoding="utf-8"))["last_date"] if path.is_file() else "9999-12-31"
+        for version in sorted(directory.glob('????-??-??.json'), reverse=True):
+            if version.stem < day:
+                return version
+    return base_config

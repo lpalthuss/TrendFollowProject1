@@ -6,6 +6,7 @@ import json
 import re
 import pandas as pd
 from .common import read_csv
+from ..config import strategy_config, strategy_versions
 from ..risk import Account, allocate
 from ..workflow import read_inputs, paper_checkpoint, daily_run, save_json
 
@@ -67,14 +68,14 @@ class ActionRunner:
         report = read_json(home / "report.json")
         if report["as_of"] != as_of:
             raise ValueError("정정 보고서와 재계산 종료일이 다릅니다.")
-        if report["config_sha256"] != sha(self.context.path(w["config"])) or report[
+        if report["config_sha256"] != sha(self.context.accounts.config_path(w)) or report[
             "universe_sha256"
         ] != sha(self.context.path(w["universe"])):
             raise ValueError(
                 "보고서 이후 설정·유니버스가 바뀌었습니다. 다시 대조하세요."
             )
         p, peers, _ = load_snapshot(snapshot_path(state_path, report["new_snapshot"]))
-        rules, limits = self.context.configuration(w)
+        rules, limits = self.context.accounts.configuration(w, "0000-00-00")
         row = self.context.create_workspace(
             dict(
                 name=w["name"][:45] + " · 정정 재계산",
@@ -106,22 +107,18 @@ class ActionRunner:
             if x.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", x.name)
         )
         start = days[0] if days else report["account_as_of"]
-        paper_checkpoint(
-            data / "prices.csv",
-            data / "universe.csv",
-            start,
-            self.context.path(row["state"]),
-            w["capital"],
-            self.context.path(row["config"]),
-        )
-        result = paper_checkpoint(
-            data / "prices.csv",
-            data / "universe.csv",
-            as_of,
-            self.context.path(row["state"]),
-            w["capital"],
-            self.context.path(row["config"]),
-        )
+        replay_state = self.context.path(row["state"])
+        boundaries = {start, as_of}
+        for version in strategy_versions(state_path).glob("????-??-??.json"):
+            if version.stem < as_of:
+                save_json(strategy_versions(replay_state) / version.name, read_json(version))
+                if start < version.stem:
+                    boundaries.add(version.stem)
+        for day in sorted(boundaries):
+            result = paper_checkpoint(
+                data / "prices.csv", data / "universe.csv", day, replay_state,
+                w["capital"], self.context.path(row["config"]),
+            )
         result.update(
             workspace_id=row["id"],
             comparison_start=start,
@@ -140,8 +137,11 @@ class ActionRunner:
         progress("입력 자료 확인 중")
         prices = self.context.path(w["data_dir"]) / "prices.csv"
         universe = self.context.path(w["universe"])
-        config = self.context.path(w["config"])
         state_path = self.context.path(w["state"])
+        config = self.context.path(w["config"])
+        if action not in {"daily", "paper"}:
+            day = None if action in {"revision_check", "revision_continue"} else as_of
+            config = strategy_config(state_path, config, day)
         rules, limits = self.context.configuration(w)
         if action == "market_analyze":
             from ..market_candidate_analysis import analyze_saved_selections

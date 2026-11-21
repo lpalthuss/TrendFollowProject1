@@ -10,7 +10,7 @@ import pandas as pd
 
 from .backtest import clean_research_prices, features, json_records, metrics, simulate
 from .risk import Limits
-from .config import Rules
+from .config import Rules, strategy_config
 from .relative_strength import decision_rule_settings, mansfield_benchmark_symbol
 
 
@@ -134,6 +134,10 @@ def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_0
 def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_000_000,config_path=None,
                      approved_symbols=None,revision_id=None,fingerprint_universe_path=None):
     """First run seeds a close-of-day plan. Later runs simulate only subsequent sessions."""
+    base_config = config_path
+    state_file = Path(state_path)
+    old = json.loads(state_file.read_text(encoding='utf-8')) if state_file.exists() else None
+    config_path = strategy_config(state_path, base_config, as_of)
     prices,universe,rules,limits=read_inputs(prices_path,universe_path,as_of,config_path)
     if rules.entry_method=='setup' and 'industry_peer_history' in universe:
         from .industries import require_peer_sessions
@@ -151,18 +155,31 @@ def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_
     from .industries import decision_universe_records
     fingerprint_universe=(pd.read_csv(fingerprint_universe_path,dtype={'symbol':str,'benchmark':str},keep_default_na=False)
         if fingerprint_universe_path else universe)
-    fingerprint=hashlib.sha256(json.dumps({'universe':decision_universe_records(fingerprint_universe),
-        'rules':decision_rule_settings(rules),'limits':asdict(limits),'capital':capital},sort_keys=True).encode()).hexdigest()
+    def config_fingerprint(rules, limits):
+        return hashlib.sha256(json.dumps({'universe':decision_universe_records(fingerprint_universe),
+            'rules':decision_rule_settings(rules),'limits':asdict(limits),'capital':capital},sort_keys=True).encode()).hexdigest()
+    fingerprint = config_fingerprint(rules, limits)
     history_fingerprint=paper_input_digest(prices,universe,rules)
     applied_revision=None
     todays=prepared[prepared.date==asof]
-    if state_file.exists():
-        old=json.loads(state_file.read_text(encoding='utf-8'))
-        if old['config_fingerprint']!=fingerprint:
+    if old:
+        prior_config = strategy_config(state_path, base_config, old['last_date'])
+        previous_fingerprint = fingerprint
+        if prior_config != config_path:
+            saved = json.loads(Path(prior_config).read_text(encoding='utf-8-sig')) if prior_config else {}
+            prior_rules = Rules(**saved.get('rules', {}))
+            prior_limits = Limits(**saved.get('limits', {}))
+            expected = replace(prior_rules, pyramiding_review_enabled=rules.pyramiding_review_enabled,
+                               pyramiding_enabled=rules.pyramiding_enabled,
+                               initial_stop_reference='entry_fill' if rules.pyramiding_enabled else prior_rules.initial_stop_reference)
+            if expected != rules or prior_limits != limits:
+                raise ValueError('예약한 추가매수 설정 외의 변경이 있습니다.')
+            previous_fingerprint = config_fingerprint(prior_rules, prior_limits)
+        if old['config_fingerprint']!=previous_fingerprint:
             raise ValueError('모의 계좌 설정·유니버스가 변경되었습니다. 새 상태 파일을 사용하세요.')
         if revision_id is not None:
             from .revisions import validated_approval
-            applied_revision=validated_approval(state_path,revision_id,prices_path,universe_path,config_path,as_of)
+            applied_revision=validated_approval(state_path,revision_id,prices_path,universe_path,prior_config,as_of)
             if history_fingerprint!=applied_revision['new_snapshot']:
                 raise ValueError('계산 입력이 승인한 정정 스냅샷과 다릅니다. 변경 대조를 다시 실행하세요.')
         if old['last_date']>as_of:
@@ -194,19 +211,36 @@ def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_
         if prior_digest!=old['input_fingerprint']:
             from .revisions import report_revision,validated_approval,approve_revision,DataRevisionError
             if revision_id is None:
-                report=report_revision(prices_path,universe_path,config_path,state_path,as_of)
+                report=report_revision(prices_path,universe_path,prior_config,state_path,as_of)
                 if not report['automatic_eligible']:raise DataRevisionError(report)
-                approve_revision(state_path,report['id'],prices_path,universe_path,config_path,as_of,automatic=True)
+                approve_revision(state_path,report['id'],prices_path,universe_path,prior_config,as_of,automatic=True)
                 revision_id=report['id']
-            if applied_revision is None:applied_revision=validated_approval(state_path,revision_id,prices_path,universe_path,config_path,as_of)
+            if applied_revision is None:applied_revision=validated_approval(state_path,revision_id,prices_path,universe_path,prior_config,as_of)
             if history_fingerprint!=applied_revision['new_snapshot']:
                 raise ValueError('계산 입력이 승인한 정정 스냅샷과 다릅니다. 변경 대조를 다시 실행하세요.')
         start=str((pd.Timestamp(old['last_date'])+pd.Timedelta(days=1)).date())
         if rules.entry_method=='setup' and 'industry_peer_history' in universe:
             from .industries import require_peer_sessions
             require_peer_sessions(prices,universe,start,as_of)
+        if rules.pyramiding_review_enabled:
+            missing = {code: pos for code, pos in old['positions'].items()
+                       if pos.get('success') and not pos.get('success_3r_date')}
+            if missing:
+                for path in sorted(state_file.parent.glob('????-??-??/events.csv'), reverse=True):
+                    if path.parent.name > old['last_date']:
+                        continue
+                    from .operations.common import read_csv
+                    events = read_csv(path)
+                    if 'kind' not in events or 'symbol' not in events:
+                        continue
+                    for event in events.loc[events.kind.eq('success_3r')].to_dict('records'):
+                        code, date = event['symbol'], str(event['date'])[:10]
+                        if code in missing and missing[code]['entry_date'] <= date <= old['last_date']:
+                            missing.pop(code)['success_3r_date'] = date
+                    if not missing:
+                        break
         curve,trades,orders,events,state=simulate(prices,prepared,universe,start,as_of,capital,
-                                               'progressive',limits,initial_state=old)
+                                               'progressive',limits,initial_state=old,close_rules=rules)
     else:
         selected=todays[todays.signal].sort_values(['allocation_score','symbol'],ascending=[False,True])
         state={'cash':capital,'positions':{},'units':1,'pending':json_records(selected),
@@ -222,6 +256,8 @@ def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_
         reviews=review_events(events)
         reviews.to_csv(root/'pyramiding-review.csv',index=False,encoding='utf-8-sig')
     if rules.pyramiding_enabled:save_pyramiding_logs(root,events)
+    state['pyramiding_settings'] = dict(pyramiding_enabled=rules.pyramiding_enabled,
+                                        pyramiding_review_enabled=rules.pyramiding_review_enabled)
     state.update(config_fingerprint=fingerprint,input_fingerprint=history_fingerprint,
                  generated_at=datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),source=str(prices_path),
                  limitations=LIMITATIONS,execution='local simulation; no broker order API')
@@ -347,12 +383,12 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
         if progress:progress(f'{session} 종가 처리 중',len(completed)+1,len(sessions))
         try:
             decision_path=(universe_by_session or {}).get(session,universe_path)
-            prices,u,rules,limits=read_inputs(prices_path,decision_path,session,config_path)
+            prices,u,rules,limits=read_inputs(prices_path,decision_path,session,strategy_config(state_path,config_path,session))
             prepared,_=features(prices,u,rules)
             candidates=prepared[(prepared.date==pd.Timestamp(session))&prepared.signal]
             if 'candidate_active' in candidates:
                 candidates=candidates[candidates.candidate_active.eq(True)]
-            approved=verify_paper_candidates(candidates,prices,active_rules,session,state_path,env_file,verify_provider,include_indices)
+            approved=verify_paper_candidates(candidates,prices,rules,session,state_path,env_file,verify_provider,include_indices)
             checkpoint_options = (
                 {"fingerprint_universe_path": fingerprint_universe_path}
                 if fingerprint_universe_path is not None else {}
@@ -406,7 +442,7 @@ def continue_revised_checkpoint(prices_path,universe_path,as_of,state_path,capit
     """Use reviewed stored inputs, preserve prior decisions, and re-audit today's candidates."""
     from .revisions import validated_approval
     validated_approval(state_path,revision_id,prices_path,universe_path,config_path,as_of)
-    prices,u,rules,_=read_inputs(prices_path,universe_path,as_of,config_path)
+    prices,u,rules,_=read_inputs(prices_path,universe_path,as_of,strategy_config(state_path,config_path,as_of))
     prepared,_=features(prices,u,rules)
     candidates=prepared[prepared.date.eq(pd.Timestamp(as_of))&prepared.signal]
     approved=verify_paper_candidates(candidates,prices,rules,as_of,state_path,env_file,verify_provider,

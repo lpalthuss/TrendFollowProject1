@@ -215,3 +215,21 @@ def test_paper_refuses_to_advance_when_processed_history_is_revised(tmp_path):
     with pytest.raises(ValueError,match='과거 일봉이 수정'):
         paper_checkpoint(tmp_path/'prices.csv',tmp_path/'universe.csv','2026-11-06',state)
     assert state.read_bytes()==before
+
+def test_pyramiding_transition_keeps_prior_open_fill_and_stop():
+    from trendfollow.config import Rules
+
+    prices, universe, signals, limits = inputs()
+    first = simulate(prices, signals, universe, '2026-01-05', '2026-01-05', 10000, 'fixed', limits)[-1]
+    args = (prices, signals, universe, '2026-01-06', '2026-01-06', 10000, 'fixed', limits)
+    old_result = simulate(*args, initial_state=first)
+    rules = Rules(entry_method='setup', initial_stop_reference='entry_fill',
+                  pyramiding_enabled=True, pyramiding_review_enabled=True)
+    new_result = simulate(*args, initial_state=first, close_rules=rules)
+    pd.testing.assert_frame_equal(old_result[2], new_result[2])
+    before = old_result[-1]['positions']['A']
+    after = new_result[-1]['positions']['A']
+    assert {k:after[k] for k in before} == before
+    assert before['quantity'] == after['lots'][0]['quantity']
+    assert after['addition_count'] == 0
+    assert old_result[-1]['cash'] == new_result[-1]['cash']
