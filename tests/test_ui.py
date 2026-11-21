@@ -437,6 +437,11 @@ def test_old_closed_intraday_signals_are_never_current_and_accounts_are_isolated
     (run/'events.jsonl').write_text(json.dumps(dict(timestamp='2026-11-06T10:00:00+09:00',entry_confirmed=True))+'\n')
     result=ops.intraday(w['id'])
     assert result['runs'][0]['events'][0]['ui_current'] is False
+    assert result['runs'][0]['targets'] == []
+    assert result['runs'][0]['levels'] == {}
+    assert result['runs'][0]['selected_symbols'] == []
+    (run/'plan.json').write_text(json.dumps(dict(ui_workspace_id=w['id'], selected_symbols=['009150'])))
+    assert ops.intraday(w['id'])['runs'][0]['selected_symbols'] == ['009150']
     assert ops.intraday('different-account')['runs']==[]
 
 

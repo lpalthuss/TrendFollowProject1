@@ -201,13 +201,14 @@ class IntradayService:
                         and age is not None
                         and -2 <= age <= 60
                     )
+                targets = plan.get("targets") or {}
                 runs.append(dict(id=p.parent.name, as_of=plan.get("as_of"),
-                                 session=plan.get("session"), targets=list(plan.get("targets", {})),
+                                 session=plan.get("session"), targets=list(targets),
                                  watch_mode=plan.get("watch_mode", "industry"),
-                                 selected_symbols=plan.get("selected_symbols", list(plan["targets"])),
+                                 selected_symbols=plan.get("selected_symbols", list(targets)),
                                  levels={symbol: {key: target.get(key) for key in
                                           ("resistance", "setup_resistance", "high52_resistance", "setup_phase")}
-                                         for symbol, target in plan.get("targets", {}).items()},
+                                         for symbol, target in targets.items()},
                                  summary=summary, events=events))
                 if len(runs) >= 10:
                     break
