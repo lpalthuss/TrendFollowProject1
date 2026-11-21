@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import time
+from urllib.parse import quote, unquote
 
 import pandas as pd
 import streamlit as st
@@ -21,6 +22,7 @@ from .symbol_lookup import matching_symbols, named_rows, symbol_names
 ROOT = Path(__file__).resolve().parents[1]
 CODE_ROOT = ROOT
 AUTH_COOKIE = 'trendfollow_ui_auth'
+ACCOUNT_COOKIE = 'trendfollow_ui_account'
 AUTH_AGE_SECONDS = 12 * 60 * 60
 LABELS = {'symbol':'종목코드','name':'종목명','industry_name':'산업','sector':'산업 코드',
           'reference_price':'종가','rs_percentile':'RS 순위','mansfield_rs':'Mansfield RS',
@@ -113,11 +115,15 @@ def read_auth_cookie():
     return st.context.cookies.get(AUTH_COOKIE, '')
 
 
-def write_auth_cookie(token):
-    value = f'{AUTH_COOKIE}={token}; Max-Age={AUTH_AGE_SECONDS if token else 0}; Path=/; SameSite=Strict'
+def write_cookie(name, value, max_age):
+    value = f'{name}={quote(value, safe="")}; Max-Age={max_age}; Path=/; SameSite=Strict'
     st.html(f'<script>document.cookie = {json.dumps(value)} + '
             '(location.protocol === "https:" ? "; Secure" : "");</script>',
             unsafe_allow_javascript=True)
+
+
+def write_auth_cookie(token):
+    write_cookie(AUTH_COOKIE, token, AUTH_AGE_SECONDS if token else 0)
 
 
 def authorize():
@@ -1891,12 +1897,21 @@ def main():
     names = {w['id']:w['name'] + (' · 보관' if w.get('archived_at') else '') for w in rows}
     with st.sidebar:
         st.header('운용 계좌')
+        if 'remembered-account' not in st.session_state:
+            st.session_state['remembered-account'] = unquote(st.context.cookies.get(ACCOUNT_COOKIE, ''))
         preferred = st.session_state.pop('account', None)
         if preferred in ids:
             st.session_state['account-picker'] = preferred
+        elif st.session_state.get('account-picker') not in ids:
+            remembered = st.session_state['remembered-account']
+            if remembered in ids:
+                st.session_state['account-picker'] = remembered
         account_col, settings_col = st.columns([3, 1], vertical_alignment='bottom')
         key = account_col.selectbox('계좌 선택', ids, format_func=names.get, key='account-picker',
                                     on_change=account_changed)
+        if key and key != st.session_state['remembered-account']:
+            write_cookie(ACCOUNT_COOKIE, key, 365 * 24 * 60 * 60)
+            st.session_state['remembered-account'] = key
         settings_col.button('설정', key='nav-전략·설정', help='계좌·전략 설정',
                             on_click=open_page, args=('전략·설정',))
         sections = ['오늘의 운용', '시장 후보', '운용 기록']

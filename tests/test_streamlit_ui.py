@@ -253,6 +253,32 @@ def test_account_change_returns_to_primary_workflow(monkeypatch):
         assert any('오늘의 운용 · 다음 단계' in item.value for item in app.subheader)
 
 
+def test_account_selection_restored_in_new_session():
+    import streamlit as st
+    from trendfollow.streamlit_ui import ACCOUNT_COOKIE
+
+    cookies = {}
+    def save_cookie(name, value, max_age):
+        cookies[name] = value
+
+    def open_app():
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        assert not app.exception
+        return app
+
+    with patch.object(type(st.context), 'cookies', property(lambda _: cookies)), \
+         patch('trendfollow.streamlit_ui.write_cookie', side_effect=save_cookie), \
+         patch('trendfollow.streamlit_ui.setting', return_value=''):
+        app = open_app()
+        initial = app.selectbox(key='account-picker').value
+        other = 'setup-rs' if initial != 'setup-rs' else 'baseline'
+        app.selectbox(key='account-picker').set_value(other).run(timeout=30)
+        assert cookies[ACCOUNT_COOKIE] == other
+        assert open_app().selectbox(key='account-picker').value == other
+        cookies[ACCOUNT_COOKIE] = 'no-longer-listed'
+        assert open_app().selectbox(key='account-picker').value == initial
+
+
 def test_observation_selects_account_stock_by_name(monkeypatch):
     monkeypatch.delenv('UI_PASSWORD', raising=False)
     with patch('trendfollow.streamlit_ui.setting', return_value=''), \
