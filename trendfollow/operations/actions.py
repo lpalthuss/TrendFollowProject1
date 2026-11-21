@@ -26,8 +26,9 @@ class ActionRunner:
         return industry_sync(market / "universe.csv", market / "master",
                              self.context.root / "data/industries", refresh=True)
 
-    def prepare_watch_candidates(self, out, prices, frame, universe, members, symbols, as_of, rules, watch_mode):
+    def prepare_watch_candidates(self, out, prices, universe, members, symbols, as_of, rules, watch_mode):
         from ..backtest import features
+        from ..intraday import watch_price_rows
         from ..market import acquire_research
         from ..relative_strength import mansfield_benchmark_symbol
 
@@ -39,9 +40,8 @@ class ActionRunner:
             mansfield_benchmark_symbol(row, rules) for row in members.to_dict("records")
         }
         required |= benchmarks
-        if not frame.empty:
-            frame = frame[frame.date.le(as_of) & frame.symbol.isin(required)]
-        if frame.empty or not required.issubset(set(frame.loc[frame.date.eq(as_of), "symbol"])):
+        present = watch_price_rows(prices, required, session=as_of)
+        if not required.issubset(present.symbol):
             collection_universe = universe
             if watch_mode == "symbols" and rules.rs_method == "mansfield":
                 collection_universe = out / "universe.csv"
@@ -55,10 +55,8 @@ class ActionRunner:
             if not manifest["published"]:
                 raise ValueError(f"{as_of} 확정 일봉을 모두 가져오지 못했습니다. 잠시 후 다시 시도하세요.")
             prices = source / "prices.csv"
-            frame = read_csv(prices)
-
-        calculated, _ = features(frame, members, rules)
-        candidates = calculated[calculated.date.eq(pd.Timestamp(as_of))]
+        frame = watch_price_rows(prices, required)
+        candidates, _ = features(frame.loc[frame.date.le(as_of)], members, rules, since=pd.Timestamp(as_of))
         if not set(symbols).issubset(set(candidates.symbol)):
             raise ValueError(f"{as_of} 감시 종목의 유효한 일봉이 없습니다.")
         signal = out / "candidates.csv"
@@ -424,7 +422,7 @@ class ActionRunner:
                                                     plan_id=prepared["plan_id"], seconds=seconds))
             result = {**prepared, **started}
         elif action == "prepare_intraday":
-            from ..intraday import prepare_plan
+            from ..intraday import prepare_plan, watch_price_rows
             from ..research_store import require_published_research
             from .intraday import industry_ready
 
@@ -455,16 +453,14 @@ class ActionRunner:
             targets = sorted(set(symbols + held))
             signal = self.context.latest_signals(w, as_of)
             require_published_research(prices)
-            frame = read_csv(prices)
             out = self.context.home / "intraday" / key
             out.mkdir(parents=True)
             plan = out / "plan.json"
             if (signal is None or not set(targets).issubset(pd.read_csv(signal, usecols=["symbol"], dtype=str).symbol)
-                    or frame.empty
-                    or not set(targets).issubset(set(frame.loc[frame.date.eq(as_of), "symbol"]))):
+                    or not set(targets).issubset(watch_price_rows(prices, targets, session=as_of).symbol)):
                 progress("감시 후보·가격 자료 준비 중")
                 signal, prices = self.prepare_watch_candidates(
-                    out, prices, frame, universe, members, targets, as_of, rules, watch_mode
+                    out, prices, universe, members, targets, as_of, rules, watch_mode
                 )
             references = []
             for ref in (self.context.home / "volume").glob("reference-*.json"):

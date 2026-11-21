@@ -1,6 +1,5 @@
 """Read-only, provisional intraday observations. Never mutates paper accounts."""
 from datetime import datetime, time
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -12,6 +11,7 @@ import pandas as pd
 from .industries import load_peer_history
 from .config import Rules
 from .krx_sessions import require_previous_close
+from .revisions import sha
 
 KST = ZoneInfo('Asia/Seoul')
 
@@ -93,6 +93,23 @@ def watch_scope(signals_path, universe_path, symbols, paper_state=None, scope='i
                 industries=industries, peer_symbols=peer_symbols)
 
 
+def watch_price_rows(path, symbols, *, session=None):
+    """Read histories for the requested symbols, or just their presence on one session."""
+    columns = ["date", "symbol"] if session is not None else None
+    parts = []
+    try:
+        with pd.read_csv(path, dtype={"symbol": str}, usecols=columns, chunksize=50000) as chunks:
+            for chunk in chunks:
+                keep = chunk.symbol.isin(symbols)
+                if session is not None:
+                    keep &= chunk.date.eq(session)
+                if keep.any() or not parts:
+                    parts.append(chunk.loc[keep])
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        return pd.DataFrame(columns=columns or ["date", "symbol"])
+    return pd.concat(parts, ignore_index=True)
+
+
 def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
                  config_path, output, paper_state=None, volume_profile=None, watch_mode='industry',
                  *, ui_workspace_id=None):
@@ -108,7 +125,10 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
     subscriptions = scope['subscriptions']
     positions = scope['positions']
     require_previous_close(session, as_of)
-    prices = pd.read_csv(prices_path, dtype={'symbol': str})
+    price_symbols = set(scope['chosen'].index)
+    if rules.setup_52w_enabled:
+        price_symbols.update(scope['chosen'].benchmark.astype(str))
+    prices = watch_price_rows(prices_path, price_symbols)
     prices['date'] = pd.to_datetime(prices.date)
     prices = prices[prices.date <= pd.Timestamp(as_of)]
     targets = {}
@@ -184,8 +204,7 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
         'sector_require_action': rules.sector_require_action, 'min_peer_coverage': 1.0,
         'max_quote_age_seconds': 60, 'targets': targets, 'members': scope['members'],
         'selected_symbols': sorted(set(symbols)), 'subscriptions': sorted(subscriptions),
-        'source_hashes': {str(path): hashlib.sha256(Path(path).read_bytes()).hexdigest()
-                          for path in input_paths}}
+        'source_hashes': {str(path): sha(path) for path in input_paths}}
     if volume_profile:
         from .intraday_volume import validate_reference
         profile=json.loads(Path(volume_profile).read_text(encoding='utf-8'))
@@ -193,7 +212,7 @@ def prepare_plan(signals_path, prices_path, universe_path, session, symbols,
         profile['symbols']={s:profile['symbols'][s] for s in targets if s in profile['symbols']}
         plan['volume_reference']=profile
         plan['volume_confirmation']='same_time_history'
-        plan['source_hashes'][str(volume_profile)]=hashlib.sha256(Path(volume_profile).read_bytes()).hexdigest()
+        plan['source_hashes'][str(volume_profile)]=sha(volume_profile)
     if ui_workspace_id is not None:
         plan['ui_workspace_id'] = ui_workspace_id
     validate_plan(plan)
