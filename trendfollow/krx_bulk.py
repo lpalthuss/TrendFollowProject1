@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from dotenv import dotenv_values
 
-from .price_history import PriceHistory
+from .price_history import MissingDailyBars, PriceHistory
 from .research_store import publish_price_csv, recover_research, write_json
 
 
@@ -68,7 +68,17 @@ def _rows(frame, session, symbols, index_codes=None):
     return rows
 
 
-def acquire_missing_sessions(universe_path, output_dir, sessions, include_market_indices=False, progress=None):
+def benchmark_sessions(symbol, start, end):
+    try:
+        from pykrx import stock
+    except ImportError:
+        raise ValueError('KRX 일봉 조회에는 python -m pip install -e ".[krx]"가 필요합니다.') from None
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        frame = stock.get_market_ohlcv_by_date(start.replace("-", ""), end.replace("-", ""), symbol)
+    return pd.DatetimeIndex(frame.index).strftime("%Y-%m-%d").tolist()
+
+
+def acquire_missing_sessions(universe_path, output_dir, sessions, include_market_indices=False, progress=None, gaps=None):
     """Append missing sessions atomically. Never revise an existing session implicitly."""
     try:
         from pykrx import stock
@@ -89,21 +99,28 @@ def acquire_missing_sessions(universe_path, output_dir, sessions, include_market
         raise ValueError("추가할 거래일이 없습니다.")
     if any(not isinstance(day, str) or pd.Timestamp(day).strftime("%Y-%m-%d") != day for day in sessions):
         raise ValueError("KRX 조회 거래일 형식이 올바르지 않습니다.")
-    history = PriceHistory(prices_path, sessions)
+    required = {day: symbols.copy() for day in sessions}
+    for symbol, days in (gaps or {}).items():
+        for day in days:
+            required.setdefault(day, set()).add(symbol)
+    history = PriceHistory(prices_path, required)
     old = history.window
-    missing = [day for day in sessions if not symbols.issubset(set(old.loc[old.date.eq(day), "symbol"]))]
+    missing = [day for day in sorted(required) if not required[day].issubset(set(old.loc[old.date.eq(day), "symbol"]))]
     if not missing:
         return {"status": "already_present", "source": "existing", "sessions": [], "errors": []}
     rows = []
     comparisons = []
     overlap_checked = 0
+    unresolved = []
     for number, day in enumerate(missing, 1):
         if progress:
             progress(f"KRX 일괄 조회 중 · {day}", number - 1, len(missing))
         try:
-            by_symbol = fetch_session(day, symbols, include_market_indices)
+            by_symbol = fetch_session(day, required[day], include_market_indices)
         except Exception as error:
-            raise ValueError(f"{day} KRX 일괄 조회 실패: {error}") from error
+            needed = required[day] - set(old.loc[old.date.eq(day), "symbol"])
+            raise MissingDailyBars(f"{day} KRX 일괄 조회 실패: {error}",
+                                   unresolved + [(symbol, day) for symbol in needed]) from error
         prior_rows = old.loc[old.date.eq(day)]
         for previous in prior_rows.to_dict("records"):
             current = by_symbol.get(previous["symbol"])
@@ -116,12 +133,14 @@ def acquire_missing_sessions(universe_path, output_dir, sessions, include_market
                 comparisons.append({"date": day, "symbol": previous["symbol"],
                                     "close_difference_ratio": close_delta,
                                     "volume_difference_ratio": volume_delta})
-        absent = symbols - set(by_symbol) - set(old.loc[old.date.eq(day), "symbol"])
-        if absent:
-            raise ValueError(f"{day} KRX 일괄 응답에 {len(absent)}개 종목이 없습니다: {', '.join(sorted(absent)[:8])}")
+        absent = required[day] - set(by_symbol) - set(old.loc[old.date.eq(day), "symbol"])
+        unresolved.extend((symbol, day) for symbol in absent)
         rows.extend(by_symbol.values())
         if progress:
             progress(f"KRX 일괄 조회 중 · {day}", number, len(missing))
+    if unresolved:
+        symbol, day = unresolved[0]
+        raise MissingDailyBars(f"{day} {symbol} 등 KRX 일괄 응답에 일봉 {len(unresolved)}건이 없습니다.", unresolved)
     boundary = [day for day in old.date.unique() if day < missing[0]]
     if boundary:
         prior_day = max(boundary)

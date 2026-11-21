@@ -380,14 +380,46 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
                 raise ValueError('산업 동료 수익률 기록이 없는 거래일: '+', '.join(missing)+'. 과거 산업 자료를 현재 스냅샷으로 대체하지 않습니다.')
     if not use_existing_prices:
         if progress:progress('선택 날짜까지 가격 자료 수집 중')
+        collection = acquisition_universe_path or universe_path
+        gaps = {}
+        from .research_store import recover_research
+        prices_file = Path(data_dir)/'prices.csv'
+        if prices_file.parent.is_dir():
+            recover_research(prices_file.parent)
+        if prices_file.is_file():
+            from .price_history import missing_close_bars
+            members = pd.read_csv(collection, dtype={'symbol': str, 'benchmark': str})
+            symbols = set(members.symbol) | set(members.benchmark)
+            if include_indices:
+                symbols.update(members.market)
+            benchmark = sorted(set(members.benchmark))[0]
+            history_start = (pd.Timestamp(sessions[0]) - pd.Timedelta(days=730)).date().isoformat()
+            if price_source == 'pykrx':
+                from .krx_bulk import benchmark_sessions
+                dates = benchmark_sessions(benchmark, history_start, as_of)
+            else:
+                dates = source.daily(benchmark, history_start, as_of).date.tolist()
+            if as_of not in dates:
+                from .price_history import MissingDailyBars
+                raise MissingDailyBars(f'{as_of} 기준 거래일을 확인할 벤치마크 일봉이 없습니다.',
+                                       [(benchmark, as_of)])
+            if progress:progress('종가 처리 전 종목별 일봉 누락 확인 중')
+            gaps = missing_close_bars(prices_file, symbols, dates, sessions[0])
+            if gaps and progress:
+                progress(f'종목별 누락 일봉 보완 중 · {len(gaps)}종목 {sum(map(len, gaps.values()))}건')
         if price_source == 'pykrx':
             from .krx_bulk import acquire_missing_sessions
-            manifest=acquire_missing_sessions(acquisition_universe_path or universe_path,data_dir,sessions,include_market_indices=include_indices,progress=progress)
+            manifest=acquire_missing_sessions(collection,data_dir,sessions,include_market_indices=include_indices,progress=progress,gaps=gaps)
         else:
             start=state['last_date'] if state else '2020-01-01'
-            manifest=acquire_research(acquisition_universe_path or universe_path,data_dir,start,as_of,include_market_indices=include_indices,required_session=as_of,progress=progress,append_sessions=sessions)
+            manifest=acquire_research(collection,data_dir,start,as_of,include_market_indices=include_indices,required_session=as_of,progress=progress,append_sessions=sessions,gaps=gaps)
         if manifest['errors']:
-            raise ValueError('일부 연구 데이터 수집에 실패했습니다. 모의 계좌는 변경하지 않습니다.')
+            error = manifest['errors'][0]
+            if manifest.get('missing_bars'):
+                from .price_history import MissingDailyBars
+                raise MissingDailyBars(f"일봉 수집 실패 · {error['symbol']}: {error['reason']}",
+                                       ((bar['symbol'], bar['date']) for bar in manifest['missing_bars']))
+            raise ValueError(f"일봉 수집 실패 · {error['symbol']}: {error['reason']}")
     prices_path=Path(data_dir)/'prices.csv'
     completed=[]
     for session in sessions:

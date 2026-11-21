@@ -11,9 +11,42 @@ REQUIRED = {"date", "symbol", "open", "high", "low", "close", "volume"}
 CHUNK_ROWS = 50000
 
 
+class MissingDailyBars(ValueError):
+    def __init__(self, message, pairs):
+        super().__init__(message)
+        self.missing_bars = [{"symbol": symbol, "date": day} for symbol, day in sorted(set(pairs))]
+
+
 def _stamp(path):
     stat = path.stat()
     return stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def missing_close_bars(path, symbols, trading_days, first_close):
+    """Find holes from the first known bar, including the 252 sessions before the close."""
+    from .indicators import HIGH_52W_SESSIONS
+
+    days = sorted(set(trading_days))
+    start = max(0, bisect_left(days, first_close) - HIGH_52W_SESSIONS)
+    days = days[start:]
+    saved = {symbol: set() for symbol in symbols}
+    first_seen = {}
+    with pd.read_csv(path, usecols=KEY, dtype=str, chunksize=CHUNK_ROWS) as reader:
+        for part in reader:
+            part = part[part.symbol.isin(symbols)]
+            for symbol, group in part.groupby("symbol", sort=False):
+                first = group.date.min()
+                first_seen[symbol] = min(first_seen.get(symbol, first), first)
+                saved[symbol].update(group.date[group.date.isin(days)])
+    missing = {}
+    for symbol in symbols:
+        # A symbol without saved history needs a full initial fetch, which can
+        # start at listing. Do not demand pre-listing bars.
+        if symbol in first_seen:
+            absent = set(days[bisect_left(days, first_seen[symbol]):]) - saved[symbol]
+            if absent:
+                missing[symbol] = absent
+    return missing
 
 
 class PriceHistory:

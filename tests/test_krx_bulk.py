@@ -44,6 +44,28 @@ def test_krx_bulk_adds_gap_without_revising_prior_bars(tmp_path, monkeypatch):
     assert manifest["source_comparison"]["overlap_checked"] == 2
 
 
+def test_krx_repairs_only_missing_historical_symbol_before_close(tmp_path, monkeypatch):
+    root = tmp_path/'history'
+    root.mkdir()
+    universe = tmp_path/'universe.csv'
+    universe.write_text("symbol,benchmark\n005930,069500\n", encoding="utf-8")
+    days = ["2026-11-18", "2026-11-19", "2026-11-20"]
+    old = [dict(date=d, symbol=s, open=100, high=101, low=99, close=100, volume=100)
+           for d in days for s in ["005930", "069500"] if (d, s) != (days[1], "005930")]
+    pd.DataFrame(old).to_csv(root/'prices.csv', index=False)
+    monkeypatch.setitem(sys.modules, "pykrx", SimpleNamespace(stock=SimpleNamespace()))
+    def fetch(day, symbols, include_indices):
+        if day == days[1]:
+            assert symbols == {"005930"}
+        return {s:dict(old[0], symbol=s, date=day, high=105) for s in symbols}
+    monkeypatch.setattr("trendfollow.krx_bulk.fetch_session", fetch)
+    result = acquire_missing_sessions(universe, root, [days[-1]], gaps={"005930": {days[1]}})
+    assert result["published"]
+    saved = pd.read_csv(root/'prices.csv', dtype={"symbol":str})
+    assert len(saved) == 6
+    assert saved.loc[saved.high.eq(105), ["symbol", "date"]].values.tolist() == [["005930", days[1]]]
+
+
 def test_krx_bulk_missing_symbol_keeps_prior_file(tmp_path, monkeypatch):
     universe = tmp_path / "universe.csv"
     universe.write_text("symbol,benchmark\n005930,069500\n", encoding="utf-8")
@@ -57,8 +79,9 @@ def test_krx_bulk_missing_symbol_keeps_prior_file(tmp_path, monkeypatch):
         get_etf_ohlcv_by_ticker=lambda *_: frame({}),
     )
     monkeypatch.setitem(sys.modules, "pykrx", SimpleNamespace(stock=stock))
-    with pytest.raises(ValueError, match="069500"):
+    with pytest.raises(ValueError, match="069500") as failed:
         acquire_missing_sessions(universe, root, ["2026-11-11"])
+    assert failed.value.missing_bars == [{"symbol": "069500", "date": "2026-11-11"}]
     assert prices.read_bytes() == before
 
 

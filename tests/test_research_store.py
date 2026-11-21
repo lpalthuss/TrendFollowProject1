@@ -129,6 +129,39 @@ def test_daily_naver_append_preserves_existing_bars(files, monkeypatch):
     assert result['price_sources'][-1]['sessions'] == ['2026-11-09']
 
 
+@pytest.mark.parametrize("supply_gap", [True, False])
+def test_close_repairs_missing_stock_bar_before_the_requested_session(files, monkeypatch, supply_gap):
+    from trendfollow.price_history import missing_close_bars
+
+    universe, root, _, old_manifest = files
+    sessions = ["2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20"]
+    symbols = ["000001", "069500"]
+    old = pd.concat([bars(symbol).assign(date=day) for symbol in symbols for day in sessions
+                     if (symbol, day) != ("000001", sessions[2])])
+    old.to_csv(root/'prices.csv', index=False)
+    before = (root/'prices.csv').read_bytes()
+    gaps = missing_close_bars(root/'prices.csv', symbols, ["2026-11-16", *sessions], sessions[-1])
+    assert gaps == {"000001": {"2026-11-19"}}
+
+    def daily(self, symbol, start, end, refresh=False):
+        return pd.concat([bars(symbol).assign(date=d, high=110.) for d in sessions if start <= d <= end
+                          and (supply_gap or d != sessions[2])])
+    monkeypatch.setattr(NaverResearchSource, 'daily', daily)
+    result = acquire_research(universe, root, sessions[-1], sessions[-1],
+                              append_sessions=[sessions[-1]], gaps=gaps)
+    if not supply_gap:
+        assert "2026-11-19 000001" in result["errors"][0]["reason"]
+        assert result["missing_bars"] == [{"symbol": "000001", "date": sessions[2]}]
+        assert (root/'prices.csv').read_bytes() == before
+        assert (root/'manifest.json').read_bytes() == old_manifest
+        return
+    saved = pd.read_csv(root/'prices.csv', dtype={'symbol':str})
+    assert not result['errors'] and len(saved) == len(old) + 1
+    assert saved.loc[saved.symbol.eq("000001") & saved.date.eq(sessions[2]), "high"].item() == 110.
+    assert saved.loc[saved.date.eq(sessions[-1]), "high"].eq(101.).all()
+    assert missing_close_bars(root/'prices.csv', symbols, sessions, sessions[-1]) == {}
+
+
 def test_daily_naver_append_rejects_missing_intermediate_benchmark(files, monkeypatch):
     universe, root, old_prices, old_manifest = files
     def source(self, symbol, start, end, refresh=False):

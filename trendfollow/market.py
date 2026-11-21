@@ -189,7 +189,7 @@ class NaverResearchSource:
         return pd.DataFrame(rows, columns=['date','symbol','open','high','low','close','volume'])
 
 
-def acquire_research(universe_path, output_dir, start, end, refresh=False, include_market_indices=False,required_session=None,progress=None,append_sessions=None):
+def acquire_research(universe_path, output_dir, start, end, refresh=False, include_market_indices=False,required_session=None,progress=None,append_sessions=None,gaps=None):
     from .price_history import PriceHistory
     from .research_store import recover_research,publish_research,publish_price_csv,write_json
     root = Path(output_dir); root.mkdir(parents=True, exist_ok=True)
@@ -209,8 +209,12 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
     if progress:progress('가격 자료 수집 중',0,len(symbols))
     source = NaverResearchSource(root/'raw')
     frames, errors = [], []
+    check_initial_history = gaps is not None and not (root/'prices.csv').is_file()
+    gaps = gaps or {}
+    unresolved_bars = set()
+    starts = {symbol: min(start, min(gaps[symbol])) if symbol in gaps else start for symbol in symbols}
     with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {pool.submit(source.daily, symbol, start, end, refresh): symbol for symbol in symbols}
+        futures = {pool.submit(source.daily, symbol, starts[symbol], end, refresh): symbol for symbol in symbols}
         for number, future in enumerate(as_completed(futures), 1):
             symbol = futures[future]
             try:
@@ -221,7 +225,7 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
                 if not required.issubset(frame):raise ValueError('일봉 필드가 누락되었습니다.')
                 dates=pd.to_datetime(frame.date,format='%Y-%m-%d',errors='raise')
                 if (dates.isna().any() or dates.dt.tz is not None or not dates.eq(dates.dt.normalize()).all()
-                        or not dates.between(first,last).all()):raise ValueError('수집 일봉의 거래일 범위가 올바르지 않습니다.')
+                        or not dates.between(pd.Timestamp(starts[symbol]),last).all()):raise ValueError('수집 일봉의 거래일 범위가 올바르지 않습니다.')
                 if not frame.symbol.astype(str).eq(symbol).all():raise ValueError('요청 종목과 응답 종목이 다릅니다.')
                 if dates.duplicated().any():raise ValueError('수집 일봉에 중복 거래일이 있습니다.')
                 values=frame[['open','high','low','close','volume']].apply(pd.to_numeric,errors='raise')
@@ -229,8 +233,11 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
                 # Preserve raw zero/malformed OHLC bars; features() quarantines these.
                 frame=frame.copy();frame['date']=dates.dt.strftime('%Y-%m-%d')
                 frame[values.columns]=values
+                if symbol in gaps:
+                    unresolved_bars.update((symbol, day) for day in gaps[symbol].difference(frame.date))
                 frames.append(frame)
             except (ValueError,TypeError,requests.RequestException) as exc:
+                unresolved_bars.update((symbol, day) for day in gaps.get(symbol, ()))
                 errors.append({'symbol':symbol,'reason':str(exc)})
             if number % 25 == 0 or number == len(symbols):
                 print(f'일봉 수집 {number}/{len(symbols)} | 실패 {len(errors)}', flush=True)
@@ -255,6 +262,16 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
         old=old[old.symbol.isin(symbols)&old.date.between(str(first.date()),str(last.date()))]
         missing=pd.MultiIndex.from_frame(old[['symbol','date']]).difference(pd.MultiIndex.from_frame(prices[['symbol','date']]))
         if len(missing):errors.append({'symbol':'history','reason':f'기존 수집 구간의 {len(missing)}개 일봉이 누락되었습니다.'})
+    if not errors and check_initial_history:
+        from .indicators import HIGH_52W_SESSIONS
+        calendar = prices.loc[prices.symbol.eq(sorted(benchmarks)[0]), 'date'].sort_values()
+        first_close = min(append_sessions)
+        expected = set(calendar[calendar.lt(first_close)].tail(HIGH_52W_SESSIONS)) | set(calendar[calendar.ge(first_close)])
+        for symbol, group in prices.groupby('symbol'):
+            missing = {d for d in expected if d >= group.date.iloc[0]} - set(group.date)
+            if missing:
+                unresolved_bars.update((symbol, d) for d in missing)
+                errors.append({'symbol':symbol, 'reason':f'{min(missing)} {symbol} 일봉 누락'})
     source_comparison=None
     prior_manifest={}
     history=None
@@ -262,7 +279,8 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
         requested=set(append_sessions)
         if not requested or any(day<str(first.date()) or day>str(last.date()) for day in requested):
             raise ValueError('추가할 거래일이 수집 범위를 벗어났습니다.')
-        history=PriceHistory(root/'prices.csv', requested)
+        repair_days = set().union(*gaps.values())
+        history=PriceHistory(root/'prices.csv', requested | repair_days)
         old=history.window
         boundary=[day for day in old.date.unique() if day<min(requested)]
         compared=requested | ({max(boundary)} if boundary else set())
@@ -279,11 +297,19 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
         source_comparison={'overlap_checked':len(overlap),'difference_count':len(differences),
                            'differences':differences[:100]}
         existing=pd.MultiIndex.from_frame(old[['date','symbol']])
-        fresh=prices.loc[prices.date.isin(requested)]
+        repair_keys = {(day, symbol) for symbol, days in gaps.items() for day in days}
+        candidates = prices.loc[prices.date.isin(requested | repair_days)]
+        incoming = pd.MultiIndex.from_frame(candidates[['date','symbol']])
+        unresolved = repair_keys.difference(incoming, existing)
+        if unresolved:
+            day, symbol = min(unresolved)
+            errors.append({'symbol':symbol, 'reason':f'{day} {symbol} 등 누락 일봉 {len(unresolved)}건을 보완하지 못했습니다.'})
+        fresh=candidates.loc[candidates.date.isin(requested) | incoming.isin(repair_keys)]
         fresh=fresh.loc[~pd.MultiIndex.from_frame(fresh[['date','symbol']]).isin(existing)]
         for session in sorted(requested):
             available=set(old.loc[old.date.eq(session),'symbol']) | set(fresh.loc[fresh.date.eq(session),'symbol'])
             if not benchmarks.issubset(available):
+                unresolved_bars.update((symbol, session) for symbol in benchmarks - available)
                 errors.append({'symbol':'benchmarks',
                                'reason':f'{session} 기준 지수 일봉이 부족합니다.'})
         prior_path=root/'manifest.json'
@@ -305,12 +331,14 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
     if source_comparison is not None:
         manifest.update(source='mixed existing research and NAVER public chart',
                         price_sources=[*prior_manifest.get('price_sources',[]),
-                                       {'source':'NAVER public chart','sessions':sorted(requested),
+                                       {'source':'NAVER public chart','sessions':sorted(requested | set(fresh.date)),
                                         'collected_at':datetime.now(ZoneInfo('Asia/Seoul')).isoformat()}],
                         source_comparison=source_comparison)
     if errors:
+        if unresolved_bars:
+            manifest['missing_bars'] = [{'symbol':s, 'date':d} for s,d in sorted(unresolved_bars)]
         write_json(attempt_path,manifest)
-        if not frames:raise ValueError('수집된 데이터가 없습니다. 기존 가격·매니페스트는 보존됩니다.')
+        if not frames and not unresolved_bars:raise ValueError('수집된 데이터가 없습니다. 기존 가격·매니페스트는 보존됩니다.')
         return manifest
     try:
         if history:
