@@ -81,6 +81,17 @@ def selection_inputs(context, workspace, day):
             hashlib.sha256((selection_home(context.root) / day / "universe.csv").read_bytes()).hexdigest())
 
 
+def _price_window(paths, start, through, symbols):
+    parts = []
+    for path in paths:
+        with pd.read_csv(path, dtype={"symbol": str, "date": str}, chunksize=50000) as chunks:
+            for chunk in chunks:
+                keep = chunk.date.between(start, through) & chunk.symbol.isin(symbols)
+                if keep.any() or not parts:
+                    parts.append(chunk.loc[keep])
+    return pd.concat(parts, ignore_index=True).drop_duplicates(["date", "symbol"], keep="first")
+
+
 def analyze_saved_selections(context, workspace, through, run_id, progress=None, *, selected_only=False):
     """Analyze every saved selection through `through` using one account's rules, without changing that account."""
     dates = sorted(day for day in available_selections(context.root) if day <= through)
@@ -119,21 +130,19 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None,
     required_symbols.add("KOSPI")
     if rules.mansfield_benchmark == "market_index":
         required_symbols |= {"KOSPI", "KOSDAQ"}
-    base = pd.read_csv(prices_path, dtype={"symbol": str, "date": str})
-    base = base[base.date.between(start, through) & base.symbol.isin(required_symbols)]
     extra_path = Path(context.root) / "outputs" / "ui" / "market-analyses" / "extra-prices.csv"
-    extra = pd.read_csv(extra_path, dtype={"symbol": str, "date": str}) if extra_path.is_file() else pd.DataFrame(columns=base.columns)
-    extra = extra[extra.date.between(start, through) & extra.symbol.isin(required_symbols)]
-    prices = pd.concat([base, extra], ignore_index=True).drop_duplicates(["date", "symbol"], keep="first")
-    existing = set(zip(prices.date, prices.symbol))
+    paths = [prices_path, extra_path] if extra_path.is_file() else [prices_path]
+    prices = _price_window(paths, start, through, required_symbols)
     required_by_day = {}
     for day, frame in selections.items():
         symbols = set(frame.symbol) | set(frame.benchmark) | {"KOSPI"}
         if rules.mansfield_benchmark == "market_index":
             symbols.update(frame.market.str.upper())
         required_by_day[day] = symbols
-    fetch_symbols = sorted({symbol for day, symbols in required_by_day.items() for symbol in symbols
-                            if (day, symbol) not in existing})
+    needed = {(day, symbol) for day, symbols in required_by_day.items() for symbol in symbols}
+    available = prices.loc[prices.date.isin(required_by_day), ["date", "symbol"]]
+    needed.difference_update(available.itertuples(index=False, name=None))
+    fetch_symbols = sorted({symbol for day, symbol in needed})
     if fetch_symbols:
         source = NaverResearchSource(extra_path.parent / "raw")
         fresh = []
@@ -151,6 +160,7 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None,
                     fresh.append(frame)
                 if progress and (number % 10 == 0 or number == len(fetch_symbols)):
                     progress(f"새 후보 과거 일봉 수집 중 · {number}/{len(fetch_symbols)}", number, len(fetch_symbols))
+        del futures
         if fresh:
             fresh = pd.concat(fresh, ignore_index=True)
             extra_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,12 +174,13 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None,
             finally:
                 temporary.unlink(missing_ok=True)
             prices = pd.concat([prices, fresh], ignore_index=True).drop_duplicates(["date", "symbol"], keep="first")
-    existing = set(zip(prices.date, prices.symbol))
+            needed.difference_update(zip(fresh.date, fresh.symbol))
+            del fresh, stored
     kospi_prices = prices[prices.symbol.eq("KOSPI")].copy()
     kospi_prices["date"] = pd.to_datetime(kospi_prices.date)
     kospi_close = kospi_prices.set_index("date").close
-    for day, symbols in required_by_day.items():
-        missing = sorted(symbol for symbol in symbols if (day, symbol) not in existing)
+    for day in required_by_day:
+        missing = sorted(symbol for missing_day, symbol in needed if missing_day == day)
         if missing:
             raise ValueError(f"{day} 시장 후보·RS 비교 대상 일봉이 없습니다 ({', '.join(missing[:5])}). 계좌는 변경되지 않았습니다.")
     completed = []
@@ -184,12 +195,13 @@ def analyze_saved_selections(context, workspace, through, run_id, progress=None,
         symbols = set(universe.symbol) | set(universe.benchmark)
         if rules.mansfield_benchmark == "market_index":
             symbols |= {"KOSPI", "KOSDAQ"}
-        frame, invalid = features(prices[prices.date.le(day) & prices.symbol.isin(symbols)], universe, rules)
-        today = frame[frame.date.eq(pd.Timestamp(day))].copy()
-        daily = prices[prices.date.le(day) & prices.symbol.isin(set(today.symbol))].copy()
+        today, invalid = features(prices[prices.date.le(day) & prices.symbol.isin(symbols)],
+                                  universe, rules, since=pd.Timestamp(day))
+        daily = prices.loc[prices.date.le(day) & prices.symbol.isin(today.symbol), ["date", "symbol", "close"]].copy()
         daily["date"] = pd.to_datetime(daily.date)
         by_symbol = {symbol: multi_period_daily_rs(group.set_index("date").close, kospi_close.loc[:day])
                      for symbol, group in daily.groupby("symbol")}
+        del daily
         for key in ["multi_rs", "multi_rs_raw", "multi_rs_windows", "multi_rs_as_of"]:
             today[key] = today.symbol.map({symbol: value[key] for symbol, value in by_symbol.items()})
         if set(universe.symbol) - set(today.symbol):

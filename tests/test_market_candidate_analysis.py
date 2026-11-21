@@ -10,6 +10,17 @@ from trendfollow.candidate_universe import read_selection, selection_home
 from trendfollow.operations import Operations
 
 
+def test_price_window_keeps_account_prices_first_and_uses_extra_only_for_gaps(tmp_path):
+    base = tmp_path / "prices.csv"
+    extra = tmp_path / "extra-prices.csv"
+    base.write_text("date,symbol,close\n2026-11-17,000001,90\n2026-11-18,000001,100\n"
+                    "2026-11-19,000003,110\n2026-11-20,000001,120\n")
+    extra.write_text("date,symbol,close\n2026-11-18,000001,999\n2026-11-19,000002,105\n")
+    prices = market_analysis._price_window([base, extra], "2026-11-18", "2026-11-19", {"000001", "000002"})
+    assert list(prices.itertuples(index=False, name=None)) == [
+        ("2026-11-18", "000001", 100), ("2026-11-19", "000002", 105)]
+
+
 def test_saved_market_dates_are_analyzed_without_changing_account(tmp_path, monkeypatch):
     source = tmp_path / 'account-prices'
     source.mkdir()
@@ -43,8 +54,9 @@ def test_saved_market_dates_are_analyzed_without_changing_account(tmp_path, monk
             return pd.DataFrame([dict(date='2026-11-12', symbol=symbol, open=100,
                                       high=110, low=90, close=100, volume=1000)])
     monkeypatch.setattr(market_analysis, 'NaverResearchSource', FakeSource)
-    def fake_features(prices, universe, _rules):
+    def fake_features(prices, universe, _rules, *, since):
         day = prices.date.max()
+        assert since == pd.Timestamp(day)
         assert '069500' in set(prices.loc[prices.date.eq(day), 'symbol'])
         return pd.DataFrame([dict(date=pd.Timestamp(day), symbol=s, signal=False, close=100)
                              for s in universe.symbol]), pd.DataFrame()
