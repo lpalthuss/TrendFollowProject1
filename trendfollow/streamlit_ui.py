@@ -1064,6 +1064,120 @@ def market_candidates(ops, key, snapshot, can_write):
         market_board(ops,key,detail,selected,selection if selection_saved else None,can_write)
 
 
+HISTORY_CARDS = (
+    ('positions', '보유 종목'), ('orders', '모의 주문·체결'), ('trades', '청산 손익'),
+    ('events', '운용 이벤트'), ('campaign-risk', '위험 검토'), ('pyramiding-review', '추가매수 검토'),
+)
+
+
+def main_history_event(rows, names):
+    # Show pending exits first, then realized losses and milestones.
+    labels = {'rs_exit_scheduled':'RS 약화 청산 예정', 'loss_closed':'손실 청산',
+              'success_3r':'3R 목표 도달', 'campaign_lot_opened':'매수 체결',
+              'pyramiding_review':'추가매수 검토', 'campaign_risk':'보유 위험 검토'}
+    by_kind = {row.get('kind'):row for row in rows}
+    event = next((by_kind[kind] for kind in labels if kind in by_kind), rows[-1])
+    symbol = event.get('symbol')
+    subject = str(names.get(symbol) or symbol) + ' · ' if pd.notna(symbol) else ''
+    kind = event.get('kind')
+    return subject + labels.get(kind, str(kind) if pd.notna(kind) else '이벤트 내용 미확인')
+
+
+def history_cards(directory, positions, rules, names):
+    from .operations.common import read_csv
+    from .pyramiding import is_true
+
+    cards = []
+    optional = {'campaign-risk': 'pyramiding_enabled', 'pyramiding-review': 'pyramiding_review_enabled'}
+    for kind, title in HISTORY_CARDS:
+        unit = '종목' if kind == 'positions' else '건'
+        if kind == 'positions':
+            rows = [dict(pos, symbol=code) for code, pos in positions.items()]
+        else:
+            path = directory / f'{kind}.csv'
+            if not path.exists():
+                unused = kind in optional and not rules.get(optional[kind])
+                cards.append((title, '전략에서 사용 안 함' if unused else '기록 파일 없음', '', [], 'unused' if unused else 'empty'))
+                continue
+            frame = read_csv(path)
+            date_field = 'exit_date' if kind == 'trades' else 'date'
+            if date_field in frame:
+                frame = frame.loc[frame[date_field].astype(str).str[:10].eq(directory.name)]
+            rows = frame.to_dict('records')
+        summary = f'{len(rows)}{unit}'
+        note = ''
+        style = 'normal' if rows else 'empty'
+        if rows:
+            if kind == 'positions':
+                note = ', '.join(str(names.get(r['symbol']) or r['symbol']) for r in rows[:2])
+                if len(rows) > 2:
+                    note += f' 외 {len(rows)-2}종목'
+            elif kind == 'orders':
+                fills = sum(row.get('status') == 'filled' for row in rows)
+                summary = f'{len(rows)}건 중 {fills}건 체결'
+                rejected = sum(row.get('status') == 'rejected' for row in rows)
+                if rejected:
+                    note = f'거절 {rejected}건'
+            elif kind == 'trades':
+                pnl = pd.to_numeric(pd.Series([r.get('pnl') for r in rows]), errors='coerce')
+                summary = f'{pnl.sum():+,.0f}원' if pnl.notna().all() else '실현손익 미확인'
+                note = f'청산 {len(rows)}건'
+            elif kind == 'events':
+                note = main_history_event(rows, names)
+            elif kind == 'campaign-risk':
+                flags = ('operating_risk_exceeded', 'hard_risk_exceeded', 'portfolio_risk_exceeded')
+                exceeded = sum(any(is_true(r.get(flag)) for flag in flags) for r in rows)
+                summary = f'한도 초과 {exceeded}건'
+                note = f'위험 검토 {len(rows)}건'
+                if exceeded:
+                    style = 'warning'
+            else:
+                eligible = sum(is_true(r.get('eligible_for_risk_review')) for r in rows)
+                summary = f'위험 검토 후보 {eligible}건'
+                note = f'추가매수 검토 {len(rows)}건'
+        cards.append((title, summary, note, rows, style))
+    return cards
+
+
+def history_record_panel(directory, positions, rules, names, account):
+    cards = history_cards(directory, positions, rules, names)
+    st.markdown(f'#### {directory.name} 운용 기록')
+    selection = f'history-record-{account}-{directory.name}'
+    active = st.session_state.get(selection)
+    st.html('''<style>
+        .st-key-history-cards button {position:relative;min-height:7.4rem;align-items:flex-start;
+            justify-content:flex-start;text-align:left;padding:.8rem 1rem;background:#fffef9;color:#102d36;
+            border:2px solid #455e64;border-radius:8px;box-shadow:0 3px 0 #ccd1c8}
+        .st-key-history-cards button p {text-align:left;line-height:1.45;margin:0}
+        .st-key-history-cards button strong {font-size:1.35rem;letter-spacing:-.04em}
+        .st-key-history-cards button em {display:block;border-top:1px solid #a1afa8;
+            margin-top:.35rem;padding-top:.25rem;font-size:.85rem;font-style:normal}
+        .st-key-history-cards [class*="st-key-ledger-warning"] button {color:#713409;background:#fff3df;border-color:#995921}
+        .st-key-history-cards button:disabled {opacity:1;color:#4e5b5b;background:#eeeae1;box-shadow:none}
+        .st-key-history-cards [class*="st-key-ledger-unused"] button {border-style:dashed;background:#f7f6f1}
+        .st-key-history-cards [class*="st-key-ledger-selected"] button {color:white;background:#075a50;
+            border-color:#033c35;box-shadow:0 3px 0 #033c35}
+        .st-key-history-cards button:focus-visible {outline:3px solid #2867c5;outline-offset:3px}
+        </style>''')
+    with st.container(key='history-cards'):
+        for offset in (0, 3):
+            for index, (column, card) in enumerate(zip(st.columns(3), cards[offset:offset+3]), offset):
+                title, summary, note, rows, style = card
+                selected = active == title and bool(rows)
+                label = f'{"✓ " if selected else ""}{title}  \n**{summary}**'
+                if note:
+                    label += f'  \n*{note}*'
+                with column.container(key=f'ledger-{"selected" if selected else style}-{index}'):
+                    st.button(label, width='stretch', disabled=not rows,
+                              key=f'{selection}-{title}', on_click=st.session_state.update,
+                              args=({selection: title},))
+    for title, _, _, rows, _ in cards:
+        if title == active and rows:
+            st.markdown(f'##### {title} 상세')
+            table(rows, names)
+            break
+
+
 def account_history(ops, key, snapshot):
     from .operations.common import read_csv
 
@@ -1087,7 +1201,7 @@ def account_history(ops, key, snapshot):
         table([{k: row.get(k) for k in ('symbol','reference_price','stop_price','volume_ratio')}
                for row in plans], names)
     else:
-        st.write('진입 후보 없음')
+        st.write('다음 거래일 신규 진입 계획 없음')
     symbols = sorted(set(positions) | {row['symbol'] for row in plans})
     if symbols:
         symbol = st.selectbox('종목별 가격 차트', symbols, index=None,
@@ -1109,12 +1223,7 @@ def account_history(ops, key, snapshot):
         table(orders.to_dict('records'), names)
     elif plans:
         st.caption('다음 거래일 모의 처리 후 체결 결과가 표시됩니다.')
-    with st.expander('이날 보유 종목'):
-        table([dict(pos, symbol=symbol) for symbol,pos in positions.items()], names)
-    for filename, label in [('orders','모의 주문·체결'),('trades','청산 손익'),('events','운용 이벤트'),
-                            ('campaign-risk','위험 검토'),('pyramiding-review','추가매수 검토')]:
-        with st.expander(f'{day} {label}'):
-            table(read_csv(root / day / f'{filename}.csv').to_dict('records'), names)
+    history_record_panel(root / day, positions, snapshot['rules'], names, key)
 
 
 def recovery(ops, key, snapshot, as_of, can_write):

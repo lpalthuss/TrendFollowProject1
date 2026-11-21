@@ -538,8 +538,20 @@ def test_history_uses_selected_checkpoint_and_next_day_orders(tmp_path):
             'from trendfollow.streamlit_ui import account_history\n'
             'from types import SimpleNamespace\nfrom pathlib import Path\n'
             f'ops=SimpleNamespace(path=lambda _:Path({str(tmp_path / "state.json")!r}))\n'
-            'account_history(ops,"demo",dict(workspace={"state":"state.json"},account_as_of="2026-11-17"))'
+            'account_history(ops,"demo",dict(workspace={"state":"state.json"},rules={},account_as_of="2026-11-17"))'
         ).run()
+        prefix = 'history-record-demo-2026-11-17-'
+        (folder / 'pyramiding-review.csv').write_text('symbol,date\n', encoding='utf8')
+        (folder / 'events.csv').write_text('kind,symbol\nrs_exit_scheduled,005930\nsuccess_3r,000080\n', encoding='utf8')
+        app.run()
+        assert '005930 · RS 약화 청산 예정' in app.button(key=prefix+'운용 이벤트').label
+        assert app.button(key=prefix+'보유 종목').disabled
+        assert '0종목' in app.button(key=prefix+'보유 종목').label
+        assert '전략에서 사용 안 함' in app.button(key=prefix+'위험 검토').label
+        assert '0건' in app.button(key=prefix+'추가매수 검토').label
+        assert '2건 중 1건 체결' in app.button(key=prefix+'모의 주문·체결').label
+        app.button(key=prefix+'모의 주문·체결').click().run()
+        assert list(app.dataframe[-1].value['status']) == ['filled', 'rejected']
         app.selectbox(key='history-day-demo').set_value('2026-11-16').run()
         assert not app.exception
         assert list(app.dataframe[0].value['종목코드']) == ['005930']
@@ -608,3 +620,15 @@ def test_favorite_watch_starts_only_selected_symbols_and_displays_matching_run(m
     submit.assert_called_once_with(ops, 'account', 'watch_auto', '2026-11-19',
                                    symbols=['005930'], session=run['session'], watch_mode='symbols')
     assert table.call_args.args[0][0]['breakout_present'] is True
+
+def test_history_cards_separate_review_candidates_and_exceeded_limits(tmp_path):
+    from trendfollow.streamlit_ui import history_cards
+
+    (tmp_path / 'pyramiding-review.csv').write_text(
+        'eligible_for_risk_review\nTrue\nFalse\n', encoding='utf8')
+    (tmp_path / 'campaign-risk.csv').write_text(
+        'operating_risk_exceeded,hard_risk_exceeded\nTrue,True\nFalse,False\n', encoding='utf8')
+    cards = history_cards(tmp_path, {}, {}, {})
+    assert cards[4][1:3] == ('한도 초과 1건', '위험 검토 2건')
+    assert cards[4][-1] == 'warning'
+    assert cards[5][1:3] == ('위험 검토 후보 1건', '추가매수 검토 2건')
