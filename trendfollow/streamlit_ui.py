@@ -708,6 +708,9 @@ def workflow(ops, key, snapshot, as_of, can_write):
     active_jobs = [job for job in ops.jobs.values() if job['status'] in {'queued', 'running'}]
     active = bool(active_jobs)
     recent = next((job for job in reversed(list(ops.jobs.values())) if job['workspace'] == key), None)
+    last_daily = next((job for job in reversed(list(ops.jobs.values()))
+                       if job['workspace'] == key and job['action'] == 'daily' and job.get('as_of') == as_of), {})
+    missing_bars = last_daily.get('missing_bars') if last_daily.get('status') == 'failed' and pending else None
     priority_job = any(job['workspace'] == key for job in active_jobs) or bool(
         recent and recent['action'] in {'daily', 'paper', 'industry', 'analyze'}
         and recent['status'] in {'failed', 'interrupted'} and recent.get('as_of') == as_of)
@@ -716,7 +719,8 @@ def workflow(ops, key, snapshot, as_of, can_write):
     from .krx_sessions import observation_market, previous_close_date
 
     historical = [day for day in missing if day != g['today']]
-    candidate_source = st.session_state.get('historical-source', 'auto')
+    candidate_source = last_daily['candidate_source'] if missing_bars else st.session_state.get('historical-source', 'auto')
+    price_source = last_daily['price_source'] if missing_bars else st.session_state.get('price-source', 'naver')
     source_error = None
     selected_source = None
     if historical:
@@ -739,7 +743,7 @@ def workflow(ops, key, snapshot, as_of, can_write):
                 st.info('이 계좌 작업이 진행 중입니다. 위에서 처리 날짜와 현재 단계를 확인하세요.')
             else:
                 st.info('다른 계좌의 작업이 진행 중입니다. 해당 계좌를 선택해 진행 상태를 확인하세요.')
-        elif watch:
+        elif watch and not missing_bars:
             basis = previous_close_date(watch['today'])
             today_plan = next((plan for plan in reversed(watch['plans'])
                                if plan['session'] == watch['today'] and plan['as_of'] == basis), None)
@@ -790,11 +794,20 @@ def workflow(ops, key, snapshot, as_of, can_write):
                 st.button('날짜별 시장 후보에서 수동 선택', on_click=open_page, args=('날짜별 시장 후보',))
             can_start = (can_write and not source_error and snapshot['status'] != 'configuration_mismatch'
                          and snapshot['workspace'].get('mode') != 'recalculation')
-            if st.button(f'{as_of}까지 필요한 자료 준비·종가 처리', type='primary', disabled=not can_start):
-                submit(ops, key, 'daily', as_of, price_source=st.session_state.get('price-source', 'naver'),
+            if missing_bars:
+                names = stored_symbol_names(ops, key)
+                st.warning(f'일봉 {len(missing_bars)}건을 확보하지 못해 종가 처리를 중단했습니다.')
+                st.dataframe([{'종목': symbol_label(bar['symbol'], names), '누락 거래일': bar['date']}
+                              for bar in missing_bars], hide_index=True)
+            label = '종가 처리 다시 시도' if missing_bars else f'{as_of}까지 필요한 자료 준비·종가 처리'
+            if st.button(label, type='primary', disabled=not can_start):
+                submit(ops, key, 'daily', as_of, price_source=price_source,
                        candidate_source=candidate_source)
-            st.caption(f'일봉 원천: {"pykrx" if st.session_state.get("price-source") == "pykrx" else "네이버"} · '
-                       '변경하려면 왼쪽 「날짜·자료 원천 직접 변경」을 여세요.')
+            if missing_bars:
+                st.caption(f'같은 일봉 원천({"pykrx" if price_source == "pykrx" else "네이버"})으로 {as_of}까지 다시 처리합니다.')
+            else:
+                st.caption(f'일봉 원천: {"pykrx" if price_source == "pykrx" else "네이버"} · '
+                           '변경하려면 왼쪽 「날짜·자료 원천 직접 변경」을 여세요.')
             if not can_write:
                 st.caption('실행하려면 운용 비밀번호로 로그인하세요.')
             elif snapshot['status'] == 'configuration_mismatch':

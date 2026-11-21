@@ -506,6 +506,37 @@ def test_daily_action_accepts_missing_industry_and_selected_price_source(monkeyp
         assert submit.call_args.args[0]['price_source'] == 'pykrx'
 
 
+def test_daily_missing_bars_shows_rows_and_retries_failed_request(monkeypatch):
+    from unittest.mock import PropertyMock
+    from trendfollow.ui_service import Operations
+    original = Operations.guidance
+    jobs = {}
+    def guidance(self, key, as_of=None):
+        result = original(self, key, as_of)
+        if as_of:
+            result.update(blocked=None, processed=False, pending_sessions=[as_of], candidate_missing_sessions=[])
+            jobs['failed'] = dict(id='failed', workspace=key, action='daily', as_of=as_of, status='failed',
+                                  price_source='pykrx', candidate_source='krx_open_api',
+                                  missing_bars=[dict(symbol='089590', date='2026-11-19')])
+        return result
+    monkeypatch.setenv('UI_PASSWORD', 'test-only-password')
+    with patch.object(Operations, 'guidance', guidance), \
+         patch.object(Operations, 'jobs', new_callable=PropertyMock, return_value=jobs), \
+         patch.object(Operations, 'refresh_jobs'), patch('trendfollow.streamlit_ui.job_status'), \
+         patch('trendfollow.streamlit_ui.stored_symbol_names', return_value={'089590':'제주항공'}), \
+         patch.object(Operations, 'submit', return_value={'id':'retry'}) as submit_job:
+        app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
+        app.text_input[0].set_value('test-only-password')
+        app.button[0].click().run(timeout=30)
+        rows = next(df.value for df in app.dataframe if '누락 거래일' in df.value)
+        assert rows.to_dict('records') == [{'종목':'제주항공 · 089590', '누락 거래일':'2026-11-19'}]
+        submit_job.assert_not_called()
+        next(button for button in app.button if button.label == '종가 처리 다시 시도').click().run(timeout=30)
+        assert submit_job.call_args.args[0] == dict(action='daily', workspace=jobs['failed']['workspace'],
+                                                    as_of=jobs['failed']['as_of'], price_source='pykrx',
+                                                    candidate_source='krx_open_api')
+
+
 def test_market_candidate_page_handles_stale_cached_date_query():
     from trendfollow.ui_service import Operations
     original = Operations.candidate_dates

@@ -6,6 +6,7 @@ import os
 import traceback
 import uuid
 from ..ui_jobs import acquire_lease, load_jobs, save_job
+from ..price_history import MissingDailyBars
 
 
 class JobManager:
@@ -171,6 +172,10 @@ class JobManager:
             job.update(status="completed", result=result)
         except (ValueError, FileNotFoundError) as error:
             job.update(status="failed", error=str(error))
+            if isinstance(error, MissingDailyBars) and payload["action"] == "daily":
+                job["missing_bars"] = error.missing_bars
+                job["price_source"] = payload.get("price_source", "naver")
+                job["candidate_source"] = payload.get("candidate_source", "auto")
             if hasattr(error, "report"):
                 job["revision_id"] = error.report["id"]
         except Exception as error:
