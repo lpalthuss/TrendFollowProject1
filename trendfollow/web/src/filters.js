@@ -134,7 +134,7 @@
       if (filters.industry !== "all" && row.sector !== filters.industry)
         return false;
       if (
-        ![row.name, row.symbol, row.sector, row.industry_name]
+        ![row.name, row.recorded_name, row.symbol, row.sector, row.industry_name]
           .join(" ")
           .toLocaleLowerCase()
           .includes(search)

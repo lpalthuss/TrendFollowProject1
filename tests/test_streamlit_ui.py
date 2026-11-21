@@ -429,6 +429,24 @@ def test_password_gate_and_account_save(tmp_path, monkeypatch):
     assert not list((tmp_path/'outputs/ui/accounts').glob('*/state.json'))
 
 
+def test_candidate_master_names_cache_and_recorded_fallback(tmp_path):
+    from trendfollow.streamlit_ui import board_rows, _master_names
+
+    master = tmp_path/'data/market/master'
+    master.mkdir(parents=True)
+    path = master/'kospi.csv'
+    records = [dict(symbol='000080', name='기록 이름'), dict(symbol='000001', name='기존 이름')]
+    assert board_rows(tmp_path, records)[0]['name'] == '기록 이름'
+    path.write_text('symbol,name\n000080,KIS 이름\n', encoding='utf-8')
+    first = board_rows(tmp_path, records)
+    hits = _master_names.cache_info().hits
+    assert [r['name'] for r in first] == ['KIS 이름', '기존 이름']
+    assert board_rows(tmp_path, records) == first and _master_names.cache_info().hits == hits + 1
+    path.write_text('symbol,name\n000080,새로운 KIS 이름\n', encoding='utf-8')
+    assert board_rows(tmp_path, records)[0]['name'] == '새로운 KIS 이름'
+    assert records[0]['name'] == '기록 이름'
+
+
 def test_candidate_detail_and_filter_are_connected(monkeypatch):
     import streamlit as st
     from trendfollow.ui_service import Operations
@@ -446,20 +464,21 @@ def test_candidate_detail_and_filter_are_connected(monkeypatch):
     monkeypatch.delenv('UI_PASSWORD',raising=False)
     from unittest.mock import Mock
     table = Mock()
-    with patch('trendfollow.streamlit_ui.candidate_board_component', return_value=table), \
+    with patch('trendfollow.streamlit_ui._master_names', return_value={'000080': 'KIS 상승', '000210': 'KIS 둘째'}), \
+         patch('trendfollow.streamlit_ui.candidate_board_component', return_value=table), \
          patch('trendfollow.streamlit_ui.setting', return_value=''), patch('trendfollow.streamlit_ui.job_status'), patch.object(Operations,'snapshot',snapshot), patch.object(Operations,'prices',return_value=[
             dict(date='2026-11-13',close=9900),dict(date='2026-11-16',close=10000)]):
         app = AppTest.from_file(str(ROOT/'streamlit_app.py')).run(timeout=30)
         assert not app.exception and not app.error
         navigate(app, '종목 탐색')
-        assert any(s.value=='테스트 상승' for s in app.subheader)
+        assert any(s.value=='KIS 상승' for s in app.subheader)
         shown = table.call_args.kwargs['data']
         assert shown['explorer'] and shown['selected'] == '000080'
         assert [r['rs_pass'] for r in shown['rows']] == [True, False]
         assert shown['rows'][1]['setup_phase'] == 'base'
         next(t for t in app.text_input if t.label=='종목명·코드·산업 검색').set_value('대기').run()
         assert not app.exception and not app.error
-        assert any(s.value=='테스트 대기' for s in app.subheader)
+        assert any(s.value=='KIS 둘째' for s in app.subheader)
         next(b for b in app.button if b.label=='장중 관측에서 열기').click().run(timeout=30)
         key=app.selectbox(key='account-picker').value
         assert app.session_state[f'watch-{key}']==['000210']

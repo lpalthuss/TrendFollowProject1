@@ -164,7 +164,7 @@ def filter_candidates(rows, search='', industry='전체', signal='전체', rs='�
     result = []
     for row in rows:
         if search.strip().casefold() not in ' '.join(str(row.get(k) or '') for k in
-                                                  ('symbol','name','sector','industry_name')).casefold():
+                                                  ('symbol','name','recorded_name','sector','industry_name')).casefold():
             continue
         if industry != '전체' and (row.get('industry_name') or row.get('sector')) != industry:
             continue
@@ -321,6 +321,7 @@ def workbench(ops, key, snapshot, as_of=None, can_write=False):
     if not rows:
         st.info('아직 분석 자료가 없습니다. 「오늘의 운용」에서 자료를 준비하고 분석하세요.')
         return
+    rows = board_rows(ops.root, rows)
     st.html("""<style>
     .st-key-market-filters {gap:.35rem}
     .st-key-market-filters label p {font-size:.8rem}
@@ -361,7 +362,7 @@ def workbench(ops, key, snapshot, as_of=None, can_write=False):
             st.session_state[selected_key] = symbol
 
     candidate_board_component(explorer=True)(key=widget, data=dict(
-        explorer=True, rows=board_rows(filtered), rules=snapshot['rules'], selected=row['symbol'] if row else '',
+        explorer=True, rows=filtered, rules=snapshot['rules'], selected=row['symbol'] if row else '',
         favorites=ops.accounts.favorites(key), canWrite=can_write),
         on_symbol_change=select_row, on_favorite_change=lambda: save_board_star(ops, key, widget, filtered, can_write))
     if row is None:
@@ -390,11 +391,26 @@ def candidate_board_component(explorer=False):
            (assets / 'candidate_board.js').read_text(encoding='utf-8'))
 
 
-def board_rows(rows):
+@lru_cache(maxsize=4)
+def _master_names(files):
+    return symbol_names(*(path for path, _, _ in files))
+
+
+def board_rows(root, rows):
+    master = root / 'data' / 'market' / 'master'
+    files = []
+    for path in (master / 'kospi.csv', master / 'kosdaq.csv'):
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+        files.append((path, stat.st_mtime_ns, stat.st_size))
+    names = _master_names(tuple(files))
     display = []
     for row in rows:
         close, high = row.get('reference_price'), row.get('prior_52w_high')
-        display.append(dict(row, stage=candidate_stage(row),
+        display.append(dict(row, name=names.get(row['symbol'], row.get('name')),
+                            recorded_name=row.get('name'), stage=candidate_stage(row),
                             gap=(close/high-1)*100 if close is not None and high and high > 0 else None))
     return display
 
@@ -404,10 +420,10 @@ def market_board(ops, key, snapshot, day, selection, can_write=False):
     if not rows:
         st.info('이 날짜에 표시할 분석 종목이 없습니다.')
         return
-    display = board_rows(rows)
+    display = board_rows(ops.root, rows)
     selected_key = f'market-detail-{key}-{day}'
     market_board_controls(ops, key, day, display, snapshot['rules'], can_write, selected_key)
-    row = next((r for r in rows if r['symbol'] == st.session_state.get(selected_key)), None)
+    row = next((r for r in display if r['symbol'] == st.session_state.get(selected_key)), None)
     if row is None:
         st.caption('종목을 선택하면 이곳에 차트와 선정 근거, 계좌 진입 조건 및 계획 위험이 표시됩니다.')
         return
