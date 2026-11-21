@@ -227,12 +227,9 @@ class OperationsQueries:
         pending_sessions = []
         if not blocked:
             if state and target > state["last_date"]:
-                from exchange_calendars import get_calendar
+                from ..krx_sessions import sessions_after
 
-                pending_sessions = [session.date().isoformat() for session in get_calendar(
-                    "XKRX", start=state["last_date"], end=target
-                ).sessions_in_range(state["last_date"], target)
-                    if session.date().isoformat() > state["last_date"]]
+                pending_sessions = sessions_after(state["last_date"], target)
             elif not state:
                 pending_sessions = [target]
         candidate_missing_sessions = []
@@ -313,7 +310,7 @@ class OperationsQueries:
             report=report, policy=read_policy(state_path), rows=rows, total=total
         )
 
-    def snapshot(self, key, market_as_of=None):
+    def snapshot(self, key, market_as_of=None, *, include_multi_rs=True):
         from ..candidate_universe import read_policy
         w = self.context.workspace(key)
         rules, limits = self.context.configuration(w)
@@ -322,7 +319,7 @@ class OperationsQueries:
         frame = read_csv(signal) if signal else pd.DataFrame()
         fields = [c for c in (*SIGNAL_FIELDS, "prior_breakout_high") if c in frame]
         rows = json_rows(frame[fields])
-        if rows and "multi_rs" not in fields:
+        if include_multi_rs and rows and "multi_rs" not in fields:
             prices_path = self.context.path(w["data_dir"]) / "prices.csv"
             if prices_path.is_file():
                 stat = prices_path.stat()

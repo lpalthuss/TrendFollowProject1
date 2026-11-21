@@ -956,7 +956,7 @@ def account_favorite_board(ops, key, snapshot, dates, can_write):
         stat = path.stat()
         if code not in analysis_symbols(path, stat.st_mtime_ns, stat.st_size):
             continue
-        detail = ops.snapshot(key, analysis_day)
+        detail = ops.snapshot(key, analysis_day, include_multi_rs=False)
         row = next((item for item in detail['rows'] if item['symbol'] == code), None)
         if row:
             st.subheader(str(row.get('name') or names.get(code) or code))
@@ -1067,7 +1067,7 @@ def market_candidates(ops, key, snapshot, can_write):
                                                    selection['summary']['source'], show_reason))
 
     if analyzed or (not needs_analysis and selected in dates['account_analysis_dates']):
-        detail = ops.snapshot(key, selected)
+        detail = ops.snapshot(key, selected, include_multi_rs=True)
         analysis = detail.get('analysis') or {}
         if analysis.get('industry_membership_reconstructed'):
             st.warning(f'{selected} 산업 구성은 당시 저장본이 없어 '
@@ -1924,7 +1924,7 @@ def main():
                        '로컬 저장 중 · Community Cloud에서 계좌를 보존하려면 Secrets에 R2를 설정하세요.')
             st.caption('앱 휴면 중에는 장중 관측이 중단될 수 있습니다.')
     try:
-        snapshot = ops.snapshot(key)
+        snapshot = ops.snapshot(key, include_multi_rs=(page == '종목 탐색'))
         if page != '오늘의 운용':
             st.caption(f'{names[key]} · 저장 기준일 {snapshot["as_of"] or "분석 전"} · 계좌 처리일 {snapshot["account_as_of"] or "미시작"}')
         if page != '오늘의 운용':

@@ -12,6 +12,18 @@ def calendar(year):
     return get_calendar("XKRX", start=f"{year - 1}-12-01", end=f"{year + 1}-01-31")
 
 
+def sessions_after(last, through):
+    """Trading days after the account close, up to and including the target."""
+    start = date.fromisoformat(last) + timedelta(days=1)
+    end = date.fromisoformat(through)
+    sessions = []
+    while start <= end:
+        stop = min(end, date(start.year, 12, 31))
+        sessions.extend(day.date().isoformat() for day in calendar(start.year).sessions_in_range(start, stop))
+        start = stop + timedelta(days=1)
+    return sessions
+
+
 def previous_close_date(session):
     try:
         day = date.fromisoformat(session)

@@ -105,7 +105,7 @@ class JobManager:
         if (
             self.context.state(w)
             and action in {"analyze", "paper", "daily", "prepare_intraday", "watch_auto"}
-            and self.context.snapshot(w["id"])["status"] == "configuration_mismatch"
+            and self.context.snapshot(w["id"], include_multi_rs=False)["status"] == "configuration_mismatch"
         ):
             raise ValueError(
                 "계좌 설정·유니버스가 변경되었습니다. 기존 계좌를 보존하고 새 비교 계좌를 사용하세요."

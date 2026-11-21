@@ -118,7 +118,7 @@ def enable_daily_account(context, workspace, progress=None):
     state = context.state(workspace)
     if state is None:
         raise ValueError("계좌의 첫 종가 처리를 마친 뒤 날짜별 후보군을 켜세요.")
-    if context.snapshot(workspace["id"])["status"] != "ready":
+    if context.snapshot(workspace["id"], include_multi_rs=False)["status"] != "ready":
         raise ValueError("계좌 설정이 일치하지 않아 날짜별 후보군을 적용할 수 없습니다.")
     original = context.path(workspace["data_dir"])
     prices = original / "prices.csv"

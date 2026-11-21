@@ -335,6 +335,38 @@ def test_candidate_dates_include_saved_account_days_and_select_without_changing_
     assert ops.path(w['state']).read_bytes()==before
 
 
+def test_pending_sessions_share_year_calendars_across_new_year():
+    from trendfollow.krx_sessions import calendar, sessions_after
+
+    calendar(2025)
+    calendar(2026)
+    misses = calendar.cache_info().misses
+    assert sessions_after('2025-12-29', '2026-01-04') == ['2025-12-30', '2026-01-02']
+    assert sessions_after('2026-01-02', '2026-01-02') == []
+    assert calendar.cache_info().misses == misses
+
+
+def test_multi_rs_fallback_only_for_requested_table_without_saved_column(ops, monkeypatch):
+    from unittest.mock import Mock
+    from trendfollow.operations import queries
+
+    w = create(ops)
+    day = '2026-11-06'
+    path = ops.home/'analyses'/w['id']/day/'signals.csv'
+    path.parent.mkdir(parents=True)
+    frame = pd.DataFrame([dict(date=day, symbol='DEMO01', prior_52w_high=100)])
+    frame.to_csv(path, index=False)
+    calculate = Mock(return_value={'DEMO01': {'multi_rs': 82.5}})
+    monkeypatch.setattr(queries, '_saved_multi_rs', calculate)
+    assert 'multi_rs' not in ops.snapshot(w['id'], include_multi_rs=False)['rows'][0]
+    calculate.assert_not_called()
+    assert ops.snapshot(w['id'], include_multi_rs=True)['rows'][0]['multi_rs'] == 82.5
+    calculate.assert_called_once()
+    frame.assign(multi_rs=91.0).to_csv(path, index=False)
+    assert ops.snapshot(w['id'], include_multi_rs=True)['rows'][0]['multi_rs'] == 91.0
+    calculate.assert_called_once()
+
+
 def test_enabling_daily_candidates_keeps_one_account_and_prior_state(ops):
     from trendfollow.candidate_universe import enable_daily_account
 

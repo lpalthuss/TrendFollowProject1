@@ -357,9 +357,8 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
         if state['last_date']>as_of:
             raise ValueError('처리 완료일보다 과거의 daily 실행은 허용하지 않습니다.')
         if price_source == 'pykrx':
-            from exchange_calendars import get_calendar
-            sessions=[d.date().isoformat() for d in get_calendar('XKRX',start=state['last_date'],end=as_of).sessions_in_range(state['last_date'],as_of)
-                      if d.date().isoformat()>state['last_date']]
+            from .krx_sessions import sessions_after
+            sessions=sessions_after(state['last_date'],as_of)
         else:
             previous_days=source.daily(benchmark_symbols[0],state['last_date'],as_of)
             sessions=sorted(d for d in previous_days.date if d>state['last_date'])

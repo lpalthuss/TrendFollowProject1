@@ -316,7 +316,7 @@ class ActionRunner:
 
             policy = read_policy(self.context.root, w["id"])
             if policy and self.context.state(w) and as_of > policy["enabled_after"]:
-                from exchange_calendars import get_calendar
+                from ..krx_sessions import sessions_after
                 from ..candidate_universe import (
                     account_universe, acquisition_universe, available_selections,
                     backfill_added_history, capture_krx_selection, capture_selection,
@@ -324,9 +324,7 @@ class ActionRunner:
                 )
 
                 last = self.context.state(w)["last_date"]
-                sessions = [day.date().isoformat() for day in get_calendar(
-                    "XKRX", start=last, end=as_of
-                ).sessions_in_range(last, as_of) if day.date().isoformat() > last]
+                sessions = sessions_after(last, as_of)
                 if not sessions or sessions[-1] != as_of:
                     raise ValueError("마지막 처리일 이후의 완료 거래일을 선택하세요.")
                 available = set(available_selections(self.context.root))

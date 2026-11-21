@@ -404,10 +404,12 @@ def test_password_gate_and_account_save(tmp_path, monkeypatch):
 
 
 def test_candidate_detail_and_filter_are_connected(monkeypatch):
+    import streamlit as st
     from trendfollow.ui_service import Operations
     original = Operations.snapshot
-    def snapshot(self,key):
-        result = original(self,key)
+    def snapshot(self,key, *, include_multi_rs=True):
+        result = original(self,key, include_multi_rs=include_multi_rs)
+        assert include_multi_rs == (st.session_state.get('detail-page') == '종목 탐색')
         result['rows'] = [dict(symbol='000080',name='테스트 상승',sector='산업A',
             reference_price=10000,rs_percentile=95,signal=True,rs_pass=True,
             setup_phase='breakout',volume_ratio=2),
@@ -596,7 +598,7 @@ def test_favorite_outside_current_candidates_opens_last_analysis(tmp_path, monke
     assert '후보에 없음' in view.radio.call_args.kwargs['format_func']('000020')
     assert render.call_args.args[3:5] == (row, earlier)
     assert render.call_args.kwargs['chart_day'] == today
-    ops.snapshot.assert_called_once_with('account', earlier)
+    ops.snapshot.assert_called_once_with('account', earlier, include_multi_rs=False)
 
 def test_favorite_watch_starts_only_selected_symbols_and_displays_matching_run(monkeypatch):
     from unittest.mock import Mock
