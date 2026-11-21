@@ -46,7 +46,19 @@ ACTIONS = {'industry':'오늘 산업 자료 갱신','daily':'일봉 수집 + 미
 @st.cache_resource
 def operations(root: str):
     # Shared across reruns and sessions in this process, including its job lock.
-    return Operations(root)
+    try:
+        config = st.secrets.get('r2') if 'r2' in st.secrets else None
+    except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
+        config = None
+    if config is None:
+        return Operations(root)
+    from .r2_backup import connect
+    backup = connect(root, *(str(config.get(k, '')) for k in
+                             ('account_id', 'bucket', 'access_key_id', 'secret_access_key')))
+    backup.initialize()
+    ops = Operations(root)
+    ops.backup = backup
+    return ops
 
 
 def setting(name, default=''):
@@ -1846,7 +1858,21 @@ def main():
             if value:
                 os.environ[name] = str(value)
     can_write = authorize()
-    ops = operations(str(ROOT))
+    try:
+        ops = operations(str(ROOT))
+    except ValueError as error:
+        st.error(str(error))
+        st.stop()
+    backup = getattr(ops, 'backup', None)
+    if backup and backup.error:
+        st.error(backup.error)
+        if can_write and st.button('R2에 다시 저장'):
+            try:
+                backup.publish()
+                st.rerun()
+            except ValueError as error:
+                st.error(str(error))
+        st.stop()
     if getattr(type(ops), 'source_fingerprint', None) != source_fingerprint(CODE_ROOT):
         ops.refresh_jobs()
         active = [job for job in ops.jobs.values() if job['status'] in {'queued','running'}]
@@ -1894,7 +1920,9 @@ def main():
                                                      'pykrx': 'pykrx'}[value], key='historical-source')
         st.button('자료 다시 읽기')
         with st.expander('배포·저장 안내'):
-            st.caption('Community Cloud의 로컬 저장은 영구 보존되지 않습니다. 앱 휴면 시 관측의 지속 실행도 보장되지 않습니다.')
+            st.caption(f'R2 자동 저장 연결됨 · {backup.bucket}' if backup else
+                       '로컬 저장 중 · Community Cloud에서 계좌를 보존하려면 Secrets에 R2를 설정하세요.')
+            st.caption('앱 휴면 중에는 장중 관측이 중단될 수 있습니다.')
     try:
         snapshot = ops.snapshot(key)
         if page != '오늘의 운용':

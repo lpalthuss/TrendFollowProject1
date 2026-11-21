@@ -1,5 +1,6 @@
 """Actions responsibilities for the local operations UI."""
 
+from ..r2_backup import durable_change
 from dataclasses import asdict, replace
 import hashlib
 import json
@@ -129,6 +130,7 @@ class ActionRunner:
         save_json(root / "recalculation.json", result)
         return result
 
+    @durable_change
     def run(self, key, w, payload, as_of):
         action = payload["action"]
         progress = lambda message, current=None, total=None, **stage: self.context.job_manager.report_progress(
@@ -508,6 +510,7 @@ class ActionRunner:
             )
         return result
 
+    @durable_change
     def revision_policy(self, payload):
         from ..revisions import set_policy
 

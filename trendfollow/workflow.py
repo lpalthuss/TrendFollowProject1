@@ -128,7 +128,10 @@ def paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_0
                      approved_symbols=None,revision_id=None,fingerprint_universe_path=None):
     from .observation_control import control_lock
     with control_lock(Path(state_path)):
-        return _paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved_symbols,revision_id,fingerprint_universe_path)
+        result = _paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved_symbols,revision_id,fingerprint_universe_path)
+    from .r2_backup import checkpoint_saved
+    checkpoint_saved()
+    return result
 
 
 def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_000_000,config_path=None,

@@ -1,5 +1,6 @@
 """Accounts responsibilities for the local operations UI."""
 
+from ..r2_backup import durable_change
 from dataclasses import asdict, replace
 from datetime import datetime
 import json
@@ -93,6 +94,7 @@ class WorkspaceStore:
         path = self.context.home / "favorites" / (self.workspace(key)["id"] + ".json")
         return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
 
+    @durable_change
     def set_favorite(self, key, symbol, selected):
         if not isinstance(symbol, str) or not re.fullmatch(r"[0-9A-Z]{6}", symbol) or type(selected) is not bool:
             raise ValueError("관심 종목 코드와 선택 상태를 확인하세요.")
@@ -111,6 +113,7 @@ class WorkspaceStore:
             day = (self.state(w) or {}).get("last_date", "9999-12-31")
         return strategy_config(state_path, self.context.path(w["config"]), day)
 
+    @durable_change
     def enable_pyramiding(self, key, review, execution, expected_day):
         from ..ui_jobs import acquire_lease
 
@@ -172,6 +175,7 @@ class WorkspaceStore:
             )
         return result
 
+    @durable_change
     def create_workspace(self, payload):
         name = str(payload.get("name", "")).strip()
         if not 1 <= len(name) <= 60:
@@ -219,6 +223,7 @@ class WorkspaceStore:
         p = self.context.path(w["state"])
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
+    @durable_change
     def update_workspace(self, row):
         with self.context.lock, control_lock(self.registry):
             save_json(
@@ -226,6 +231,7 @@ class WorkspaceStore:
                 [row if x["id"] == row["id"] else x for x in self.registry_rows()],
             )
 
+    @durable_change
     def set_archived(self, key, archived):
         if type(archived) is not bool:
             raise ValueError("계좌 보관 상태를 확인하세요.")
@@ -250,6 +256,7 @@ class WorkspaceStore:
             save_json(self.registry, [updated if item["id"] == key else item for item in rows])
             return updated
 
+    @durable_change
     def rename_workspace(self, key, name):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
             raise ValueError("계좌 이름은 1~60자로 입력하세요.")

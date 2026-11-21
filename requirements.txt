@@ -1,1 +1,1 @@
--e .[streamlit,krx]
+-e .[streamlit,krx,r2]

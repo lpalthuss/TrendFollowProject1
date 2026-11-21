@@ -13,6 +13,7 @@ dependencies = ["pandas>=2.2,<3", "numpy>=1.26,<3", "requests>=2.31,<3", "python
 streamlit = ["streamlit>=1.53,<2", "altair>=5,<7", "websocket-client>=1.8,<2"]
 test = ["pytest>=8,<10", "websocket-client>=1.8,<2"]
 intraday = ["websocket-client>=1.8,<2"]
+r2 = ["boto3>=1.36,<2"]
 krx = ["pykrx>=1.2.7,<2"]
 dev = ["black==26.10.1"]
 
