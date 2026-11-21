@@ -15,13 +15,17 @@ SIGNAL_FIELDS = "symbol name sector industry_name benchmark date open high low c
 
 
 @lru_cache(maxsize=8)
-def _saved_multi_rs(prices_path, _modified_ns, _size, as_of):
+def _saved_multi_rs(files, as_of, symbols):
+    from ..market_candidate_analysis import _price_window
+
+    start = (date.fromisoformat(as_of) - timedelta(days=730)).isoformat()
     try:
-        prices = pd.read_csv(prices_path, usecols=["date", "symbol", "close"],
-                             dtype={"date": str, "symbol": str})
-    except ValueError:
-        return {}  # Older display-only price fixtures may have no close column.
-    prices = prices[prices.date.le(as_of)].copy()
+        prices = _price_window([path for path, _, _ in files], start, as_of,
+                               {*symbols, "KOSPI"}, usecols=["date", "symbol", "close"])
+    except ValueError as error:
+        if "Usecols do not match" in str(error):
+            return {}  # Older display-only price fixtures may have no close column.
+        raise
     prices["date"] = pd.to_datetime(prices.date)
     kospi = prices[prices.symbol.eq("KOSPI")].set_index("date").close
     if kospi.empty:
@@ -319,16 +323,33 @@ class OperationsQueries:
         frame = read_csv(signal) if signal else pd.DataFrame()
         fields = [c for c in (*SIGNAL_FIELDS, "prior_breakout_high") if c in frame]
         rows = json_rows(frame[fields])
-        if include_multi_rs and rows and "multi_rs" not in fields:
-            prices_path = self.context.path(w["data_dir"]) / "prices.csv"
-            if prices_path.is_file():
-                stat = prices_path.stat()
-                as_of = str(frame.date.iloc[0])[:10]
-                extra_rs = _saved_multi_rs(
-                    str(prices_path), stat.st_mtime_ns, stat.st_size, as_of
-                )
-                for row in rows:
-                    row.update(extra_rs.get(row.get("symbol"), {}))
+        if include_multi_rs and rows:
+            missing = {r["symbol"]: r for r in rows if r.get("multi_rs") is None}
+            if missing:
+                from ..market_candidate_analysis import latest_analysis
+
+                day = str(frame.date.iloc[0])[:10]
+                market = latest_analysis(self.context.root, key, day)
+                if market and signal != market / "signals.csv":
+                    saved = read_csv(market / "signals.csv")
+                    rs_fields = [c for c in saved if c.startswith("multi_rs")]
+                    if "multi_rs" in rs_fields:
+                        for item in json_rows(saved[["symbol", *rs_fields]].dropna(subset=["multi_rs"])):
+                            target = missing.pop(item.pop("symbol"), None)
+                            if target is not None:
+                                target.update(item)
+                if missing:
+                    paths = [self.context.path(w["data_dir"]) / "prices.csv",
+                             self.context.home / "market-analyses" / "extra-prices.csv"]
+                    files = []
+                    for path in paths:
+                        if path.is_file():
+                            stat = path.stat()
+                            files.append((str(path), stat.st_mtime_ns, stat.st_size))
+                    if files:
+                        extra = _saved_multi_rs(tuple(files), day, tuple(sorted(missing)))
+                        for symbol, row in missing.items():
+                            row.update(extra.get(symbol, {}))
         universe = read_csv(self.context.path(w["universe"]))
         industry_names = {
             str(r["symbol"]): r["industry_name"]

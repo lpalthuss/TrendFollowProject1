@@ -32,9 +32,12 @@ def test_saved_multi_rs_uses_only_prices_through_selected_day(tmp_path):
     ])
     path = tmp_path / 'prices.csv'
     prices.to_csv(path, index=False)
-    stat = path.stat()
-    earlier = _saved_multi_rs(str(path), stat.st_mtime_ns, stat.st_size, days[-2].date().isoformat())
-    later = _saved_multi_rs(str(path), stat.st_mtime_ns, stat.st_size, days[-1].date().isoformat())
+    extra = tmp_path / 'extra-prices.csv'
+    prices[prices.symbol.eq('KOSPI')].to_csv(extra, index=False)
+    prices[prices.symbol.ne('KOSPI')].to_csv(path, index=False)
+    files = tuple((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in (path, extra))
+    earlier = _saved_multi_rs(files, days[-2].date().isoformat(), ("000001",))
+    later = _saved_multi_rs(files, days[-1].date().isoformat(), ("000001",))
     assert earlier['000001']['multi_rs'] == 50
     assert later['000001']['multi_rs'] > 50
     assert earlier['000001']['multi_rs_as_of'] == days[-2].date().isoformat()

@@ -367,6 +367,28 @@ def test_multi_rs_fallback_only_for_requested_table_without_saved_column(ops, mo
     calculate.assert_called_once()
 
 
+def test_partial_account_rs_prefers_same_account_and_date_market_result(ops, monkeypatch):
+    from trendfollow.market_candidate_analysis import analysis_home
+    from trendfollow.operations import queries
+
+    w = create(ops)
+    day = '2026-11-06'
+    target = ops.home/'analyses'/w['id']/day/'signals.csv'
+    target.parent.mkdir(parents=True)
+    pd.DataFrame(dict(date=[day]*3, symbol=['A', 'B', 'C'],
+                      multi_rs=[0, None, None], prior_52w_high=[100]*3)).to_csv(target, index=False)
+    folder = analysis_home(ops.root, w['id'])/day/'run'
+    folder.mkdir(parents=True)
+    (folder/'analysis.json').write_text('{}')
+    pd.DataFrame(dict(symbol=['A', 'B'], multi_rs=[99, 75])).to_csv(folder/'signals.csv', index=False)
+
+    def calculate(files, as_of, symbols):
+        assert as_of == day and symbols == ('C',)
+        return {'C': {'multi_rs': 50}}
+    monkeypatch.setattr(queries, '_saved_multi_rs', calculate)
+    assert [r['multi_rs'] for r in ops.snapshot(w['id'])['rows']] == [0, 75, 50]
+
+
 def test_enabling_daily_candidates_keeps_one_account_and_prior_state(ops):
     from trendfollow.candidate_universe import enable_daily_account
 

@@ -81,10 +81,10 @@ def selection_inputs(context, workspace, day):
             hashlib.sha256((selection_home(context.root) / day / "universe.csv").read_bytes()).hexdigest())
 
 
-def _price_window(paths, start, through, symbols):
+def _price_window(paths, start, through, symbols, *, usecols=None):
     parts = []
     for path in paths:
-        with pd.read_csv(path, dtype={"symbol": str, "date": str}, chunksize=50000) as chunks:
+        with pd.read_csv(path, dtype={"symbol": str, "date": str}, usecols=usecols, chunksize=50000) as chunks:
             for chunk in chunks:
                 keep = chunk.date.between(start, through) & chunk.symbol.isin(symbols)
                 if keep.any() or not parts:
