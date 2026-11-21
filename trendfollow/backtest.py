@@ -36,7 +36,7 @@ def clean_research_prices(prices):
     return p[~bad].sort_values(["symbol", "date"]).reset_index(drop=True), p[bad].copy()
 
 
-def features(prices, universe, rules=Rules(), exit_days=20):
+def features(prices, universe, rules=Rules(), exit_days=20, *, since=None):
     """Vectorized daily features; no full-sample rank or unfinished-week values."""
     rules.validate()
     p, rejected = clean_research_prices(prices)
@@ -92,12 +92,17 @@ def features(prices, universe, rules=Rules(), exit_days=20):
         )
         f["eligible_history"] = consecutive & f.excess_return.notna()
         f["reference_price"] = f.close
+        if since is not None:
+            # Rolling indicators and the setup state machine need the full history.
+            f = f.loc[since:].copy()
         for k, v in item.items():
             f[k] = v
         output.append(f.reset_index())
     if not output:
         raise ValueError("계산 가능한 유니버스·벤치마크 데이터가 없습니다.")
+    del frames
     result = pd.concat(output, ignore_index=True)
+    del output
     from .initial_stop import planning_stops
 
     result = planning_stops(result, rules)
@@ -105,14 +110,14 @@ def features(prices, universe, rules=Rules(), exit_days=20):
         from .market_units import market_unit_features
 
         result = result.merge(
-            market_unit_features(p, universe, rules),
+            market_unit_features(p, universe, rules, since=since),
             on=["date", "symbol"],
             how="left",
             validate="one_to_one",
         )
     if rules.entry_method == "setup":
         result = result.merge(
-            sector_features(p, universe, rules),
+            sector_features(p, universe, rules, since=since),
             on=["date", "symbol"],
             how="left",
             validate="one_to_one",
@@ -167,7 +172,7 @@ def simulate(
         raise ValueError("모의 실행할 거래일이 없습니다.")
     bars = {
         pd.Timestamp(d): f.set_index("symbol").to_dict("index")
-        for d, f in p.groupby("date")
+        for d, f in p.loc[p.date.between(first, last)].groupby("date")
     }
     daily_signals = {pd.Timestamp(d): f for d, f in signals.groupby("date")}
     state = initial_state or {}

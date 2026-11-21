@@ -56,12 +56,19 @@ def paper_input_digest(prices,universe,rules,peer_history=None):
         from .market_units import market_symbol
         symbols|={market_symbol(item,rules) for item in universe.to_dict('records')}
     # Extra observation-only index rows must not invalidate a percentile paper account.
-    digest=hashlib.sha256(prices[prices.symbol.isin(symbols)].to_csv(index=False).encode())
+    digest=hashlib.sha256()
+    class DigestWriter:
+        def write(self, text):
+            digest.update(text.encode())
+            return len(text)
+    writer = DigestWriter()
+    prices.loc[prices.symbol.isin(symbols)].to_csv(writer, index=False)
     if rules.entry_method=='setup' and 'industry_peer_history' in universe:
         from .industries import load_peer_history,PEER_DECISION_COLUMNS
         peers=load_peer_history(universe) if peer_history is None else peer_history
         peers=peers[peers.date<=pd.Timestamp(prices.date.max())].sort_values(['date','symbol'])
-        digest.update(b'\nindustry-peer-history\n'+peers[PEER_DECISION_COLUMNS].to_csv(index=False).encode())
+        digest.update(b'\nindustry-peer-history\n')
+        peers[PEER_DECISION_COLUMNS].to_csv(writer, index=False)
     return digest.hexdigest()
 
 
@@ -145,7 +152,10 @@ def _paper_checkpoint(prices_path, universe_path, as_of, state_path, capital=10_
     if rules.entry_method=='setup' and 'industry_peer_history' in universe:
         from .industries import require_peer_sessions
         require_peer_sessions(prices,universe,as_of,as_of)
-    prepared,rejected=features(prices,universe,rules)
+    since = pd.Timestamp(as_of)
+    if old and old['last_date'] < as_of:
+        since = pd.Timestamp(old['last_date']) + pd.Timedelta(days=1)
+    prepared,rejected=features(prices,universe,rules,since=since)
     asof=pd.Timestamp(as_of)
     if approved_symbols is not None:
         prepared.loc[(prepared.date==asof)&~prepared.symbol.isin(approved_symbols),'signal']=False
@@ -387,17 +397,22 @@ def daily_run(universe_path, data_dir, state_path, as_of=None, capital=10_000_00
         try:
             decision_path=(universe_by_session or {}).get(session,universe_path)
             prices,u,rules,limits=read_inputs(prices_path,decision_path,session,strategy_config(state_path,config_path,session))
-            prepared,_=features(prices,u,rules)
+            print(f'{session} 종가 지표 계산 시작 · {len(u)}종목', flush=True)
+            prepared,rejected=features(prices,u,rules,since=pd.Timestamp(session))
             candidates=prepared[(prepared.date==pd.Timestamp(session))&prepared.signal]
             if 'candidate_active' in candidates:
                 candidates=candidates[candidates.candidate_active.eq(True)]
+            print(f'{session} 종가 후보 검증 시작 · {len(candidates)}종목', flush=True)
             approved=verify_paper_candidates(candidates,prices,rules,session,state_path,env_file,verify_provider,include_indices)
+            del prices, prepared, candidates, rejected
             checkpoint_options = (
                 {"fingerprint_universe_path": fingerprint_universe_path}
                 if fingerprint_universe_path is not None else {}
             )
+            print(f'{session} 계좌 처리·기록 저장 시작', flush=True)
             report=paper_checkpoint(prices_path,decision_path,session,state_path,capital,config_path,approved,
                                     **checkpoint_options)
+            print(f'{session} 계좌 처리·기록 저장 완료', flush=True)
             report['approved_signals']=len(approved)
         except (ValueError,FileNotFoundError) as exc:
             if len(sessions)>1:
@@ -446,10 +461,11 @@ def continue_revised_checkpoint(prices_path,universe_path,as_of,state_path,capit
     from .revisions import validated_approval
     validated_approval(state_path,revision_id,prices_path,universe_path,config_path,as_of)
     prices,u,rules,_=read_inputs(prices_path,universe_path,as_of,strategy_config(state_path,config_path,as_of))
-    prepared,_=features(prices,u,rules)
+    prepared,rejected=features(prices,u,rules,since=pd.Timestamp(as_of))
     candidates=prepared[prepared.date.eq(pd.Timestamp(as_of))&prepared.signal]
     approved=verify_paper_candidates(candidates,prices,rules,as_of,state_path,env_file,verify_provider,
         rules.mansfield_benchmark=='market_index' or rules.market_units_enabled and rules.market_units_benchmark=='market_index')
+    del prices, prepared, candidates, rejected
     result=paper_checkpoint(prices_path,universe_path,as_of,state_path,capital,config_path,approved,revision_id=revision_id)
     result.update(revision_id=revision_id,approved_signals=len(approved))
     return result

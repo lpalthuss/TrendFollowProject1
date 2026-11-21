@@ -98,16 +98,19 @@ def setup_features(frame, rules, atr_values=None, calendar=None):
     return pd.DataFrame(rows,index=f.index)
 
 
-def sector_features(prices,universe,rules):
+def sector_features(prices,universe,rules,*,since=None):
     """Equal-weight leave-one-out peer breadth; universe membership is a current snapshot."""
     if 'industry_peer_history' in universe.columns:
         from .industries import industry_action_features
-        return industry_action_features(prices,universe,rules)
+        target = prices if since is None else prices.loc[prices.date >= since]
+        return industry_action_features(target,universe,rules)
     p=prices.copy()
     p['date']=pd.to_datetime(p.date)
     p=p.sort_values(['symbol','date'])
     p['day_return']=p.groupby('symbol').close.pct_change(fill_method=None)
     p['previous_date']=p.groupby('symbol').date.shift()
+    if since is not None:
+        p=p.loc[p.date>=since]
     stocks=p.merge(universe[['symbol','sector','benchmark']],on='symbol',validate='many_to_one')
     benchmarks=p[p.symbol.isin(set(universe.benchmark))][['date','symbol','day_return','previous_date']].rename(
         columns={'symbol':'benchmark','day_return':'benchmark_day_return','previous_date':'benchmark_previous_date'})

@@ -96,6 +96,25 @@ def test_quality_does_not_hide_missing_days_or_price_errors():
     assert summary['price_mismatch_rows']==2
 
 
+def test_close_window_keeps_full_history_signals_and_input_digest(tmp_path):
+    import hashlib
+    from trendfollow.config import Rules
+    from trendfollow.workflow import paper_input_digest
+
+    generate(tmp_path)
+    prices = pd.read_csv(tmp_path/'prices.csv', dtype={'symbol': str})
+    universe = pd.read_csv(tmp_path/'universe.csv', dtype={'symbol': str, 'benchmark': str})
+    rules = Rules(entry_method='setup', market_units_enabled=True)
+    full, rejected = features(prices, universe, rules)
+    since = full.date.max() - pd.Timedelta(days=2)
+    window, window_rejected = features(prices, universe, rules, since=since)
+    pd.testing.assert_frame_equal(window, full[full.date >= since].reset_index(drop=True))
+    pd.testing.assert_frame_equal(window_rejected, rejected)
+    symbols = set(universe.symbol) | set(universe.benchmark)
+    serialized = prices[prices.symbol.isin(symbols)].to_csv(index=False).encode()
+    assert paper_input_digest(prices, universe, rules) == hashlib.sha256(serialized).hexdigest()
+
+
 def test_master_filter_includes_reason_for_current_liquidity_exclusions():
     row={'symbol':'005930','name':'Example','그룹코드':'ST','거래정지':'N','정리매매':'N',
         '관리종목':'N','저유동성':'N','우선주':'0','SPAC':'N','지수업종대분류':'0027',
@@ -184,7 +203,7 @@ def test_daily_catchup_processes_missing_sessions_in_order_with_one_collection(t
     collected=[];processed=[]
     monkeypatch.setattr(market,'acquire_research',lambda *a,**kw:(collected.append(kw['required_session']) or {'errors':[]}))
     monkeypatch.setattr(workflow,'read_inputs',lambda *a:(pd.DataFrame(),pd.DataFrame(),Rules(),None))
-    monkeypatch.setattr(workflow,'features',lambda *a:(pd.DataFrame({'date':[pd.Timestamp('2026-11-13')],'signal':[False]}),None))
+    monkeypatch.setattr(workflow,'features',lambda *a,**kw:(pd.DataFrame({'date':[pd.Timestamp('2026-11-13')],'signal':[False]}),None))
     monkeypatch.setattr(workflow,'verify_paper_candidates',lambda *a:[])
     def checkpoint(prices,universe,date,state_path,*args):
         processed.append(date)

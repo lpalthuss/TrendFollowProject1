@@ -15,7 +15,7 @@ def market_symbol(item, rules):
     return market
 
 
-def market_unit_features(prices, universe, rules):
+def market_unit_features(prices, universe, rules, *, since=None):
     """Use signal-day close only; missing current sessions are never forward-filled."""
     frames = {str(s): f.set_index('date').sort_index() for s, f in prices.groupby('symbol')}
     cache, output = {}, []
@@ -39,7 +39,7 @@ def market_unit_features(prices, universe, rules):
             cache[key] = pd.DataFrame({'market_unit_benchmark': symbol,
                 'market_unit_close': close, 'market_unit_ma': average,
                 'market_unit_regime': regime, 'market_unit_cap': cap})
-        f = cache[key].copy()
+        f = cache[key].loc[since:].copy() if since is not None else cache[key].copy()
         f['symbol'] = str(item['symbol'])
         output.append(f.reset_index())
     return pd.concat(output, ignore_index=True)
