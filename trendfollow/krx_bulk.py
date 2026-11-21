@@ -11,7 +11,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from dotenv import dotenv_values
 
-from .research_store import publish_research, recover_research, write_json
+from .price_history import PriceHistory
+from .research_store import publish_price_csv, recover_research, write_json
 
 
 FIELDS = {"시가": "open", "고가": "high", "저가": "low", "종가": "close", "거래량": "volume"}
@@ -79,10 +80,6 @@ def acquire_missing_sessions(universe_path, output_dir, sessions, include_market
     prices_path = root / "prices.csv"
     if not prices_path.is_file():
         raise ValueError("pykrx 일괄 조회는 저장된 과거 일봉을 바탕으로 누락 거래일만 채웁니다. 먼저 기존 일봉을 준비하세요.")
-    old = pd.read_csv(prices_path, dtype={"symbol": str, "date": str})
-    required = {"date", "symbol", "open", "high", "low", "close", "volume"}
-    if not required.issubset(old) or old.duplicated(["date", "symbol"]).any():
-        raise ValueError("기존 일봉의 필드나 날짜·종목 중복을 확인하세요.")
     universe = pd.read_csv(universe_path, dtype={"symbol": str, "benchmark": str})
     symbols = set(universe.symbol) | set(universe.benchmark)
     if include_market_indices:
@@ -92,6 +89,8 @@ def acquire_missing_sessions(universe_path, output_dir, sessions, include_market
         raise ValueError("추가할 거래일이 없습니다.")
     if any(not isinstance(day, str) or pd.Timestamp(day).strftime("%Y-%m-%d") != day for day in sessions):
         raise ValueError("KRX 조회 거래일 형식이 올바르지 않습니다.")
+    history = PriceHistory(prices_path, sessions)
+    old = history.window
     missing = [day for day in sessions if not symbols.issubset(set(old.loc[old.date.eq(day), "symbol"]))]
     if not missing:
         return {"status": "already_present", "source": "existing", "sessions": [], "errors": []}
@@ -147,7 +146,6 @@ def acquire_missing_sessions(universe_path, output_dir, sessions, include_market
     # Existing bars retain their original source and values. KRX only fills gaps.
     present = pd.MultiIndex.from_frame(old[["date", "symbol"]])
     fresh = fresh[~pd.MultiIndex.from_frame(fresh[["date", "symbol"]]).isin(present)]
-    merged = pd.concat([old, fresh], ignore_index=True).sort_values(["symbol", "date"])
     prior = {}
     prior_path = root / "manifest.json"
     if prior_path.exists():
@@ -163,8 +161,9 @@ def acquire_missing_sessions(universe_path, output_dir, sessions, include_market
                                    "price_basis": "KRX daily OHLCV; adjustment may differ from prior source"}],
                 "source_comparison": {"overlap_checked": overlap_checked, "difference_count": len(comparisons),
                     "differences": comparisons[:100]},
-                "requested_symbols": len(symbols), "collected_symbols": int(merged.symbol.nunique()),
-                "rows": len(merged), "errors": [], "published": True, "status": "published",
+                "requested_symbols": len(symbols), "collected_symbols": len(history.symbols.union(fresh.symbol)),
+                "rows": history.count + len(fresh), "errors": [], "published": True, "status": "published",
                 "attempt_report": str(attempt)}
-    publish_research(root, merged, manifest, on_publish=lambda: write_json(attempt, manifest))
+    publish_price_csv(root, lambda handle: history.write_merged(handle, fresh), manifest,
+                      on_publish=lambda: write_json(attempt, manifest))
     return manifest

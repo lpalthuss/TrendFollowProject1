@@ -84,6 +84,10 @@ def require_published_research(prices_path):
 
 
 def publish_research(root,prices,manifest,on_publish=None):
+    publish_price_csv(root, lambda handle: prices.to_csv(handle, index=False), manifest, on_publish)
+
+
+def publish_price_csv(root, write_prices, manifest, on_publish=None):
     root=Path(root)
     with publication_lock(root):
         recover_locked(root)
@@ -92,7 +96,7 @@ def publish_research(root,prices,manifest,on_publish=None):
         assert stage.resolve().parent==root.resolve()
         try:
             with (stage/'prices.csv').open('w',encoding='utf-8',newline='') as handle:
-                prices.to_csv(handle,index=False);handle.flush();os.fsync(handle.fileno())
+                write_prices(handle);handle.flush();os.fsync(handle.fileno())
             with (stage/'prices.csv').open('rb') as handle:
                 manifest['prices_sha256']=hashlib.file_digest(handle,'sha256').hexdigest()
             write_json(stage/'manifest.json',manifest)

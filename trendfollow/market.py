@@ -190,7 +190,8 @@ class NaverResearchSource:
 
 
 def acquire_research(universe_path, output_dir, start, end, refresh=False, include_market_indices=False,required_session=None,progress=None,append_sessions=None):
-    from .research_store import recover_research,publish_research,write_json
+    from .price_history import PriceHistory
+    from .research_store import recover_research,publish_research,publish_price_csv,write_json
     root = Path(output_dir); root.mkdir(parents=True, exist_ok=True)
     recover_research(root)
     first,last=pd.Timestamp(start),pd.Timestamp(end)
@@ -235,6 +236,7 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
                 print(f'일봉 수집 {number}/{len(symbols)} | 실패 {len(errors)}', flush=True)
                 if progress:progress('가격 자료 수집 중',number,len(symbols))
     if progress:progress('수집한 가격 자료 검증·저장 중')
+    del futures
     prices=(pd.concat(frames,ignore_index=True).sort_values(['symbol','date']) if frames else
         pd.DataFrame(columns=['date','symbol','open','high','low','close','volume']))
     benchmarks=set(universe.benchmark)
@@ -255,14 +257,13 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
         if len(missing):errors.append({'symbol':'history','reason':f'기존 수집 구간의 {len(missing)}개 일봉이 누락되었습니다.'})
     source_comparison=None
     prior_manifest={}
+    history=None
     if not errors and append_sessions is not None and (root/'prices.csv').exists():
-        old=pd.read_csv(root/'prices.csv',dtype={'symbol':str,'date':str})
-        required={'date','symbol','open','high','low','close','volume'}
-        if not required.issubset(old) or old.duplicated(['date','symbol']).any():
-            raise ValueError('기존 일봉의 필드나 날짜·종목 중복을 확인하세요.')
         requested=set(append_sessions)
         if not requested or any(day<str(first.date()) or day>str(last.date()) for day in requested):
             raise ValueError('추가할 거래일이 수집 범위를 벗어났습니다.')
+        history=PriceHistory(root/'prices.csv', requested)
+        old=history.window
         boundary=[day for day in old.date.unique() if day<min(requested)]
         compared=requested | ({max(boundary)} if boundary else set())
         overlap=old.loc[old.date.isin(compared)].merge(
@@ -280,9 +281,8 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
         existing=pd.MultiIndex.from_frame(old[['date','symbol']])
         fresh=prices.loc[prices.date.isin(requested)]
         fresh=fresh.loc[~pd.MultiIndex.from_frame(fresh[['date','symbol']]).isin(existing)]
-        prices=pd.concat([old,fresh],ignore_index=True).sort_values(['symbol','date'])
         for session in sorted(requested):
-            available=set(prices.loc[prices.date.eq(session),'symbol'])
+            available=set(old.loc[old.date.eq(session),'symbol']) | set(fresh.loc[fresh.date.eq(session),'symbol'])
             if not benchmarks.issubset(available):
                 errors.append({'symbol':'benchmarks',
                                'reason':f'{session} 기준 지수 일봉이 부족합니다.'})
@@ -293,8 +293,8 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
     attempt_path=attempt/(stamp+'.json')
     manifest = {'source':'NAVER public chart, research-only', 'start':start,'end':end,
         'universe_snapshot_at':datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),
-        'requested_symbols':len(symbols),'collected_symbols':int(prices.symbol.nunique()),
-        'rows':len(prices),'errors':errors,
+        'requested_symbols':len(symbols),'collected_symbols':len(history.symbols.union(fresh.symbol)) if history else int(prices.symbol.nunique()),
+        'rows':history.count+len(fresh) if history else len(prices),'errors':errors,
         'status':'failed' if errors else 'published','published':not errors,
         'attempt_report':str(attempt_path),
         'included_market_indices':include_market_indices,
@@ -312,7 +312,12 @@ def acquire_research(universe_path, output_dir, start, end, refresh=False, inclu
         write_json(attempt_path,manifest)
         if not frames:raise ValueError('수집된 데이터가 없습니다. 기존 가격·매니페스트는 보존됩니다.')
         return manifest
-    try:publish_research(root,prices,manifest,on_publish=lambda:write_json(attempt_path,manifest))
+    try:
+        if history:
+            publish_price_csv(root, lambda handle: history.write_merged(handle, fresh), manifest,
+                              on_publish=lambda:write_json(attempt_path,manifest))
+        else:
+            publish_research(root,prices,manifest,on_publish=lambda:write_json(attempt_path,manifest))
     except (OSError,ValueError):
         manifest.update(status='publication_failed',published=False)
         manifest['errors'].append({'symbol':'publication','reason':'게시 실패. 기존 파일 복구 상태를 확인하세요.'})

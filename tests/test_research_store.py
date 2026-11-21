@@ -144,6 +144,40 @@ def test_daily_naver_append_rejects_missing_intermediate_benchmark(files, monkey
     assert (root/'manifest.json').read_bytes() == old_manifest
 
 
+@pytest.mark.parametrize("saved_symbols", [
+    ["000001", "000002", "000002", "069500"],
+    ["000001", "069500", "000002", "000001"],
+])
+def test_append_rejects_duplicate_keys_across_chunks(files, monkeypatch, saved_symbols):
+    import trendfollow.price_history as history
+    monkeypatch.setattr(history, "CHUNK_ROWS", 2)
+    universe, root, _, prior_manifest = files
+    path = root / "prices.csv"
+    pd.concat([bars(symbol) for symbol in saved_symbols]).to_csv(path, index=False)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="중복"):
+        acquire_research(universe, root, "2026-11-06", "2026-11-06", append_sessions=["2026-11-06"])
+    assert path.read_bytes() == before
+    assert (root / "manifest.json").read_bytes() == prior_manifest
+
+
+@pytest.mark.parametrize("ordered", [True, False])
+def test_append_sorts_new_bars_and_preserves_existing_fields(files, monkeypatch, ordered):
+    import trendfollow.price_history as history
+    monkeypatch.setattr(history, "CHUNK_ROWS", 2)
+    universe, root, *_ = files
+    old = pd.concat([bars(s).assign(date=d, origin="saved")
+                     for s in ["000001", "069500"] for d in ["2026-11-05", "2026-11-09"]])
+    if not ordered:
+        old = old.iloc[::-1]
+    old.to_csv(root / "prices.csv", index=False)
+    result = acquire_research(universe, root, "2026-11-06", "2026-11-06", append_sessions=["2026-11-06"])
+    expected = pd.concat([old, bars("000001"), bars("069500")]).sort_values(["symbol", "date"])
+    actual = pd.read_csv(root / "prices.csv", dtype={"symbol": str})
+    pd.testing.assert_frame_equal(actual, expected.reset_index(drop=True))
+    assert result["rows"] == len(actual)
+
+
 def test_nonempty_but_truncated_history_does_not_replace_existing_data(files):
     _,root,previous,old_manifest=files
     f=bars('000001');older=f.copy();older['date']='2026-11-05'
